@@ -44,17 +44,20 @@ import io.github.miuzarte.littlewhale.channel.VirtualScreen
  * @param screen the screen to picture and to touch, which fixes the shape.
  * @param modifier layout modifier from the caller, which fixes the width.
  * @param onTouch 有人碰画面 (含两边的黑边) 时叫一声, 手指照样往下走 - 悬浮菜单拿它重新计时
+ * @param heightLimit 画面最多占宽度的几分之几. 默认是给"占一条高度"的排法用的, 小窗不占会话的
+ *   高度, 传 1 让画面正好铺满它那块盒子
  */
 @Composable
 fun VirtualScreenPreview(
     screen: ScreenState,
     modifier: Modifier = Modifier,
     onTouch: () -> Unit = {},
+    heightLimit: Float = PORTRAIT_LIMIT,
 ) {
     BoxWithConstraints(modifier = modifier) {
         // 竖屏内容的画面比宽度高得多, 直接按比例给高度会把会话挤没, 所以最多给到宽度的四分之三,
         // 也就是盒子最大 4:3; 横屏内容的短边本来就在四分之三以内, 于是宽度撑满、高度按短边收
-        val boxHeight = minOf(maxWidth * PORTRAIT_LIMIT, maxWidth * (screen.height.toFloat() / screen.width))
+        val boxHeight = minOf(maxWidth * heightLimit, maxWidth * (screen.height.toFloat() / screen.width))
         Box(
             modifier = Modifier
                 .fillMaxWidth()

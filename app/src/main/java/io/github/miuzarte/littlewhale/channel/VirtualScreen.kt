@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import io.github.miuzarte.littlewhale.workspace.Workspace
 import java.io.File
 import java.util.LinkedHashMap
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -120,10 +121,26 @@ object VirtualScreen {
         Thread(runnable, "lw-screen-touch").apply { isDaemon = true }
     }
 
-    /** Build the one thing here that needs a context: somewhere to write a captured picture */
+    /**
+     * Build the one thing here that needs a context: somewhere to write a captured picture
+     *
+     * The picture is written by the privileged process, which runs as the uid Shizuku or root gave
+     * it rather than as the app, and that uid is what decides where it may write. It cannot open
+     * anything inside the app's sandbox - that is what a sandbox is - and the external cache is no
+     * better: `/storage/emulated/0` belongs to the `media_rw` group, a process that came up as the
+     * shell uid is not in it, and every write under it is refused outright. What that process can
+     * write is the shell scratch directory, which belongs to the shell uid itself, and the app can
+     * read a file left there, which is the pair this needs
+     *
+     * The staged name carries a random part because that directory is traversable by every process
+     * on the device: a file in it is readable by anything that can guess the name, and a picture of
+     * the phone is not something to leave where the name can be guessed
+     */
     fun initialize(context: Context) {
         application = context.applicationContext
-        pictures = File(context.applicationContext.cacheDir, PICTURE_NAME)
+        val scratch = File(SHELL_SCRATCH)
+        val directory = if (scratch.isDirectory) scratch else context.applicationContext.cacheDir
+        pictures = File(directory, "$PICTURE_PREFIX${UUID.randomUUID()}$PICTURE_SUFFIX")
     }
 
     /**
@@ -741,8 +758,13 @@ object VirtualScreen {
         lastError = problem.message ?: problem.javaClass.simpleName
     }
 
-    /** The name a captured picture is written under, in the app's own cache */
-    private const val PICTURE_NAME = "screen.png"
+    /** Where a non-root privileged process may write, which is the shell uid's own directory */
+    private const val SHELL_SCRATCH = "/data/local/tmp"
+
+    /** What a staged picture is called, around a random part that makes the name unguessable */
+    private const val PICTURE_PREFIX = "lw-screen-"
+
+    private const val PICTURE_SUFFIX = ".png"
 
     /** Where in the workspace pictures are kept, which the model can read and the user can open */
     private const val SCREENSHOTS = "screenshots"

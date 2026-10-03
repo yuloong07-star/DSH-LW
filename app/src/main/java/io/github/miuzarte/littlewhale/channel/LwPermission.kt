@@ -86,15 +86,39 @@ internal class LwPermission(private val context: Context?) {
      * restricted case. What comes between the setting and the service binding is an app op, and
      * either uid this process can run as may set one. Best effort in both directions: the op does
      * not exist before Android 13, and nothing here is what makes the write above fail
+     *
+     * **The value is read back rather than trusted to the exit code.** Measured on a vivo device
+     * running Android 16: `cmd appops set ... ACCESS_RESTRICTED_SETTINGS allow` exits 0 and changes
+     * nothing at all - the ROM does not honour that op. Logging the exit code would write "allowed"
+     * while nothing was allowed, and every later diagnosis would be led astray by that line, so what
+     * is reported here is what the device actually kept
      */
     private fun allowRestrictedSettings(packageName: String) {
         val result = run(CMD, "appops", "set", packageName, RESTRICTED_SETTINGS, "allow") ?: return
         val (code, output) = result
-        if (code == 0) {
-            Log.i(TAG, "allowed $RESTRICTED_SETTINGS for $packageName")
-        } else {
+        if (code != 0) {
             Log.d(TAG, "$RESTRICTED_SETTINGS was not allowed: $output")
+            return
         }
+        val kept = restrictedSettings(packageName)
+        if (kept == ALLOW) {
+            Log.i(TAG, "allowed $RESTRICTED_SETTINGS for $packageName")
+            return
+        }
+        Log.w(
+            TAG,
+            "$RESTRICTED_SETTINGS is still \"$kept\" after being set to allow: this device does not" +
+                " honour that op, so the accessibility service cannot be turned on while this app has" +
+                " no installer - installing it through a package installer is what lifts this",
+        )
+    }
+
+    /** What the device says this app's restricted settings op is set to, empty when it will not say */
+    private fun restrictedSettings(packageName: String): String {
+        val (code, output) = run(CMD, "appops", "get", packageName, RESTRICTED_SETTINGS) ?: return ""
+        if (code != 0) return ""
+        // "ACCESS_RESTRICTED_SETTINGS: allow; time=+1m5s ago" -> "allow"
+        return output.substringAfter(':', "").substringBefore(';').trim()
     }
 
     /** One secure setting, with the command's way of saying "unset" normalised away */
@@ -149,6 +173,9 @@ internal class LwPermission(private val context: Context?) {
 
         /** Android 13's gate on turning on the accessibility service of an app no store installed */
         const val RESTRICTED_SETTINGS = "ACCESS_RESTRICTED_SETTINGS"
+
+        /** What that op reads as once it has been lifted, which is what the read back compares to */
+        const val ALLOW = "allow"
 
         /** How long the system is given to notice a component left the list before it goes back in */
         const val REBIND_GAP_MS = 800L

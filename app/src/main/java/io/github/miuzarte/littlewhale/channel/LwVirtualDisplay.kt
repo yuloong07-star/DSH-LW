@@ -1,9 +1,11 @@
 package io.github.miuzarte.littlewhale.channel
 
 import android.content.Context
+import android.content.ContextWrapper
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.os.Build
+import android.os.Process
 import android.util.Log
 import android.view.Surface
 
@@ -122,18 +124,51 @@ internal class LwVirtualDisplay(private val context: Context?) {
     }
 
     /**
-     * A display manager this process can call
+     * A display manager this process is allowed to ask
      *
      * The constructor is hidden, and the manager's own instance would answer for the system's
      * package rather than this app's; both matter to the service on the other end, which notes who
-     * asked for a display
+     * asked for a display - and that is also why it is built over [UidContext] rather than over the
+     * context this class was handed, see there for what the platform insists on
      */
     private fun manager(): DisplayManager? {
         manager?.let { return it }
         val base = context ?: return null
         val constructor = DisplayManager::class.java.getDeclaredConstructor(Context::class.java)
         constructor.isAccessible = true
-        return constructor.newInstance(base).also { manager = it }
+        return constructor.newInstance(UidContext(base)).also { manager = it }
+    }
+
+    /**
+     * The context the display manager is built with, which answers for the uid this process runs as
+     *
+     * A screen is made by the process Shizuku or root started, not by the app, and the platform
+     * checks the package name it is asked for against **the uid that asked**: a name owned by
+     * another uid is refused outright. That is exactly what the app's own name is here - this
+     * process is not the app, so the name it must give is the one the package manager reports for
+     * its own uid. For a process Shizuku started that is `com.android.shell`; a process root
+     * started owns no package at all, which the platform allows on its own
+     *
+     * So the name is **asked for** rather than written down: hard-coding `com.android.shell` would
+     * be a guess about how this process was started, while the package manager is the same source
+     * the check itself reads from
+     *
+     * Only the display manager is built with this. Everything else keeps the app's own name, which
+     * is what the provider calls and the package context need
+     */
+    private class UidContext(base: Context) : ContextWrapper(base) {
+
+        /** What the package manager says this uid owns, or null when it will not say */
+        private val name: String? = try {
+            base.packageManager.getPackagesForUid(Process.myUid())?.firstOrNull()
+        } catch (error: Throwable) {
+            Log.w(TAG, "could not ask which package uid ${Process.myUid()} owns", error)
+            null
+        }
+
+        override fun getPackageName(): String = name ?: super.getPackageName()
+
+        override fun getOpPackageName(): String = name ?: super.getOpPackageName()
     }
 
     /** One hosted screen: what the compositor calls it, and the handle the platform gave back */

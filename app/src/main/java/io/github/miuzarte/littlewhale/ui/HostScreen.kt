@@ -20,29 +20,55 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.github.miuzarte.littlewhale.R
@@ -56,26 +82,28 @@ import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Scaffold
-import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Remove
 import top.yukonga.miuix.kmp.icon.extended.Tune
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.menu.OverlayIconCascadingDropdownMenu
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
 
 /**
- * 主页面: 虚拟屏的画面在上, dsh 的 Web GUI 在下
+ * 主页面: dsh 的 Web GUI 占满, 虚拟屏的画面浮在它上面
  *
- * 画面占高度而不是盖上去: WebView 量的是自己的视口, 一个盖在它上面的浮层会让 dsh 的布局被压在
- * 底下看不见的那半里缩不回来
+ * 画面是一个可拖动的小窗而不是占一条高度: 屏在后台跑着, 人要能一边看着它一边用会话, 而占高度
+ * 会把会话挤掉一条。代价反过来了 - 小窗盖住的那一块 dsh 看不见 (WebView 量的是自己的视口), 所以
+ * 窗越小界面越完整, 见 [FloatingScreenWindow] 与 `WINDOW_SCREEN_FRACTION`
  *
  * 顶栏末尾的级联菜单第一层就两项, 虚拟屏与设置; 虚拟屏那一项自己带着当前选中的是哪块屏, 展开
  * 才是屏的列表, 选中哪块看哪块, 再点一次同一块就是不看
  *
  * **有画面在看的时候顶栏整个让位** (2026-09-22): `SmallTopAppBar` 的高度是 `CollapsedHeight`
  * 52dp, 与标题长不长无关 (标题空着也一样), 而这一页的标题只是个应用名, 那 52dp 给会话更值。
- * 于是这时不放 topBar, 菜单按钮改成浮在画面右上角, 静一会儿自己淡出, 碰一下画面再出来 - 与手机
+ * 于是这时不放 topBar, 菜单按钮改成浮在小窗右上角, 静一会儿自己淡出, 碰一下画面再出来 - 与手机
  * 上视频播放器的控件一个脾气。不看画面了 (收起或没选中) 就回到那条默认顶栏
  * @param modifier layout modifier from the caller.
  */
@@ -86,46 +114,15 @@ fun HostScreen(modifier: Modifier = Modifier) {
     // 选中就是显示: 没有"收起了但还选着"这种状态, 取消选中就是不看了
     val preview = selected
 
-    // 悬浮菜单: 画面一出现先亮一会儿, 之后每次碰画面 (或按它自己) 重新计时
-    var controlsVisible by remember { mutableStateOf(true) }
-    var controlsTick by remember { mutableStateOf(0) }
-    // 菜单展开期间按钮不能淡出: 淡出结束会把内容从树里真正拿掉, 而 popup 是挂在它下面的,
-    // 于是菜单会跟着一起没 (2026-09-22 踩过)
-    var menuOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(preview?.displayId, controlsTick) {
-        controlsVisible = true
-        delay(CONTROLS_IDLE_MS)
-        controlsVisible = false
-    }
-    val keepControls: () -> Unit = { controlsTick++ }
-    val layoutDirection = LocalLayoutDirection.current
+    // 减号把整扇窗收掉, 收起来之后界面上一点痕迹都不留; 要它回来走 ⋮ 菜单里那一项
+    var windowHidden by remember { mutableStateOf(false) }
 
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        topBar = {
-            // 只有不看画面时才有顶栏, 收起画面 / 没选中屏都回到这一条
-            if (preview == null) {
-                SmallTopAppBar(
-                    title = stringResource(R.string.app_name),
-                    actions = {
-                        MenuButton(
-                            selected = selected,
-                            onSettings = { navigator.push(Screen.Settings) },
-                        )
-                    },
-                )
-            }
-        },
-    ) { innerPadding ->
+    // **这一页没有顶栏**: 原来那条写着应用名的 `SmallTopAppBar` 去掉了, 顶上那点位置让给会话。
+    // 唯一的菜单入口是浮标 (见 FloatingBall)。`innerPadding` 仍然带着状态栏那条 inset, 所以内容
+    // 不会钻到时钟底下 - 顶栏在的时候那条 inset 是由顶栏自己吃的, 现在改由 Scaffold 给
+    Scaffold(modifier = modifier.fillMaxSize()) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
-                preview?.let { screen ->
-                    VirtualScreenPreview(
-                        screen = screen,
-                        modifier = Modifier.fillMaxWidth(),
-                        onTouch = keepControls,
-                    )
-                }
                 // 画面空着就是空着, 页面上不留一行字 - 有没有屏、选中哪一块, ⋮ 菜单里都写着
                 // 只有出错时才说话, 否则失败会被静默吞掉
                 if (selected == null) {
@@ -141,26 +138,26 @@ fun HostScreen(modifier: Modifier = Modifier) {
                     else -> HostBootPanel(status = status, modifier = Modifier.weight(1f))
                 }
             }
-            if (preview != null) {
-                FloatingMenuButton(
-                    // 菜单开着就一直露着, 关掉之后重新计时
-                    visible = controlsVisible || menuOpen,
-                    selected = selected,
-                    onSettings = { navigator.push(Screen.Settings) },
-                    onMenuExpanded = { open ->
-                        menuOpen = open
-                        keepControls()
-                    },
-                    // 这一层不在 Column 里, 所以 Scaffold 那点内边距要自己补上, 否则按钮会落到
-                    // 状态栏里去 (它按窗口算 TopEnd, 而窗口是 edge-to-edge 的)
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(
-                            top = innerPadding.calculateTopPadding(),
-                            end = innerPadding.calculateRightPadding(layoutDirection),
-                        ),
+            // 小窗直接挂在 Scaffold 的内容里, **中间不留任何一层容器**: 拖动范围就是这一层按 inset
+            // 收好之后的整块地方, 而它由窗口自己量 (见 FloatingScreenWindow 的 onSizeChanged)。
+            // 上一版为了拿到这个范围套了一个 fillMaxSize 的空 Box, 而 Compose 的 Box 默认参与命中
+            // 测试 - "空盒子不吃事件"是错的, 它把窗口底下 1600 多像素的触摸全吃了, 用户的原话是
+            // "虚拟屏下面一半都用不了"。所以这里宁可让窗口自己量, 也不再放一个会占满屏幕的东西
+            if (preview != null && !windowHidden) {
+                FloatingScreenWindow(
+                    screen = preview,
+                    onMinimize = { windowHidden = true },
+                    modifier = Modifier.padding(innerPadding),
                 )
             }
+            // 浮标: 顶栏那个按钮的替身, 白底不透明、能拖到任何地方
+            FloatingBall(
+                selected = selected,
+                onSettings = { navigator.push(Screen.Settings) },
+                windowHidden = windowHidden,
+                onToggleWindow = { windowHidden = !windowHidden },
+                modifier = Modifier.padding(innerPadding),
+            )
         }
     }
 }
@@ -174,6 +171,8 @@ fun HostScreen(modifier: Modifier = Modifier) {
 private fun MenuButton(
     selected: ScreenState?,
     onSettings: () -> Unit,
+    windowHidden: Boolean,
+    onToggleWindow: () -> Unit,
     modifier: Modifier = Modifier,
     backgroundColor: Color = Color.Unspecified,
     onExpandedChange: ((Boolean) -> Unit)? = null,
@@ -182,6 +181,8 @@ private fun MenuButton(
         entries = mainMenu(
             selected = selected,
             onSettings = onSettings,
+            windowHidden = windowHidden,
+            onToggleWindow = onToggleWindow,
         ),
         modifier = modifier,
         backgroundColor = backgroundColor,
@@ -195,37 +196,296 @@ private fun MenuButton(
 }
 
 /**
- * 浮在画面右上角的那个菜单按钮
+ * 虚拟屏的小窗
  *
- * 它背后是别人家的画面, 底色说不准, 所以给它一层半透明的表面色当底, 否则深色壁纸上会看不见。
- * 静一会儿自己淡出, 只是淡出而不是消失: 位置不变, 点了画面又回来
- * @param visible 现在该不该露着
- * @param onMenuExpanded 菜单开合时叫一声, 开着的时候调用方要让 [visible] 保持为真
+ * 它浮在会话上面而不是占一条高度: 屏在后台跑着, 人要能一边看着它一边用 dsh 的界面。代价是它盖
+ * 住的那一块会话就真看不见了 - WebView 量的是自己的视口, 被盖住的地方缩不回来, 所以它越小,
+ * 界面越完整
+ *
+ * 整条标题栏是拖动把手 (画面本身已经拿去注入触摸了, 见 [VirtualScreenPreview], 在画面上再认拖动
+ * 就分不清"移窗口"与"划屏"), 右端那个减号把整扇窗收掉 - 它不自己留一条边, 也不再自己回来, 要
+ * 回来走 ⋮ 菜单里的那一项, 这样收起来之后界面上真的一点痕迹都不剩
+ *
+ * **它自己量自己能拖到哪儿**: 传进来的 modifier 带着 Scaffold 的 inset padding, 于是这一层的尺寸
+ * 就是可用范围, 不需要外面再套容器。这一点是踩过才知道的 - 外面套一个 fillMaxSize 的盒子去量,
+ * 那个盒子会把窗口底下整片触摸都吃掉
+ *
+ * @param screen 显示哪块屏, 它同时决定画面的形状
+ * @param onMinimize 按下减号时叫一声, 由调用方把整扇窗收掉
  */
 @Composable
-private fun FloatingMenuButton(
-    visible: Boolean,
-    selected: ScreenState?,
-    onSettings: () -> Unit,
-    onMenuExpanded: (Boolean) -> Unit,
+private fun FloatingScreenWindow(
+    screen: ScreenState,
+    onMinimize: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // 用 AnimatedVisibility 而不是自己调 alpha: 淡出结束后内容会真的从树里拿掉, 于是藏起来的
-    // 按钮不会继续吃掉右上角那一片的点击 (那一片属于画面, 手指该落在画面上)
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn(),
-        exit = fadeOut(),
-        modifier = modifier,
-    ) {
-        MenuButton(
-            selected = selected,
-            onSettings = onSettings,
-            // 上边与右边给同样的距离, 看着才是正对着角放上去的 (上面那点距离是从状态栏下面算起)
-            modifier = Modifier.padding(end = UiSpacing.Medium, top = UiSpacing.Medium),
-            backgroundColor = colorScheme.surface.copy(alpha = 0.8f),
-            onExpandedChange = onMenuExpanded,
-        )
+    val density = LocalDensity.current
+    val screenWidth = LocalConfiguration.current.screenWidthDp
+
+    // 小窗头一次出现在哪儿: 顶上那一条是系统自己的手势区 (下拉通知栏), 落在里面的触摸根本到不了
+    // 这里, 所以起始位置放在它下面, 免得一上来就抓不住。实测这台设备上 y=250 的下拉被通知栏接走,
+    // y=400 才落回应用
+    //
+    // **只是一个起点, 不是下限**: 用户要的是整块屏幕都能放, 所以上面不设禁入区。真放进手势区里
+    // 拖不动了也有退路 - 减号收起来再显示, 窗会重新站回这个起点 (它离开组合时那些 remember 就没了)
+    val start = with(density) { WINDOW_START_TOP.roundToPx() }.toFloat()
+    var position by remember { mutableStateOf(Offset(0f, start)) }
+    // 这一层自己有多大, 就是窗口能走多远 - 量的是自己, 所以没有任何多余的东西参与命中测试
+    var viewport by remember { mutableStateOf(IntSize.Zero) }
+    var dragging by remember { mutableStateOf(false) }
+
+    // 宽度是屏幕宽度的几分之一, 高度跟着屏自己的形状走 - 竖的屏得到一条竖的窗
+    val width = with(density) { (screenWidth / WINDOW_SCREEN_FRACTION).dp.roundToPx() }
+    val picture = (width / screen.aspect).roundToInt()
+    val height = with(density) { WINDOW_BAR_HEIGHT.roundToPx() } + picture
+
+    // 拖出屏幕就回不来了, 所以每次都用当前尺寸夹一遍; 上面不设下限, 整块屏幕都是它的地方
+    val limitX = (viewport.width - width).coerceAtLeast(0).toFloat()
+    val limitY = (viewport.height - height).coerceAtLeast(0).toFloat()
+    // 指针推的是这个目标 (含钳制), 屏幕上跟的是下面那个弹簧的输出
+    val target = Offset(position.x.coerceIn(0f, limitX), position.y.coerceIn(0f, limitY))
+
+    // 下面那个拖动回调挂在 pointerInput 上, 而它不会因为位置变化重启, 所以回调里**只能读活的值**:
+    // position 走 state 委托, 每次读都是当前值, 而这两个上限是组合期的局部量, 得包一层才是活的。
+    // 第一版直接读了组合期算好的位置, 于是每一下拖动都从零重新算 - 窗几乎不动 (在设备上试出来的)
+    val limits = rememberUpdatedState(Offset(limitX, limitY))
+
+    // 目标与渲染分开, 与浮标同一套。**拖动中不用弹簧**: 弹簧会落后于手指, 小窗拖起来会像"粘"在
+    // 原地、手停下才追上来
+    val rendered = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
+    var placed by remember { mutableStateOf(false) }
+    LaunchedEffect(target, dragging) {
+        when {
+            !placed -> {
+                rendered.snapTo(target)
+                placed = true
+            }
+            dragging -> rendered.snapTo(target)
+            else -> rendered.animateTo(target, SETTLE_SPRING)
+        }
+    }
+
+    // "拿起来"那一下: 小窗只加投影, **不加缩放**。缩放是 RenderNode 变换, 而窗里的画面是
+    // SurfaceView - 它的 surface 由 SurfaceFlinger 单独摆一层, 不跟着父节点的变换走, 一缩放就会
+    // 出现"标题栏放大了、画面没放大"的错位。投影不影响 surface, 是安全的等效反馈
+    val lift by animateDpAsState(
+        targetValue = if (dragging) WINDOW_DRAG_ELEVATION else 0.dp,
+        animationSpec = PRESS_LIFT_SPRING,
+        label = "windowLift",
+    )
+
+    Box(modifier = modifier.fillMaxSize().onSizeChanged { viewport = it }) {
+        Column(
+            modifier = Modifier
+                .offset { IntOffset(rendered.value.x.roundToInt(), rendered.value.y.roundToInt()) }
+                .width(with(density) { width.toDp() })
+                .shadow(elevation = lift, shape = RoundedCornerShape(UiSpacing.Medium))
+                .clip(RoundedCornerShape(UiSpacing.Medium))
+                .background(colorScheme.surface),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(WINDOW_BAR_HEIGHT)
+                    // 整条标题栏就是拖动把手 (减号那块除外, 它自己收事件, 见下)
+                    .pointerInput(screen.displayId) {
+                        detectDragGestures(
+                            onDragStart = { dragging = true },
+                            onDragEnd = { dragging = false },
+                            onDragCancel = { dragging = false },
+                        ) { change, drag ->
+                            change.consume()
+                            val (limitXNow, limitYNow) = limits.value
+                            position = Offset(
+                                (position.x + drag.x).coerceIn(0f, limitXNow),
+                                (position.y + drag.y).coerceIn(0f, limitYNow),
+                            )
+                        }
+                    },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = screen.label,
+                    modifier = Modifier.weight(1f).padding(start = UiSpacing.Small),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                // 触摸区比图标大一圈, 但仍然**远比 Miuix 的 IconButton 小**: 窗只有屏宽的几分之一,
+                // 一个 48dp 的按钮会把整条标题栏占满, 拖动就没地方下手了 (第一版栽在这, 拖不动)
+                Box(
+                    modifier = Modifier
+                        .padding(end = UiSpacing.Small)
+                        .size(WINDOW_BUTTON_SIZE)
+                        .clip(CircleShape)
+                        .clickable(onClick = onMinimize),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = MiuixIcons.Remove,
+                        contentDescription = stringResource(R.string.screen_window_hide),
+                    )
+                }
+            }
+            // heightLimit 说的是"画面最多给到宽度的几倍", 而竖屏的画面要的高度是宽度的
+            // screen.height/screen.width 倍 (这台设备上约 2.2 倍)。传 1 就等于按宽度把画面封顶,
+            // 于是竖屏只画得出上面那 1/2.2, 底下空着的全是这个盒子的黑底 - 用户报的"下面一半都用
+            // 不了"就是它 (上一版这里写的是 1f, 而 1 的含义我一开始就理解反了)。
+            // 传这个比例本身, 盒子就正好是画面要的高度, 一点黑边都不剩
+            VirtualScreenPreview(
+                screen = screen,
+                modifier = Modifier.fillMaxWidth().height(with(density) { picture.toDp() }),
+                heightLimit = 1f / screen.aspect,
+            )
+        }
+    }
+}
+
+/**
+ * 浮标: 顶上那个菜单按钮, 做成一枚跟着主题走的球, 能拖到应用里的任何地方
+ *
+ * 它接替了两处旧东西 - 顶栏 `actions` 里那个按钮, 和看画面时浮在画面右上角的那个会淡出的按钮。
+ * **合成一个是因为"要能拖"和"会自己淡出"是矛盾的**: 想拖的时候它正好不在, 那这个球就没法用。
+ * 所以它一直在, 也从不透明 - 底下的东西说不准是什么 (顶栏 / dsh 的界面 / 别人家的画面), 透了就
+ * 看不清, 而它是要用手指找的东西。底色跟着配色走 (见下), 不写死成白色
+ *
+ * 位置只在拖过之后才记住: 没拖过就待在右上角, 与它替掉的那个按钮同一个地方
+ *
+ * @param selected 菜单里那一栏要显示的屏, 与顶栏那个按钮用的是同一份菜单
+ * @param onSettings 菜单里的设置页入口, 原样传下去
+ * @param windowHidden 小窗现在收着没有, 菜单里那一项照它显示"显示"还是"隐藏"
+ * @param onToggleWindow 菜单里那一项按下去时叫一声
+ */
+@Composable
+private fun FloatingBall(
+    selected: ScreenState?,
+    onSettings: () -> Unit,
+    windowHidden: Boolean,
+    onToggleWindow: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    val ball = with(density) { BALL_SIZE.roundToPx() }
+    // 没被拖过时站在右上角再让开一个图标位, 免得压住对话右边栏的第一个图标
+    val startTop = with(density) { BALL_START_TOP.roundToPx() }.toFloat()
+    // null = 还没被拖过, 于是它待在右上角而不是 (0,0)
+    var position by remember { mutableStateOf<Offset?>(null) }
+    var viewport by remember { mutableStateOf(IntSize.Zero) }
+    var dragging by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+
+    // 空闲计时: 每次交互 +1, 这段重跑就是重新计时。菜单开着时不计 - 那时它正在被用
+    var interactions by remember { mutableStateOf(0) }
+    var dimmed by remember { mutableStateOf(false) }
+    LaunchedEffect(interactions, menuOpen) {
+        dimmed = false
+        if (menuOpen) return@LaunchedEffect
+        delay(BALL_IDLE_MS)
+        dimmed = true
+    }
+
+    val limitX = (viewport.width - ball).coerceAtLeast(0).toFloat()
+    val limitY = (viewport.height - ball).coerceAtLeast(0).toFloat()
+    // 指针推的是这个目标 (含钳制), 屏幕上跟的是下面那个弹簧的输出
+    val target = (position ?: Offset(limitX, startTop)).let {
+        Offset(it.x.coerceIn(0f, limitX), it.y.coerceIn(0f, limitY))
+    }
+    // 与窗口那边同一个道理: 拖动回调挂在 pointerInput 上, 不会因为位置变化重启, 所以它只能读活值
+    val limits = rememberUpdatedState(Offset(limitX, limitY))
+
+    // 目标与渲染分开, 与窗口同一套。**但拖动中不用弹簧**: 弹簧会落后于手指, 用户报的"没有被拖动,
+    // 而是移动停止后才最终落位"就是它。拖动中直接 snapTo, 位置变化照样走 layout 阶段
+    val rendered = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
+    var placed by remember { mutableStateOf(false) }
+    LaunchedEffect(target, dragging) {
+        when {
+            !placed -> {
+                rendered.snapTo(target)
+                placed = true
+            }
+            dragging -> rendered.snapTo(target)
+            else -> rendered.animateTo(target, SETTLE_SPRING)
+        }
+    }
+
+    // 变淡: 只用 alpha, **绝不把它移出视图树**。老代码那个 AnimatedVisibility 淡出会真的把内容拿掉
+    // (理由是留着会吃掉点击), 但这里相反 - 25% 的球必须仍然点得到、拖得动, 而 alpha 不影响命中测试
+    val ballAlpha by animateFloatAsState(
+        targetValue = if (dimmed) BALL_DIM_ALPHA else 1f,
+        animationSpec = tween(BALL_FADE_MS),
+        label = "ballAlpha",
+    )
+    // "拿起来"那一下: 球没有 SurfaceView, 缩放是安全的 (小窗就不行, 见那边的注释)
+    val scale by animateFloatAsState(
+        targetValue = if (dragging) BALL_DRAG_SCALE else 1f,
+        animationSpec = PRESS_SCALE_SPRING,
+        label = "ballScale",
+    )
+    val lift by animateDpAsState(
+        targetValue = if (dragging) BALL_DRAG_ELEVATION else BALL_IDLE_ELEVATION,
+        animationSpec = PRESS_LIFT_SPRING,
+        label = "ballLift",
+    )
+
+    Box(modifier = modifier.fillMaxSize().onSizeChanged { viewport = it }) {
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(rendered.value.x.roundToInt(), rendered.value.y.roundToInt()) }
+                .size(BALL_SIZE)
+                // 拖动挂在球上, 点按由里面那个菜单按钮自己收 - 手指一动就超过触摸阈值, 按钮那次点击
+                // 会被取消, 于是同一个球既点得开又拖得动。
+                // 放在 graphicsLayer **之前**是故意的: 层的缩放会作用到后面的命中测试上, 拖动位移
+                // 会跟着被按 1.08 折算, 球就走得比手指慢
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = {
+                            dragging = true
+                            interactions++
+                        },
+                        onDragEnd = { dragging = false },
+                        onDragCancel = { dragging = false },
+                    ) { change, drag ->
+                        change.consume()
+                        val (limitXNow, limitYNow) = limits.value
+                        // **只能读活值**: `at` 是组合期算出来的, 而 pointerInput 不会因为位置变化
+                        // 重启, 拿它当基准的话每一下拖动都从同一个死位置重算, 球就几乎不动。窗口那边
+                        // 栽过一次, 这里又栽了一次 (写的时候明明刚修完)。position 走 state 委托, 每次
+                        // 读都是当前值; 还没拖过就用右上角那个起点
+                        val from = position ?: Offset(limitXNow, startTop)
+                        position = Offset(
+                            (from.x + drag.x).coerceIn(0f, limitXNow),
+                            (from.y + drag.y).coerceIn(0f, limitYNow),
+                        )
+                    }
+                }
+                // **这一层必须写在投影/底色之前**: Compose 的绘制修饰符只影响排在它后面的节点,
+                // 写在 background 之后就只淡化了里头那个图标, 底色与投影原样留着 (第一版就是这样,
+                // 用户看到的正是"只有三横淡了、背景没淡")
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    alpha = ballAlpha
+                }
+                // 底色跟着主题走, 不写死白色: 浅色主题下纯白会和 dsh 的白底糊在一起, 而深色主题下
+                // 它又得是深色的, 所以取的是当前配色里的 surface。投影让它看得出是浮起来的
+                .shadow(elevation = lift, shape = CircleShape)
+                .clip(CircleShape)
+                .background(colorScheme.surface),
+            contentAlignment = Alignment.Center,
+        ) {
+            MenuButton(
+                selected = selected,
+                onSettings = onSettings,
+                windowHidden = windowHidden,
+                onToggleWindow = onToggleWindow,
+                // 球的底由外面这层给, 菜单按钮自己就不用再画一层
+                backgroundColor = Color.Transparent,
+                // 菜单开着时不计空闲: 那时用户正在用它, 淡下去没有道理
+                onExpandedChange = { open ->
+                    menuOpen = open
+                    interactions++
+                },
+            )
+        }
     }
 }
 
@@ -239,9 +499,15 @@ private fun FloatingMenuButton(
 private fun mainMenu(
     selected: ScreenState?,
     onSettings: () -> Unit,
+    windowHidden: Boolean,
+    onToggleWindow: () -> Unit,
 ): List<DropdownEntry> {
     val context = LocalContext.current
     val screens = VirtualScreen.screens
+    // 先算好: 下面那个下拉栏是 buildList 里拼的, 而那不是 composable 作用域, stringResource 进不去
+    val windowToggle = stringResource(
+        if (windowHidden) R.string.screen_window_show else R.string.screen_window_hide,
+    )
     return listOf(
         DropdownEntry(
             items = listOf(
@@ -286,6 +552,16 @@ private fun mainMenu(
                                 summary = selected?.label,
                                 enabled = selected != null,
                                 onClick = { selected?.let { VirtualScreen.release(it, byUser = true) } },
+                            ),
+                        )
+                        // 减号收起来的窗从这里叫回来: 它收得干净, 界面上不留把手, 所以这一项是唯一
+                        // 的路。放在"虚拟屏"这一栏里而不是一级菜单, 是因为它管的正是这一块屏
+                        add(
+                            DropdownItem(
+                                text = windowToggle,
+                                summary = selected?.label,
+                                enabled = selected != null,
+                                onClick = onToggleWindow,
                             ),
                         )
                     },
@@ -471,8 +747,86 @@ private fun startDownload(context: Context, url: String, contentDisposition: Str
     Log.i(WEB_TAG, "download enqueued for $url")
 }
 
-/** 悬浮菜单静多久就淡出, 与手机上播放器控件一个量级 */
-private const val CONTROLS_IDLE_MS = 3000L
+/**
+ * 小窗的宽度是屏幕宽度的几分之一
+ *
+ * 分母越大窗越小, 而窗越小它盖住的会话越少 - 这是这个窗唯一的取舍, 所以它在这里是一个数。
+ * 一开始给的是 6 (手机上 60dp), 实测下来画面小得看不清, 现在按用户要求翻倍成 3
+ */
+private const val WINDOW_SCREEN_FRACTION = 3
+
+/** 浮标有多大 */
+private val BALL_SIZE = 44.dp
+
+/**
+ * 浮标没被拖过时停在哪: 右上角, 但**往下让开一个 dsh 侧边栏图标位**
+ *
+ * 对话时右边栏的图标就贴在右上角, 球压在第一个图标上, 那一个就点不着了。dsh 侧边栏的每一项是
+ * 36px 的行高加 4px 间距 (见 `packages/client/ui-sidebar` 的 `SidebarRoot.module.css`), 所以一个
+ * 图标位是 40dp - 球从那里往下站, 正好落在第一个图标下面
+ */
+private val BALL_START_TOP = 40.dp
+
+/** 浮标空闲多久开始变淡, 以及淡到多少 */
+private const val BALL_IDLE_MS = 5000L
+private const val BALL_DIM_ALPHA = 0.25f
+
+/** 变淡用多久, 和拖动那套弹簧分开: 这是"提示", 不是"运动", 用一条短渐变就够 */
+private const val BALL_FADE_MS = 220
+
+/** 按住浮标时的放大, 就是"拿起来"那一下 */
+private const val BALL_DRAG_SCALE = 1.08f
+
+/** 闲着与按住的投影高度 */
+private val BALL_IDLE_ELEVATION = 2.dp
+private val BALL_DRAG_ELEVATION = 6.dp
+
+/**
+ * 小窗按住时的投影
+ *
+ * 小窗只有投影**没有缩放**, 因为它的画面是 `SurfaceView` - 见 [FloatingScreenWindow] 的注释
+ */
+private val WINDOW_DRAG_ELEVATION = 6.dp
+
+/**
+ * 按住/松开那一下的弹簧: 略欠阻尼, 带一点点回弹, "软"就是从这儿来的
+ *
+ * 分两个是因为 `animateFloatAsState` 与 `animateDpAsState` 要的规格类型不一样
+ */
+private val PRESS_SCALE_SPRING = spring<Float>(dampingRatio = 0.65f, stiffness = Spring.StiffnessMediumLow)
+private val PRESS_LIFT_SPRING = spring<Dp>(dampingRatio = 0.65f, stiffness = Spring.StiffnessMediumLow)
+
+/**
+ * 不在拖动时 (头一次落位、可用范围变了) 用的弹簧, 让位置变化不是硬切
+ *
+ * **拖动中不用它**: 第一版让渲染值用弹簧去追指针, 而 `StiffnessMediumLow` 太软, 屏幕上的球明显
+ * 落在手指后面, 要等手停下来才追得上去 — 用户的原话是"没有被拖动, 而是移动停止后才最终落位, 这样
+ * 导致更加生硬"。跟手这件事上严丝合缝比优雅重要, 所以拖动中直接 `snapTo`, 柔化交给按住那一下
+ * 缩放与投影
+ */
+private val SETTLE_SPRING = spring<Offset>(stiffness = Spring.StiffnessMediumLow, dampingRatio = 1f)
+
+/** 小窗顶栏的高度, 拖动把手与减号都在这条上 */
+private val WINDOW_BAR_HEIGHT = 36.dp
+
+/**
+ * 小窗上那个减号的触摸区
+ *
+ * 它比图标大一圈, 但**绝不能换成 Miuix 的 `IconButton`**: 那个是 48dp, 而窗只有屏宽的几分之一
+ * (手机上 60dp), 一放上去整条标题栏就只剩按钮了 - 子节点先拿到事件, 拖动再没有地方下手
+ */
+private val WINDOW_BUTTON_SIZE = 24.dp
+
+/**
+ * 小窗头一次出现在离屏幕顶多高的地方
+ *
+ * 屏幕顶部那一条被系统拿去做下拉通知栏的手势区, 落在里面的触摸不会交给应用, 所以标题栏一进去就
+ * 拖不动了 - 起始位置放在这条线以下, 免得一上来就抓不住。实测这台设备上 y=250 的下拉被通知栏接
+ * 走, y=400 才回到应用, 这个值要在这条分界之上留出余量
+ *
+ * 它只管**起点**: 用户要的是整块屏幕都能放, 所以往上不再设禁入区, 拖到顶是允许的
+ */
+private val WINDOW_START_TOP = 120.dp
 
 /** Logcat tag for what the embedded browser reports */
 private const val WEB_TAG = "DshWebView"

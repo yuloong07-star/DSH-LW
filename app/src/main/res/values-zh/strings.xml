@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">LittleWhale</string>
+    <string name="app_name">DSH-LW</string>
     <string name="a11y_description">允许 DSH 读取屏幕上文本及其精确位置以减少端侧 OCR 调用</string>
 
     <string name="button_cancel">取消</string>
@@ -12,7 +12,7 @@
     <string name="host_status_failed">host 启动失败: %1$s</string>
     <string name="host_channel_name">DSH host</string>
     <string name="host_channel_description">应用退到后台后继续保活 DSH host</string>
-    <string name="host_notification_title">LittleWhale</string>
+    <string name="host_notification_title">DSH-LW</string>
     <string name="host_notification_text">DSH host 正在运行</string>
 
     <string name="settings_title">设置</string>
@@ -60,7 +60,7 @@
     <string name="settings_accessibility">允许 DSH 通过无障碍服务读取屏幕内容</string>
     <string name="settings_accessibility_summary">启用后, 模型直接能读到屏幕上每个控件的文字与精确位置</string>
     <string name="settings_accessibility_manual">跳转到无障碍设置</string>
-    <string name="settings_accessibility_manual_summary">手动启用 LittleWhale 的无障碍服务</string>
+    <string name="settings_accessibility_manual_summary">手动启用 DSH-LW 的无障碍服务</string>
 
     <string name="settings_section_screenshot">截图</string>
     <string name="settings_screenshot_budget">截图预算</string>
@@ -92,4 +92,7 @@
     <string name="settings_copy">复制</string>
     <string name="settings_url_copied">已复制 URL</string>
     <string name="settings_share_chooser">分享 DSH 的地址</string>
+
+    <string name="screen_window_hide">隐藏虚拟屏小窗</string>
+    <string name="screen_window_show">显示虚拟屏小窗</string>
 </resources>

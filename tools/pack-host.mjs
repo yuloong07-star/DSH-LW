@@ -34,6 +34,18 @@ const BUILD_OUTPUTS = [
   'native/system/packages/*/lib',
 ]
 
+/**
+ * Incremental records that outlive the outputs they describe
+ *
+ * `tsc -b` records what it has built in these two files. A package's own record lives inside its
+ * `lib/`, so deleting that directory takes the record with it - but these two sit beside the root
+ * tsconfigs and survive. Left in place they make tsc conclude the deleted packages are still built,
+ * so it emits nothing and the tsdown pass that follows dies on the first package whose entry
+ * JavaScript is missing. That failure names the repository root, because the root tsdown config is
+ * what supplies the `lib/types/{index,invariant,startup}.js` default every package inherits
+ */
+const ROOT_BUILD_STATE = ['tsconfig.host.tsbuildinfo', 'tsconfig.client.tsbuildinfo']
+
 /** Run one command in the checkout, inheriting stdio so build progress stays visible */
 function run(command, args, cwd) {
   execFileSync(command, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' })
@@ -67,6 +79,13 @@ function cleanBuildOutputs(root) {
       rmSync(directory, { recursive: true, force: true })
       removed += 1
     }
+  }
+  for (const name of ROOT_BUILD_STATE) {
+    const record = join(root, name)
+    // Only count what was actually there, so the line below still means something on a clean tree
+    if (!existsSync(record)) continue
+    rmSync(record, { force: true })
+    removed += 1
   }
   console.log(`pack-host: removed ${String(removed)} stale build output(s) under ${root}`)
 }
@@ -154,6 +173,25 @@ writeFileSync(join(out, 'package.json'), `${JSON.stringify({
 // platform packages need one native build per architecture, and a consumer that cannot install
 // them has to start anyway
 run('npm', ['install', '--no-audit', '--no-fund', '--package-lock=false', '--omit=optional'], out)
+
+// The mobile web-ui plugin is fetched into a scratch directory and copied in, rather than declared
+// as a dependency of the tree. Declaring it would drag npm's peer resolution over the whole install:
+// its peer range admits released 0.1.x and 0.2.0-rc.1+, but not the prerelease this tree is built
+// from (0.1.5-rc.2), so the install would only pass with --legacy-peer-deps - a flag that changes
+// how the ENTIRE dsh closure resolves, to accommodate one package that needs nothing from it. Here
+// the relaxed resolution is confined to a throwaway directory
+const webui = 'dsh-web-mobile'
+const webuiStage = join(out, '.webui-stage')
+mkdirSync(webuiStage, { recursive: true })
+writeFileSync(join(webuiStage, 'package.json'), `${JSON.stringify({ name: 'lw-webui-stage', private: true }, null, 2)}\n`)
+run(
+  'npm',
+  ['install', `${webui}@3.0.4`, '--no-audit', '--no-fund', '--package-lock=false', '--omit=optional', '--legacy-peer-deps'],
+  webuiStage,
+)
+cpSync(join(webuiStage, 'node_modules', webui), join(out, 'node_modules', webui), { recursive: true })
+rmSync(webuiStage, { recursive: true, force: true })
+console.log(`pack-host: installed the ${webui} plugin from the registry`)
 
 // LittleWhale's own host plugin is copied in rather than packed: it is a few hundred lines of
 // plain ESM with no build step, and it has to sit under node_modules so that its import of
