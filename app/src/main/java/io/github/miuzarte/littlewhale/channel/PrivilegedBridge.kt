@@ -1022,7 +1022,9 @@ object PrivilegedBridge {
         put("running", state.running)
         put("installer", state.installer)
         put("restrictedSettings", state.restrictedSettings)
+        // 三态的理由一句话说不完, 所以两个键都给: 一个给布尔, 一个给"是哪一种"
         put("writesAccepted", state.writeChannelOpen)
+        put("writeChannel", state.writeChannel.name.lowercase())
         // 三态: true/false 是设备答的, null 是这台设备根本没有那个类 (API 37 以下)
         put("advancedProtection", state.advancedProtection)
         put("healthy", state.healthy)

@@ -30,8 +30,8 @@ import java.util.concurrent.TimeUnit
 /**
  * 无障碍现在到底怎么样
  *
- * 六件事实放在一起才算回答完了那个问题: `componentListed` 与 `running` 是"设置里写着"与"系统真的
- * 绑上了"的区别, `writeChannelOpen` 是"我们还能不能写"的区别, 另外两个是 Android 13 那道闸的两半。
+ * 几件事实放在一起才算回答完了那个问题: `componentListed` 与 `running` 是"设置里写着"与"系统真的
+ * 绑上了"的区别, `writeChannel` 是"我们还能不能写"的区别, 另外两个是 Android 13 那道闸的两半。
  * 设置页显示它, `lw_probe` 回它, 所以判据只有一份
  *
  * @property component 我们那个无障碍组件的完整名字 (写进列表里的就是它)
@@ -40,11 +40,23 @@ import java.util.concurrent.TimeUnit
  * @property masterSwitch `accessibility_enabled` 是不是 1
  * @property running 系统有没有把服务实例绑起来 —— "开没开"最终是它说了算
  * @property installer 设备记的 `installerPackageName`, 空串表示 null (侧载)
- * @property restrictedSettings `ACCESS_RESTRICTED_SETTINGS` 这道 op 的值
- * @property writeChannelOpen 应用现在写的 secure settings 会不会被设备留下 (探针的答案)
+ * @property restrictedSettings `ACCESS_RESTRICTED_SETTINGS` 这道 op 的值, 空串表示这台设备问不到
+ * @property writeChannel 应用自己写的 secure settings 会怎样, 见 [WriteChannel]
  * @property advancedProtection 用户开着高级保护模式吗 (Android 17 的 AAPM), null 表示这台设备问不到
  * @property readAt 这一份是什么时候读的 (毫秒时间戳), 见 [reason] 里为什么需要它
  */
+
+/**
+ * 应用自己写一条 secure setting 会怎样
+ *
+ * 三种情形要分开, 因为它们要的处置完全不同:
+ *
+ * - [OPEN] 写进去、读回来就是那个值 —— 应用自己就能开
+ * - [DISCARDED] 命令跑过了 (退出码 0) 而值没变 —— 这台设备把写入丢了, 只能赶在重装之后那段窗口里写
+ * - [REFUSED] 命令本身被拒 —— Android 14 起非 shell uid 跑 `settings put` 会 `SecurityException`,
+ *   于是"设备会不会留下"这件事**根本没被问到**。这不是设备的毛病, 写入本来就该由特权进程去做
+ */
+enum class WriteChannel { OPEN, DISCARDED, REFUSED }
 data class AccessibilityState(
     val component: String,
     val componentListed: Boolean,
@@ -53,13 +65,16 @@ data class AccessibilityState(
     val running: Boolean,
     val installer: String,
     val restrictedSettings: String,
-    val writeChannelOpen: Boolean,
+    val writeChannel: WriteChannel,
     val advancedProtection: Boolean?,
     val readAt: Long,
 ) {
 
     /** 健康的样子: 在列表里且真的绑着 */
     val healthy: Boolean get() = componentListed && running
+
+    /** 应用自己能写, 这条通路才算通 —— 另外两种都不是"通" */
+    val writeChannelOpen: Boolean get() = writeChannel == WriteChannel.OPEN
 
     /**
      * 一句能直接给用户/日志看的话, 说清现在卡在哪一层
@@ -79,14 +94,23 @@ data class AccessibilityState(
             " 标志的服务拿到无障碍, 本应用带了那个标志, 所以卡住的应该是下面某一条 —— 先看写入通路" +
             "$AT$ADVANCED_NOTE"
 
-        !writeChannelOpen -> "这台设备不接受写入: `settings put` 返回 0 而值不变, 所以应用自己开不了它。" +
-            " 用电脑跑 $INSTALL_SCRIPT, 它会赶在重装之后那段窗口里写完并读回$AT"
+        writeChannel == WriteChannel.REFUSED -> "应用自己写不了 secure settings: 从 Android 14 起" +
+            " `/system/bin/settings` 对非 shell 的 uid 一律拒 (SecurityException), 所以这不是设备" +
+            "不接受写入, 而是这条写入本该由特权进程去做 —— 设置页那个开关走的就是它$AT"
+
+        writeChannel == WriteChannel.DISCARDED -> "这台设备不接受写入: `settings put` 返回 0 而值不变," +
+            " 所以应用自己开不了它。用电脑跑 $INSTALL_SCRIPT, 它会赶在重装之后那段窗口里写完并读回$AT"
 
         installer.isEmpty() -> "装的时候没带安装者身份 (installerPackageName 是 null), 而 Android 13" +
             " 起这样的应用不许开无障碍。用带 -i 的方式重装: $INSTALL_SCRIPT$AT"
 
-        restrictedSettings != "allow" -> "受限设置那道 op 还是 \"$restrictedSettings\" (要 allow);" +
-            " 这台设备上它只有带安装者身份重装之后才设得动 —— $INSTALL_SCRIPT$AT"
+        restrictedSettings.isNotEmpty() && restrictedSettings != "allow" ->
+            "受限设置那道 op 还是 \"$restrictedSettings\" (要 allow);" +
+                " 这台设备上它只有带安装者身份重装之后才设得动 —— $INSTALL_SCRIPT$AT"
+
+        restrictedSettings.isEmpty() -> "问不到受限设置那道 op 的值 (`cmd appops get` 没答上来)," +
+            " 所以这一条不知道: 侧载的应用在 Android 13 起要它变成 allow 才开得了无障碍 ——" +
+            " $INSTALL_SCRIPT$AT"
 
         !componentListed -> "组件不在设备的列表里, 写一次就能放回去 (重装会把我们踢出去):" +
             " $INSTALL_SCRIPT$AT"
@@ -219,8 +243,24 @@ internal class LwPermission(private val context: Context?) {
         return output.substringAfter(':', "").substringBefore(';').trim()
     }
 
-    /** One secure setting, with the command's way of saying "unset" normalised away */
+    /**
+     * One secure setting
+     *
+     * **两条路, 顺序要紧**: 应用进程里先用 `ContentResolver` (普通应用读这些键是天经地义的), 因为
+     * `/system/bin/settings get` 是一条 **shell 命令** —— 实测 Android 16 上它对非 shell 的 uid 直接
+     * 抛 `SecurityException: getCurrentUser() ... requires INTERACT_ACROSS_USERS`, 于是应用自己读回来
+     * 永远是 null: 设置页与 `lw_probe` 会把"组件在列表里"说成"不在", 把主开关说成关着
+     *
+     * `ContentResolver` 在特权进程里**走不通** (`app_process` 没有 `IApplicationThread`), 所以那条命令
+     * 留着当兜底 —— 同一个类在两个进程里都用, 各自走各自能走的那条
+     */
     private fun get(key: String): String? {
+        context?.let { ctx ->
+            runCatching { Settings.Secure.getString(ctx.contentResolver, key) }
+                .onFailure { Log.d(TAG, "could not read $key through the ContentResolver", it) }
+                .getOrNull()
+                ?.let { return it }
+        }
         val (code, output) = run(SETTINGS, "get", "secure", key) ?: return null
         if (code != 0) return null
         val value = output.trim()
@@ -256,7 +296,7 @@ internal class LwPermission(private val context: Context?) {
     }
 
     /**
-     * 这台设备的写入通路现在通不通
+     * 这台设备的写入通路现在是什么样
      *
      * 用一个**自己的**探针 key 试一次: 写进去、读回来、再删掉。key 是本应用的名字, 一眼看得出是谁
      * 留的, 而且它不参与任何别的判断 —— 它只回答一个问题: "我现在写的值, 设备会不会留下"
@@ -264,20 +304,33 @@ internal class LwPermission(private val context: Context?) {
      * 为什么值得单独做一件事: 这台 vivo 上的丢弃是整个 SettingsProvider 层面的 (三个命名空间、任何
      * key 都一样), 所以"无障碍写不进"与"这道 op 没设上"是两件事, 而它们要的处置完全不同。分不清就
      * 只能给一句含糊的失败, 那种提示已经误导过一次了
+     *
+     * **第三种情形是 1.0.3 才分出来的**: 命令本身被拒 (非 shell uid 跑 `settings put` 会
+     * `SecurityException`)。那时"设备会不会留下"这个问题根本没被问到, 说成"这台设备不接受写入"是
+     * 错的 —— 写入本来就该由特权进程去做
      */
-    fun writeChannelOpen(): Boolean {
-        if (!put(PROBE_KEY, PROBE_VALUE)) return false
-        val kept = get(PROBE_KEY) == PROBE_VALUE
+    fun writeChannel(): WriteChannel {
+        val refused = !put(PROBE_KEY, PROBE_VALUE)
+        val kept = !refused && get(PROBE_KEY) == PROBE_VALUE
         // 收尾要删掉: 探针留着就成了设备上一条没人认领的设置
-        run(SETTINGS, "delete", "secure", PROBE_KEY)
+        if (!refused) run(SETTINGS, "delete", "secure", PROBE_KEY)
+        if (refused) {
+            Log.i(
+                TAG,
+                "the app cannot write secure settings at all on this device: only the privileged" +
+                    " process can, which is what the settings page's switch goes through",
+            )
+            return WriteChannel.REFUSED
+        }
         if (!kept) {
             Log.w(
                 TAG,
                 "this device discards writes to secure settings: the probe was written and read" +
                     " back as something else, so nothing the app writes here survives on its own",
             )
+            return WriteChannel.DISCARDED
         }
-        return kept
+        return WriteChannel.OPEN
     }
 
     /**
@@ -311,7 +364,7 @@ internal class LwPermission(private val context: Context?) {
             running = LwAccessibility.running,
             installer = installer,
             restrictedSettings = context?.let { restrictedSettings(it.packageName) }.orEmpty(),
-            writeChannelOpen = writeChannelOpen(),
+            writeChannel = writeChannel(),
             advancedProtection = advancedProtection(),
             readAt = System.currentTimeMillis(),
         )
