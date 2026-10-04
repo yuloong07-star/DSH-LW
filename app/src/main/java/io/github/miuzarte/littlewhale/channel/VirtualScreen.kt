@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.util.DisplayMetrics
@@ -19,6 +22,9 @@ import java.util.LinkedHashMap
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.math.ceil
+import kotlin.math.min
+import kotlin.math.sqrt
 
 /**
  * A virtual screen that exists right now
@@ -74,6 +80,14 @@ object VirtualScreen {
      * @property full 工作区里的全尺寸那份
      */
     data class Shot(val fitted: Picture.Fitted, val full: File)
+
+    /**
+     * 一次连拍拼成的那一张网格
+     * @property shot 拼出来的文件, 与一次截图一样是一对 (给人看的全尺寸 + 给模型的那份)
+     * @property columns 一行几格
+     * @property rows 一共几行
+     */
+    data class Sheet(val shot: Shot, val columns: Int, val rows: Int)
 
     /** Every screen the device is hosting, in the order they were made */
     var screens: List<ScreenState> by mutableStateOf(emptyList())
@@ -691,6 +705,73 @@ object VirtualScreen {
             Shot(Picture.fit(picture, maxPixels, maxBytes, region), picture)
         } catch (problem: Throwable) {
             report("screenshot", problem)
+            null
+        }
+    }
+
+    /**
+     * 一次连拍的几张, 拼成一张网格
+     *
+     * 连拍要回答的是"这段过程里画面怎么走的", 而十二张图是十二份上下文; 拼成一张网格就把那件事变成
+     * 一次读图。**它是用来看动起来的, 不是用来量坐标或读小字的** —— 每一格都被缩过, 格上的点回不到
+     * 屏幕上任何地方, 所以它不进"图上的点乘多少回到屏幕"那一套, 小字留给那几张原图
+     *
+     * @param frames 交给模型的那几份 (各自都装得下预算了), 按拍的顺序, 至少两张
+     * @param name 文件名, 与那几张落在同一个目录
+     * @param maxPixels 拼出来这一张自己的像素预算
+     * @param maxBytes 拼出来这一张自己的字节预算
+     * @returns 拼好的那一张与它的行列数, 或 null 并设 [lastError]
+     */
+    fun contactSheet(frames: List<File>, name: String, maxPixels: Int, maxBytes: Int): Sheet? {
+        if (frames.size < 2) {
+            lastError = "a sheet needs at least two pictures"
+            return null
+        }
+        val cell = Picture.sizeOf(frames.first()) ?: run {
+            lastError = "could not read ${frames.first().name}, so there is nothing to lay out"
+            return null
+        }
+        val columns = ceil(sqrt(frames.size.toDouble())).toInt().coerceAtLeast(1)
+        val rows = (frames.size + columns - 1) / columns
+        // 拼出来这张自己在预算之内的做法是先把每一格缩到位, 而不是拼一张大的再整张缩一遍: 后者要在
+        // 内存里先开一张 12 倍大的图, 而交出去的是同一张缩小的
+        val natural = cell.first.toDouble() * cell.second * columns * rows
+        val shrink = min(1.0, sqrt(maxPixels.coerceAtLeast(1) / natural))
+        val tileWidth = (cell.first * shrink).toInt().coerceAtLeast(1)
+        val tileHeight = (cell.second * shrink).toInt().coerceAtLeast(1)
+        return try {
+            val sheet = Bitmap.createBitmap(
+                columns * tileWidth,
+                rows * tileHeight,
+                Bitmap.Config.ARGB_8888,
+            )
+            val canvas = Canvas(sheet)
+            // 空着的格子留黑, 这样"这里没有一张"与"这一格是一屏白的"分得开
+            canvas.drawColor(Color.BLACK)
+            val paint = Paint().apply { isFilterBitmap = true }
+            frames.forEachIndexed { index, file ->
+                val decoded = BitmapFactory.decodeFile(file.absolutePath) ?: return@forEachIndexed
+                val scaled = if (decoded.width == tileWidth && decoded.height == tileHeight) {
+                    decoded
+                } else {
+                    Bitmap.createScaledBitmap(decoded, tileWidth, tileHeight, true)
+                }
+                canvas.drawBitmap(
+                    scaled,
+                    ((index % columns) * tileWidth).toFloat(),
+                    ((index / columns) * tileHeight).toFloat(),
+                    paint,
+                )
+                if (scaled !== decoded) scaled.recycle()
+                decoded.recycle()
+            }
+            val target = File(screens(), "$name.png")
+            target.outputStream().use { sheet.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            sheet.recycle()
+            lastError = null
+            Sheet(Shot(Picture.fit(target, maxPixels, maxBytes), target), columns, rows)
+        } catch (problem: Throwable) {
+            report("sheet", problem)
             null
         }
     }

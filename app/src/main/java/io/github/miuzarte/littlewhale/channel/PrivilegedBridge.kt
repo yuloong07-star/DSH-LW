@@ -1,6 +1,7 @@
 package io.github.miuzarte.littlewhale.channel
 
 import android.graphics.Rect
+import android.os.SystemClock
 import android.util.Log
 import io.github.miuzarte.littlewhale.tool.LwEvents
 import io.github.miuzarte.littlewhale.tool.LwFiles
@@ -684,35 +685,78 @@ object PrivilegedBridge {
             val maxPixels = request["maxPixels"]?.jsonPrimitive?.intOrNull ?: ScreenshotBudget.pixels
             val maxBytes = request["maxBytes"]?.jsonPrimitive?.intOrNull ?: ScreenshotBudget.bytes
             val region = region(request)
-            // 连拍: 相隔一小段再拍一张。**不是"每帧一张"** —— 一次截图在本机要两三百毫秒, 所以几张之间
-            // 天然隔着那个时间; 它要的是"动起来的那几帧", 不是精确的帧率
+            // 连拍: 相隔一小段再拍一张。**不是"每帧一张"** —— 一次截图在本机要两三百毫秒, 而 `intervalMs`
+            // 说的是**墙钟上两张之间隔多久** (从这一张开始到下一张开始), 不是"拍完之后再歇多久": 后者
+            // 会让真实间隔随设备忙闲漂移, 而答案里报的是量到的真实间隔, 所以这个数做不到时会被说出来
             val count = (request["count"]?.jsonPrimitive?.intOrNull ?: 1).coerceIn(1, MAX_SERIES)
-            val shots = buildJsonArray {
-                repeat(count) { index ->
-                    val shot = VirtualScreen.screenshot(
-                        screen = screen,
-                        maxPixels = maxPixels,
-                        maxBytes = maxBytes,
-                        region = region,
-                        suffix = if (count > 1) "-${index + 1}" else "",
-                    ) ?: return@repeat
-                    add(shotJson(shot, region))
-                    if (index < count - 1) Thread.sleep(SERIES_GAP_MS)
+            val intervalMs = (request["intervalMs"]?.jsonPrimitive?.intOrNull?.toLong()
+                ?: DEFAULT_SERIES_GAP_MS).coerceIn(MIN_SERIES_GAP_MS, MAX_SERIES_GAP_MS)
+            val wantedSheet = request["sheet"]?.jsonPrimitive?.booleanOrNull ?: false
+            val taken = ArrayList<VirtualScreen.Shot>(count)
+            // 每一张是在第几毫秒拍的 (相对第一张), 因为"两张隔了多久"是这件事的全部意义
+            val offsets = ArrayList<Long>(count)
+            val base = SystemClock.uptimeMillis()
+            repeat(count) { index ->
+                val started = SystemClock.uptimeMillis()
+                val shot = VirtualScreen.screenshot(
+                    screen = screen,
+                    maxPixels = maxPixels,
+                    maxBytes = maxBytes,
+                    region = region,
+                    suffix = if (count > 1) "-${index + 1}" else "",
+                )
+                if (shot != null) {
+                    taken.add(shot)
+                    offsets.add(started - base)
+                }
+                if (index < count - 1) {
+                    val wait = intervalMs - (SystemClock.uptimeMillis() - started)
+                    if (wait > 0) Thread.sleep(wait)
                 }
             }
-            val first = shots.firstOrNull()?.jsonObject
+            val sheet = if (wantedSheet && taken.size > 1) {
+                VirtualScreen.contactSheet(
+                    frames = taken.map { it.fitted.file },
+                    name = "screen-${screen.displayId}-sheet",
+                    maxPixels = maxPixels,
+                    maxBytes = maxBytes,
+                )
+            } else {
+                null
+            }
+            // 要了网格而没有网格, 理由必须说出来 (与"屏上没有东西"长得不一样)
+            val sheetError = when {
+                !wantedSheet -> ""
+                taken.size < 2 -> "a grid needs at least two pictures and only ${taken.size} came back"
+                sheet == null -> VirtualScreen.lastError ?: "no reason reported"
+                else -> ""
+            }
+            val shots = buildJsonArray { taken.forEach { add(shotJson(it, region)) } }
+            val first = taken.firstOrNull()
             buildJsonObject {
                 put("displayId", screen.displayId)
                 put("label", screen.label)
                 put("width", screen.width)
                 put("height", screen.height)
                 // 单张时这几个字段是老样子; 连拍时它们说的是**第一张**, 而全部几张在 `shots` 里
-                put("path", first?.get("path")?.jsonPrimitive?.contentOrNull ?: "")
-                put("bytes", first?.get("bytes")?.jsonPrimitive?.longOrNull ?: 0L)
-                put("fullPath", first?.get("fullPath")?.jsonPrimitive?.contentOrNull ?: "")
-                put("picture", first?.get("picture") ?: buildJsonObject { put("scale", 0f) })
-                put("count", shots.size)
+                put("path", first?.fitted?.file?.absolutePath ?: "")
+                put("bytes", first?.fitted?.file?.length() ?: 0L)
+                put("fullPath", first?.full?.absolutePath ?: "")
+                put("picture", first?.let { shotJson(it, region)["picture"] } ?: buildJsonObject { put("scale", 0f) })
+                put("count", taken.size)
+                put("intervalMs", intervalMs)
+                // 量到的跨度: 与 (count-1) * intervalMs 差得多, 就是这台设备拍不了那么快
+                put("spanMs", (offsets.lastOrNull() ?: 0L) - (offsets.firstOrNull() ?: 0L))
+                put("offsets", buildJsonArray { offsets.forEach { add(it) } })
                 put("shots", shots)
+                if (sheet != null) {
+                    put("sheet", buildJsonObject {
+                        shotJson(sheet.shot, null).forEach { (key, value) -> put(key, value) }
+                        put("columns", sheet.columns)
+                        put("rows", sheet.rows)
+                    })
+                }
+                put("sheetError", sheetError)
                 put("error", VirtualScreen.lastError ?: "")
             }
         }
@@ -1329,11 +1373,13 @@ object PrivilegedBridge {
     private const val WINDOW_SETTLE_MS = 1_500L
     private const val WINDOW_POLL_MS = 150L
 
-    /** 连拍最多几张: 再多就已经是一段视频, 而模型一次读不了那么多图 */
-    private const val MAX_SERIES = 5
+    /** 连拍最多几张: 12 张够看一段过程, 而再多就已经是一段视频, 模型一次也读不了那么多图 */
+    private const val MAX_SERIES = 12
 
-    /** 连拍两张之间歇多久 (一次截图本身要两三百毫秒, 所以它只是让两张别贴在一起) */
-    private const val SERIES_GAP_MS = 120L
+    /** 连拍两张之间默认隔多久, 以及它的上下限: 一次截图本身要两三百毫秒, 所以 50ms 是"贴着拍" */
+    private const val DEFAULT_SERIES_GAP_MS = 120L
+    private const val MIN_SERIES_GAP_MS = 50L
+    private const val MAX_SERIES_GAP_MS = 5_000L
 
     /** 按下一点之后等那个字段出现等多久 (一个页面画出来的时间) */
     private const val FIELD_SETTLE_MS = 1_500L

@@ -669,8 +669,24 @@ const TOOLS = [
       height: { type: 'integer', description: 'Height of the part to capture, with x, y and width' },
       count: {
         type: 'integer',
-        description: 'How many pictures in a row, 1 to 5, for something that is moving. Each one'
-          + ' is a separate file; leave it out for a single picture',
+        description: 'How many pictures in a row, 1 to 12, for something that is moving. Each one'
+          + ' is a separate file; leave it out for a single picture. Twelve pictures are twelve'
+          + ' images in the conversation, so ask for the grid too unless you need to read each one',
+      },
+      intervalMs: {
+        type: 'integer',
+        description: 'How far apart those pictures are, in milliseconds, 50 to 5000 (120 by'
+          + ' default). It is wall-clock time from one capture to the next, and one capture takes'
+          + ' a couple of hundred milliseconds here, so anything faster is impossible: the answer'
+          + ' says when each picture was actually taken rather than what was asked for',
+      },
+      sheet: {
+        type: 'boolean',
+        description: 'Also lay the pictures out as ONE picture - a grid in the order they were'
+          + ' taken. Reading one grid costs a twelfth of reading twelve pictures, so this is how to'
+          + ' see where the screen went between them. It is not for reading small text or for'
+          + ' measuring positions: every cell is a small copy, and the separate files are still'
+          + ' there when a cell is not enough',
       },
       note: NOTE,
     },
@@ -1755,18 +1771,47 @@ function formatScreenshot(result) {
   }
   const shots = Array.isArray(result.shots) ? result.shots : []
   if (shots.length > 1) {
+    const span = ((result.spanMs ?? 0) / 1000).toFixed(1)
+    // 要说的是"量到的间隔", 不是"要的间隔": 一次截图本身要两三百毫秒, 所以比它小的那个数做不到。
+    // 判据拿**真实跨度**与**要的跨度**比, 而且要的是"没有比要的更长" —— 反着写永远成立 (设备慢下来
+    // 只会让跨度更大, 那正是"做不到"的样子)
+    const asked = result.intervalMs ?? 0
+    const kept = (result.spanMs ?? 0) <= asked * (shots.length - 1) * 1.1
+    const first = pictureNote(shots[0].picture ?? {})
     const lines = [
-      `took ${shots.length} pictures of displayId ${result.displayId} "${result.label}" one after`
-      + ' another: separate files, nothing overwritten. Read them in order - the screen moved'
-      + ' between them, which is the whole point of taking more than one.',
+      `took ${shots.length} pictures of displayId ${result.displayId} "${result.label}", one every`
+      + ` ${asked} ms as far as this device keeps up - ${span} s from the first to the last.`
+      + ` Each is ${first.where}, and on each one ${first.how}: separate files, nothing`
+      + ' overwritten, so read them in order - the screen moved between them, which is the whole'
+      + ' point of taking more than one.',
     ]
+    if (!kept) {
+      lines.push(
+        'They are further apart than that in practice, because one capture takes a couple of'
+        + ' hundred milliseconds here: the times below are what happened, not what was asked for.',
+      )
+    }
     shots.forEach((shot, index) => {
       const note = pictureNote(shot.picture ?? {})
+      const at = ((result.offsets?.[index] ?? 0) / 1000).toFixed(1)
+      // 一张自己那一句只在它与第一张不同时才写: 同一块屏同一个预算, 重复十二遍是纯噪音
+      const own = note.how === first.how ? '' : `, on it ${note.how}`
       lines.push(
-        `  ${index + 1}. ${shot.path} - ${note.where}, ${(shot.bytes / 1024).toFixed(1)} KB,`
-        + ` ${note.how}`,
+        `  ${index + 1}. at +${at}s ${shot.path} - ${(shot.bytes / 1024).toFixed(1)} KB${own}`,
       )
     })
+    if (result.sheet?.path) {
+      const twin = result.sheet.fullPath && result.sheet.fullPath !== result.sheet.path
+        ? `; its full-size version is ${result.sheet.fullPath}`
+        : ''
+      lines.push(
+        `All ${shots.length} are also laid out in one picture, ${result.sheet.path}`
+        + ` (${result.sheet.columns}x${result.sheet.rows} cells, in the order they were taken,`
+        + ` ${(result.sheet.bytes / 1024).toFixed(1)} KB${twin}). Read that for where the screen`
+        + ' went; open a numbered file above when you need to read what is written on it.',
+      )
+    }
+    if (result.sheetError) lines.push(`no grid was made: ${result.sheetError}`)
     const twin = shots[0].fullPath
     if (twin) {
       lines.push(
@@ -1794,14 +1839,14 @@ function formatScreenshot(result) {
       : `; its full-size twin is ${other} - the two belong together, so deleting the screenshot`
         + ' means deleting both'
     : ''
-  return withJson(
-    [
-      `displayId ${result.displayId} "${result.label}" captured to ${result.path}`
-      + ` (screen ${result.width}x${result.height}, picture ${size}; ${kilobytes} KB, overwritten`
-      + ` by the next capture of this screen${pair})`,
-    ],
-    result,
-  )
+  const lines = [
+    `displayId ${result.displayId} "${result.label}" captured to ${result.path}`
+    + ` (screen ${result.width}x${result.height}, picture ${size}; ${kilobytes} KB, overwritten`
+    + ` by the next capture of this screen${pair})`,
+  ]
+  // 要了网格而只拍了一张 (或只拍了这一张): 理由必须念出来, 否则答案里少了一件它问过的事
+  if (result.sheetError) lines.push(`no grid was made: ${result.sheetError}`)
+  return withJson(lines, result)
 }
 
 /** What a screen says about itself, which is the answer that saves measuring anything */
