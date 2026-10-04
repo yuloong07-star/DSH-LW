@@ -2,7 +2,9 @@ package io.github.miuzarte.littlewhale.channel
 
 import android.content.ComponentName
 import android.content.Context
+import android.os.Build
 import android.provider.Settings
+import android.security.advancedprotection.AdvancedProtectionManager
 import android.util.Log
 import java.util.concurrent.TimeUnit
 
@@ -40,6 +42,7 @@ import java.util.concurrent.TimeUnit
  * @property installer 设备记的 `installerPackageName`, 空串表示 null (侧载)
  * @property restrictedSettings `ACCESS_RESTRICTED_SETTINGS` 这道 op 的值
  * @property writeChannelOpen 应用现在写的 secure settings 会不会被设备留下 (探针的答案)
+ * @property advancedProtection 用户开着高级保护模式吗 (Android 17 的 AAPM), null 表示这台设备问不到
  * @property readAt 这一份是什么时候读的 (毫秒时间戳), 见 [reason] 里为什么需要它
  */
 data class AccessibilityState(
@@ -51,6 +54,7 @@ data class AccessibilityState(
     val installer: String,
     val restrictedSettings: String,
     val writeChannelOpen: Boolean,
+    val advancedProtection: Boolean?,
     val readAt: Long,
 ) {
 
@@ -65,10 +69,15 @@ data class AccessibilityState(
      * 每一次点击都会让那一行真的变一下, 而它同时说明了这份状态有多新
      */
     fun reason(): String = when {
-        running && componentListed -> "服务在跑, 组件在设备的列表里$AT"
+        running && componentListed -> "服务在跑, 组件在设备的列表里$AT" +
+            advancedNote()
 
         running && !componentListed -> "服务在跑, 但它不在设备的列表里: 那个页面多半是这么显示的," +
-            " 而实例还活着 (去掉条目不会杀已经绑好的服务)$AT"
+            " 而实例还活着 (去掉条目不会杀已经绑好的服务)$AT" + advancedNote()
+
+        advancedProtection == true -> "用户开着高级保护模式: 这个模式下系统只让带 isAccessibilityTool" +
+            " 标志的服务拿到无障碍, 本应用带了那个标志, 所以卡住的应该是下面某一条 —— 先看写入通路" +
+            "$AT$ADVANCED_NOTE"
 
         !writeChannelOpen -> "这台设备不接受写入: `settings put` 返回 0 而值不变, 所以应用自己开不了它。" +
             " 用电脑跑 tools/lw-install.ps1, 它会赶在重装之后那段窗口里写完并读回$AT"
@@ -83,6 +92,20 @@ data class AccessibilityState(
 
         else -> "组件在列表里但系统没有把它绑起来: 开关会先摘掉、停一下再放回, 那一下是让系统重新评估$AT"
     }
+
+    /**
+     * 高级保护模式开着的话, 补一句
+     *
+     * 它是**背景**而不是结论: 本应用已经声明了 isAccessibilityTool, 在这个模式下本来就该放行, 所以
+     * 服务没跑起来时原因在别处。但用户开了那个模式这件事本身要说出来 —— 否则他会去翻系统设置里的
+     * 无障碍页, 而那里在模式开着时根本不给这个应用授权
+     */
+    private fun advancedNote(): String = if (advancedProtection == true) ADVANCED_NOTE else ""
+
+    /** 高级保护模式那句背景说明, [reason] 的两条分支与它共用一份措辞 */
+    private val ADVANCED_NOTE: String
+        get() = " (这台设备开着高级保护模式: 它只把无障碍交给带 isAccessibilityTool 标志的服务," +
+            "本应用带了那个标志。模式开着时系统设置里的无障碍页不会给这个应用授权, 别在那里找开关)"
 
     private val AT: String
         get() = " (读取 " +
@@ -279,8 +302,27 @@ internal class LwPermission(private val context: Context?) {
             installer = installer,
             restrictedSettings = context?.let { restrictedSettings(it.packageName) }.orEmpty(),
             writeChannelOpen = writeChannelOpen(),
+            advancedProtection = advancedProtection(),
             readAt = System.currentTimeMillis(),
         )
+    }
+
+    /**
+     * 高级保护模式 (Android 17 的 AAPM) 开着吗
+     *
+     * `AdvancedProtectionManager` 是 API 37 才有的类, 所以更低的设备上这个问题**没法问**而不是"问
+     * 出来是 false" —— 返回 null 就是那个意思。类不存在时抛的是 `NoClassDefFoundError`, 它属于 Error
+     * 而不是 Exception, 所以这里接的是 Throwable
+     */
+    private fun advancedProtection(): Boolean? {
+        if (Build.VERSION.SDK_INT < ADVANCED_PROTECTION_API) return null
+        val context = context ?: return null
+        return try {
+            context.getSystemService(AdvancedProtectionManager::class.java)?.isAdvancedProtectionEnabled
+        } catch (error: Throwable) {
+            Log.w(TAG, "could not ask whether advanced protection is on", error)
+            null
+        }
     }
 
     /** Run one command, answering with its exit code and what it printed */
@@ -316,6 +358,9 @@ internal class LwPermission(private val context: Context?) {
 
         /** Android 13's gate on turning on the accessibility service of an app no store installed */
         const val RESTRICTED_SETTINGS = "ACCESS_RESTRICTED_SETTINGS"
+
+        /** 高级保护模式那个类从哪个 API 开始有 (AdvancedProtectionManager) */
+        const val ADVANCED_PROTECTION_API = 37
 
         /** What that op reads as once it has been lifted, which is what the read back compares to */
         const val ALLOW = "allow"

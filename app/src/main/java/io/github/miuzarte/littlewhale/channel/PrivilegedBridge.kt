@@ -973,7 +973,7 @@ object PrivilegedBridge {
         )
     }
 
-    /** 无障碍那六件事实, 给 `probe` 用 */
+    /** 无障碍那几件事实, 给 `probe` 用 */
     private fun JsonObjectBuilder.accessibilityJson(state: AccessibilityState) {
         put("component", state.component)
         put("listed", state.componentListed)
@@ -983,6 +983,8 @@ object PrivilegedBridge {
         put("installer", state.installer)
         put("restrictedSettings", state.restrictedSettings)
         put("writesAccepted", state.writeChannelOpen)
+        // 三态: true/false 是设备答的, null 是这台设备根本没有那个类 (API 37 以下)
+        put("advancedProtection", state.advancedProtection)
         put("healthy", state.healthy)
         put("reason", state.reason())
     }
