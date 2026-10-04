@@ -199,6 +199,28 @@ class LwPrivilegedService(private val context: Context?) : Binder() {
                 writeString(result.output)
             }
 
+            LwServiceProtocol.GESTURE -> answering(data, reply) {
+                val displayId = data.readInt()
+                val pathCount = data.readInt()
+                val paths = (0 until pathCount).map {
+                    val count = data.readInt()
+                    LwInput.Path((0 until count).map { data.readFloat() to data.readFloat() })
+                }
+                val durationMs = data.readLong()
+                val brake = data.readInt() == 1
+                writeInt(input.gesture(displayId, paths, durationMs, brake))
+            }
+
+            LwServiceProtocol.PINCH -> answering(data, reply) {
+                val displayId = data.readInt()
+                val x = data.readFloat()
+                val y = data.readFloat()
+                val scale = data.readFloat()
+                val durationMs = data.readLong()
+                val brake = data.readInt() == 1
+                writeInt(input.pinch(displayId, x, y, scale, durationMs, brake))
+            }
+
             else -> super.onTransact(code, data, reply, flags)
         }
 

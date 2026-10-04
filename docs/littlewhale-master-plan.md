@@ -690,42 +690,68 @@ node tools\pack-host.mjs --dsh third_party\deepseek-harness --out build\host-tre
 
 **现象**: 在应用里打开无障碍, 点返回再进来又变成关闭
 
-**根因不是应用的 bug, 是侧载身份**: Android 13 起, `installerPackageName` 为 `null` 的应用
-不允许开无障碍服务, 中间隔着一道 app op (`ACCESS_RESTRICTED_SETTINGS`)
+**结论一句话**: 决定服务生死的是**安装者身份**加**一道 app op**, 而在**这台 vivo ROM 上应用自己写不动
+secure settings** —— 写入只在带 `-i` 重装之后很短的一段窗口里被接受。所以这台机器上唯一的正解是
+**电脑跑 `tools/lw-install.ps1`**, 应用侧负责把真实状态说清楚并把人指过去
 
-**实测证据** (设备 `10CEB40568000ZB`):
+## 6.1 五条实测 (设备 `10CEB40568000ZB`, 无 root 仅 Shizuku)
 
-| 应用 | installerPackageName | ACCESS_RESTRICTED_SETTINGS | 无障碍服务 |
-| :-- | :-- | :-- | :-- |
-| DSHA `com.dsh.client` | `com.android.packageinstaller` | `allow` | 能开 |
-| LittleWhale (侧载) | `null` | `default`, **改不动** | 被系统删掉 |
+| # | 实测 | 结论 |
+| :-- | :-- | :-- |
+| 1 | 带 `-i com.android.packageinstaller` 装 → `installerPackageName` 非 null; 不带 `-i` 的普通 `install -r` 会把它打回 null | **身份是必要条件**: Android 13 起 installer 为 null 的应用不许开无障碍 |
+| 2 | 带 `-i` 重装后第 9 秒写 secure settings → 留住了; 第 50 秒再写 → **又被丢弃** | 写入只在重装之后很短的一段窗口里有效, 所以"装"与"写回"要连着做 |
+| 3 | 窗口外 uid 2000 (adb shell / Shizuku / 应用特权通道) 的 `settings put` 对**任何 key 都静默失效**: 退出码 0、读回不变; 自定义探针 key 在 secure / global / system 三个命名空间都读回 null, `delete` 报 0 rows | **丢弃发生在 provider 层**, 不是权限问题 —— 换 uid、换通道都没用 |
+| 4 | 决定服务去留的是 app op `ACCESS_RESTRICTED_SETTINGS`: `allow` 留, `default` 被剥; 而 installer 只决定这道 op 能不能被设成 allow | 修法是**身份**, 不是那道 op |
+| 5 | 打开 vivo 的无障碍设置页会把条目从 `enabled_accessibility_services` 里摘掉 (每次打开都摘), 但**不杀已经绑定的实例**: `ServiceRecord` 的 `createTime` 跨 20 分钟不变, 中间 31 秒脱离列表期间功能一直正常 | 那个页面的"已关闭"是它自己造成的假象; **判据是实例活没活** (`LwAccessibility.running`) |
 
-三道实验:
+第 4 条那张对照表 (同一台机器, 同一个设置页):
 
-1. **直接写设置, 看系统留不留**: 把我们的组件追加进 `enabled_accessibility_services`, 读回来
-   **没有我们那一节** —— 系统静默删掉
-2. **appops 能不能设**: `cmd appops set ... VIBRATE allow` 成功; 同一台机器上
-   `cmd appops set ... ACCESS_RESTRICTED_SETTINGS allow` **退出码 0 但值不变**。这台 ROM 不认这道 op
-3. **对照**: DSHA 走包安装器装进来 (`installerPackageName` 非 null), 它的服务好好地待着
+| 应用 | 包名 | 安装者 | op | 结果 |
+| :-- | :-- | :-- | :-- | :-- |
+| DSH-LW | `io.github.miuzarte.littlewhale` | `com.android.packageinstaller` | `allow` | 留下 |
+| DSHA | `com.dsh.client` | `com.android.packageinstaller` | `allow` | 留下 |
+| UU 远程 | `com.netease.uuremote` | `com.bbk.appstore` | `default` | 被剥 |
 
-**修法**: 装的时候带上安装者身份
+**另外**: 这道 op 只有应用内开关那条路会去设 (`LwPermission.allowRestrictedSettings()`), 系统设置页
+不会替我们设, 所以从设置页开的服务先天少一道保护
+
+## 6.2 修法
+
+**装机走一条命令, 顺序不能变, 而且要在窗口内跑完**:
 
 ```
-adb -s 10CEB40568000ZB install -i com.android.packageinstaller -r -t app-debug.apk
+pwsh -File D:\apk\LittleWhale\tools\lw-install.ps1 [-Serial <设备>] [-Perms]
 ```
 
-改完之后实测: 组件留在列表里, 且 `dumpsys activity services` 里
-`ServiceRecord{… .channel.LwAccessibility c:android}` 带 `isBindService:true` —— **系统真的绑上了**
+它做六件事: ① 读出现有列表 (设备上还有别人的无障碍服务, 必须读出来改) ② `install -i … -r -t`
+③ `cmd appops set <pkg> ACCESS_RESTRICTED_SETTINGS allow` ④ `settings put secure accessibility_enabled 1`
+⑤ 立刻把组件写回 `enabled_accessibility_services` ⑥ **验收**: 探针写一次读回 (写入通路通不通) 加
+`dumpsys activity services` 里找 `LwAccessibility` 的记录 (系统真的绑上了没)。没过就**非零退出**, 并
+按缺的那一条打印下一步该跑什么
 
-**两个连带事实**:
+旧的那条硬规则 (「装的时候带 `-i`」) 不够 —— 身份只是必要条件
 
-- **不带 `-i` 的普通 `install -r` 会把它打回 `null`** (实测), 所以每次装机都要带 `-i`
-- `LwPermission.allowRestrictedSettings()` 原来只看退出码就记 "allowed", 而这道 op 恰恰会假成功 ——
-  已改成写完读回来判真实值 (`restrictedSettings()`), 免得日志骗人
+**应用侧**: 不再假装能自己开成功, 而是把事实读齐并照实说
 
-**一个 side effect 要记住**: `am force-stop <pkg>` 会把应用置为 `stopped`, 而 **stopped 状态的应用
-不能持有无障碍服务** —— 系统会把它的条目从 `enabled_accessibility_services` 里剥掉 (DSHA 的无障碍
-就是这样被弄掉的, 而当时只是为了腾出 3080 端口)。腾端口之前先想一下这一点
+- `LwPermission.inspect()` 一次读回六件事实: 组件在不在列表 / `accessibility_enabled` / 实例活没活 /
+  `installerPackageName` / 那道 op 的值 / **写入通路通不通** (自己的探针 key 写一次读回再删掉)
+- `AccessibilityState.reason()` 按上面的结果给**一句**结论, 不再把几种完全不同的原因并列在一句里
+  (旧文案把"别的应用改了回去"与"受限设置挡着, 在应用详情里允许一次"并列, 而后者在这台机器上不是解)
+- 设置页「无障碍」段显示这份状态, 外加一条**点一下就复制**的命令; 跳系统设置页那条入口留着并注明它在
+  这台机器上没用 (别的 ROM 上仍然是有效路径)
+- `lw_probe` 也带出同一份状态, 模型不用 dumpsys 就知道无障碍到底怎么回事
+
+**为什么不做"应用启动时自动写回"**: 看起来是最省事的自恢复, 但第 3 条实测说明窗口外的写入**必然被
+丢弃** —— 启动自检只能读到"不在列表里", 写不回去, 于是它只会每次启动都失败一遍。真正能写回的时机是
+"重装之后那一刻", 而那正是脚本在做的事。所以应用侧的定位是**如实报告**, 不是自己解决
+
+## 6.3 三个连带事实
+
+- **`am force-stop <pkg>` 会把应用置为 stopped, 而 stopped 的应用不能持有无障碍服务** —— 系统会把它
+  的条目剥掉 (DSHA 的无障碍就是这样被弄掉的, 当时只是为了腾出 3080 端口)。腾端口之前先想一下
+- **凡是写入都要读回**: 退出码只说命令跑过了。`allowRestrictedSettings()` 早就改成读回判真实值, 现在
+  `accessibility_enabled` 那条与探针也走同一条 (`putVerified` / `writeChannelOpen`)
+- **别把"没声明"/"没授权"/"设备不接受"混成一句**: 三者的处置完全不同 (改清单 / 去点授权 / 去跑脚本)
 
 ---
 
@@ -733,12 +759,13 @@ adb -s 10CEB40568000ZB install -i com.android.packageinstaller -r -t app-debug.a
 
 - [ ] `. D:\apk\env.ps1` 已 dot-source
 - [ ] `files/dsh-home` 已备份 (含 credentials 与 sessions)
-- [ ] `git -C D:\apk\LittleWhale status` 干净 (当前 HEAD `7bfad7b`)
-- [ ] 确认 submodule pin 仍是 `e79ffe35e1`
+- [ ] `git -C D:\apk\LittleWhale status` 干净 (当前 HEAD `cf45649` + 1.0.2 未提交的那批)
+- [ ] 确认 submodule pin 仍是 `03745c4c2f`
 - [ ] 确认 Shizuku 在跑 (`ps -A | grep shizuku`)
 - [ ] 确认 DSHA (`com.dsh.client`) **已停**, 否则它占 3080 端口
       (`adb shell am force-stop com.dsh.client`)
       —— **注意 force-stop 会连带把 DSHA 的无障碍弄掉线** (见第六部分末尾的 side effect)
+- [ ] 无障碍那件事走 `tools\lw-install.ps1`, **不要手打 adb install**
 - [ ] 确认 `svc power stayon` 的原值已记下 (收尾要写回)
 
 ---

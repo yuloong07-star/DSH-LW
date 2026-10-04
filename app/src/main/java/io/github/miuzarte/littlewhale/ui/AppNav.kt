@@ -1,5 +1,6 @@
 package io.github.miuzarte.littlewhale.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -93,16 +94,25 @@ fun LittleWhaleApp() {
     val activity = LocalActivity.current
     val scope = rememberCoroutineScope()
 
-    /** 主页上的返回: 第一次提示, 再按一次放后台 */
-    fun exitHint() {
+    /**
+     * 返回键这一下归这里管
+     *
+     * 第一下弹提示, 第二下把任务放到后台 —— **不是退出**: 服务与虚拟屏照跑, 从最近任务回来还是原样。
+     * 提示条挂在主页那层 `SnackbarHost` 上, 所以这里只负责决定"弹"还是"走"
+     */
+    val onBack = {
         if (ExitHint.press()) {
             activity?.moveTaskToBack(true)
-            return
-        }
-        if (!ExitHint.shouldHint()) return
-        val message = activity?.getString(R.string.exit_hint_again) ?: return
-        scope.launch {
-            ExitHint.host.showSnackbar(message, duration = SnackbarDuration.Custom(ExitHint.VISIBLE_MS))
+        } else if (ExitHint.showHint()) {
+            val message = activity?.getString(R.string.exit_hint_again)
+            if (message != null) {
+                scope.launch {
+                    ExitHint.host.showSnackbar(
+                        message,
+                        duration = SnackbarDuration.Custom(ExitHint.VISIBLE_MS),
+                    )
+                }
+            }
         }
     }
 
@@ -165,8 +175,8 @@ fun LittleWhaleApp() {
         ) {
             NavDisplay(
                 backStack = backStack,
-                // 还有上一页就是普通的返回; 只剩主页时那一次不算离开, 交给 exitHint
-                onBack = { if (backStack.size > 1) navigator.pop() else exitHint() },
+                // 还有上一页就是普通的返回; 只剩主页时那一下交给 onBack 决定
+                onBack = { if (backStack.size > 1) navigator.pop() else onBack() },
                 transition = transition,
                 effects = effects,
             ) {
@@ -175,6 +185,11 @@ fun LittleWhaleApp() {
             }
             // 破坏性操作的确认框挂在整个应用这一层: 不管当时在哪一页, 模型要卸应用都得先让人点一下
             confirm()
+            // **返回键的最后一道**: NavDisplay 的 onBack 在返回栈空的时候不一定被叫到 (实现在库
+            // 里, 不保证), 而没被叫到的那一下是平台的默认行为 —— 把这个 activity 关掉, 于是 host
+            // 与虚拟屏一起没了。这个 handler 在 Composition 里登记, 比库自己的早, 所以那一下会被
+            // 这里吃掉: 要么弹提示, 要么把任务放到后台, 两者都不结束任何东西
+            BackHandler { onBack() }
         }
     }
 }

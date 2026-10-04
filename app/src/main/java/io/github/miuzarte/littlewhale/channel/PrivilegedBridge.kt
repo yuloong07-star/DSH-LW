@@ -8,14 +8,17 @@ import io.github.miuzarte.littlewhale.tool.LwSystem
 import io.github.miuzarte.littlewhale.tool.LwSystemCommand
 import io.github.miuzarte.littlewhale.tool.text
 import io.github.miuzarte.littlewhale.util.PermissionCatalog
+import io.github.miuzarte.littlewhale.workspace.Workspace
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
@@ -195,7 +198,19 @@ object PrivilegedBridge {
             ChannelReport.status(PrivilegedChannel.state())
         }
 
-        "probe" -> ChannelReport.probe(PrivilegedChannel.probe())
+        // 探针: 通道自己 + 无障碍那六件事实。无障碍放在这里而不是另开一个方法, 是因为模型问"通道
+        // 现在什么样"的时候, "无障碍到底开没开"几乎总是它真正想知道的那一半
+        "probe" -> ChannelReport.probe(PrivilegedChannel.probe()).let { report ->
+            val state = appContext { runCatching { LwPermission(it).inspect() }.getOrNull() }
+            if (state == null) {
+                report
+            } else {
+                buildJsonObject {
+                    report.forEach { (name, element) -> put(name, element) }
+                    putJsonObject("accessibility") { accessibilityJson(state) }
+                }
+            }
+        }
 
         // What one screen says about itself: the text on it, and where that text is in the
         // screen's own pixels. Read here in the app's own process rather than over the channel,
@@ -633,6 +648,58 @@ object PrivilegedBridge {
             }
         }
 
+        // 多点手势: 每条路径一根手指, 一起走。捏合是它的糖衣 (两条直线路径)
+        "gesture" -> {
+            val screen = namedScreen(request)
+            VirtualScreen.requireAcceptsControl(screen)
+            VirtualScreen.requireUserNotDriving(screen)
+            val paths = (request["paths"] as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { it as? JsonObject }
+                ?.map { path ->
+                    LwInput.Path(path.points())
+                }
+                .orEmpty()
+            if (paths.isEmpty()) {
+                throw IllegalArgumentException(
+                    "gesture has to name paths: an array of objects, each with a points array of" +
+                        " {x, y} pairs (one path per finger, at least two points each)",
+                )
+            }
+            val durationMs = request["durationMs"]?.jsonPrimitive?.longOrNull ?: DEFAULT_SWIPE_MS
+            // 切断由 multiGesture 自己抛出来 (与拖那条路一致), 所以这里没有返回值可看
+            VirtualScreen.multiGesture(
+                screen,
+                paths,
+                durationMs,
+                brake = screen.displayId == LwServiceProtocol.MAIN_DISPLAY,
+            )
+            buildJsonObject {
+                put("displayId", screen.displayId)
+                put("fingers", paths.size)
+                put("durationMs", durationMs)
+            }
+        }
+
+        "pinch" -> {
+            val screen = namedScreen(request)
+            VirtualScreen.requireAcceptsControl(screen)
+            VirtualScreen.requireUserNotDriving(screen)
+            val scale = number(request, "scale", 2.0)
+            val durationMs = request["durationMs"]?.jsonPrimitive?.longOrNull ?: DEFAULT_SWIPE_MS
+            VirtualScreen.pinch(
+                screen,
+                number(request, "x"),
+                number(request, "y"),
+                scale.toFloat(),
+                durationMs,
+                brake = screen.displayId == LwServiceProtocol.MAIN_DISPLAY,
+            )
+            buildJsonObject {
+                put("displayId", screen.displayId)
+                put("scale", scale)
+            }
+        }
+
         // 端侧 OCR: 现在只到"加载 + 跑一遍看耗时", 认字那条路还没接。它读的是 assets 里的模型,
         // 与特权进程无关, 挂在这条桥上只是因为这里是 host 唯一能说话的地方
         // 端侧 OCR: 认这块屏上写着什么。与 `screenshot` 一样属于"看", 所以不碰主屏那道触摸刹车,
@@ -708,8 +775,7 @@ object PrivilegedBridge {
 
         // 下面这一批是 1.0.2 加的: 通知、震动、剪贴板、分享、下载在 app 进程里自己做, 不需要特权;
         // 设备与系统信息同理 (读的多); 这几条回的都是 {"text": ...}, 由插件念给模型
-        "notify" -> appContext { LwNotify.notify(it, request) }
-        "vibrate" -> appContext { LwNotify.vibrate(it, request) }
+        "notify" -> appContext { LwNotify.notify(it, request) }        "vibrate" -> appContext { LwNotify.vibrate(it, request) }
         "clipboard" -> appContext { LwNotify.clipboard(it, request) }
         "share" -> appContext { LwNotify.share(it, request) }
         "openFile" -> appContext { LwNotify.openFile(it, request) }
@@ -727,6 +793,94 @@ object PrivilegedBridge {
         "permissions" -> appContext { text(PermissionCatalog.report(it)) }
         "power" -> appContext { LwPower.dispatch(it, request) }
         "syscmd" -> LwSystemCommand.dispatch(request)
+
+        // 等一个控件出现: 在无障碍树里轮询, 找到就立刻回话, 不找到就回到超时为止。上限压在与桥那条
+        // 120 秒读超时之下, 超时说的是"这段时间里没出现", 不挂住模型
+        "waitFor" -> {
+            val screen = namedScreen(request)
+            val name = request["text"]?.jsonPrimitive?.contentOrNull
+                ?: throw IllegalArgumentException("waitFor has to name the text it is waiting for")
+            val timeoutMs = (request["timeoutMs"]?.jsonPrimitive?.longOrNull ?: DEFAULT_WAIT_MS)
+                .coerceIn(POLL_STEP_MS, MAX_WAIT_MS)
+            val started = System.currentTimeMillis()
+            var found: List<UiNode> = emptyList()
+            var reason: String? = null
+            while (true) {
+                val (matches, error) = LwAccessibility.find(screen.displayId, name)
+                reason = error
+                if (matches.isNotEmpty()) {
+                    found = matches
+                    break
+                }
+                if (System.currentTimeMillis() - started >= timeoutMs) break
+                Thread.sleep(POLL_STEP_MS)
+            }
+            val elapsed = System.currentTimeMillis() - started
+            // 提示里那两句只有这一处用得到, 所以直接写在这里, 不另开 helper
+            buildJsonObject {
+                put("displayId", screen.displayId)
+                put("found", found.isNotEmpty())
+                put("elapsedMs", elapsed)
+                put("timeoutMs", timeoutMs)
+                put("count", found.size)
+                put("error", reason ?: "")
+                put("wanted", name)
+                put("matches", buildJsonArray { found.forEach { add(nodeJson(it)) } })
+                if (found.isNotEmpty()) {
+                    val first = found.first()
+                    put(
+                        "text",
+                        "displayId ${screen.displayId} now shows " + fieldSentence(first) +
+                            " at ${first.bounds.toShortString()} after ${elapsed}ms",
+                    )
+                } else {
+                    put(
+                        "text",
+                        "nothing on displayId ${screen.displayId} said \"$name\" within" +
+                            " ${elapsed}ms" + (reason?.let { " ($it)" } ?: "") +
+                            "; call lw_ui to see what the screen does say",
+                    )
+                }
+            }
+        }
+
+        // 整棵树落文件: 与 lw_ui 不同, 布局容器也写下来。文本给前若干行, 完整的在工作区那个文件里
+        "uiDump" -> {
+            val screen = namedScreen(request)
+            val limit = (request["limit"]?.jsonPrimitive?.intOrNull ?: MAX_DUMP_NODES)
+                .coerceIn(1, MAX_DUMP_NODES)
+            val dump = LwAccessibility.dump(screen.displayId, limit)
+            // 落点与截图同一个地方 (工作区下的 screenshots/), 因为模型的路径工具只在那儿找得到
+            val directory = appContext { Workspace.resolve(it).directory }
+            val path = request["to"]?.jsonPrimitive?.contentOrNull?.let { java.io.File(it) }
+                ?: java.io.File(directory, "ui-dump-${screen.displayId}.txt")
+            val written = try {
+                path.parentFile?.mkdirs()
+                path.writeText(dump.text)
+                true
+            } catch (error: Throwable) {
+                false
+            }
+            buildJsonObject {
+                put("displayId", screen.displayId)
+                put("nodes", dump.nodes)
+                put("truncated", dump.truncated)
+                put("path", if (written) path.absolutePath else "")
+                put("error", dump.error ?: if (written) "" else "could not write $path")
+                put("preview", dump.text.lines().take(DUMP_PREVIEW_LINES).joinToString("\n"))
+                put(
+                    "text",
+                    if (dump.error != null) {
+                        "could not read the tree of displayId ${screen.displayId}: ${dump.error}"
+                    } else {
+                        "wrote ${dump.nodes} nodes of displayId ${screen.displayId} to" +
+                            " ${path.absolutePath}" +
+                            (if (dump.truncated) " (stopped at the $limit node limit)" else "") +
+                            "; the first $DUMP_PREVIEW_LINES lines are in preview"
+                    },
+                )
+            }
+        }
 
         else -> throw IllegalArgumentException("unknown method $method")
     }
@@ -790,10 +944,39 @@ object PrivilegedBridge {
         )
     }
 
+    /** 无障碍那六件事实, 给 `probe` 用 */
+    private fun JsonObjectBuilder.accessibilityJson(state: AccessibilityState) {
+        put("component", state.component)
+        put("listed", state.componentListed)
+        put("otherServices", state.otherServices)
+        put("masterSwitch", state.masterSwitch)
+        put("running", state.running)
+        put("installer", state.installer)
+        put("restrictedSettings", state.restrictedSettings)
+        put("writesAccepted", state.writeChannelOpen)
+        put("healthy", state.healthy)
+        put("reason", state.reason())
+    }
+
     /** One coordinate out of a request */
     private fun number(request: JsonObject, key: String): Float =
         request[key]?.jsonPrimitive?.floatOrNull
             ?: throw IllegalArgumentException("$key has to be a number")
+
+    /** One coordinate out of a request, with a fallback for the callers that left it out */
+    private fun number(request: JsonObject, key: String, fallback: Double): Double =
+        request[key]?.jsonPrimitive?.doubleOrNull ?: fallback
+
+    /** The points of one gesture path, as `{ "x": ..., "y": ... }` objects */
+    private fun JsonObject.points(): List<Pair<Float, Float>> =
+        (this["points"] as? kotlinx.serialization.json.JsonArray)
+            ?.mapNotNull { it as? JsonObject }
+            ?.mapNotNull { point ->
+                val x = point["x"]?.jsonPrimitive?.floatOrNull ?: return@mapNotNull null
+                val y = point["y"]?.jsonPrimitive?.floatOrNull ?: return@mapNotNull null
+                x to y
+            }
+            .orEmpty()
 
     /**
      * The package names in what `pm list packages` printed
@@ -915,6 +1098,15 @@ object PrivilegedBridge {
 
     /** How long a swipe takes when the caller does not say, which is a deliberate drag */
     private const val DEFAULT_SWIPE_MS = 300L
+
+    /** 等一个控件出现的两条边界: 轮询的间隔, 与一次调用最多等多久 (压在桥的 120 秒读超时之下) */
+    private const val POLL_STEP_MS = 300L
+    private const val DEFAULT_WAIT_MS = 15_000L
+    private const val MAX_WAIT_MS = 90_000L
+
+    /** 整棵树落文件的节点上限, 以及回给模型的预览行数 */
+    private const val MAX_DUMP_NODES = 4_000
+    private const val DUMP_PREVIEW_LINES = 40
 
     /** More text than this in one call is a caller that has lost track, and one parcel to prove it */
     private const val MAX_TYPED_CHARS = 4_096

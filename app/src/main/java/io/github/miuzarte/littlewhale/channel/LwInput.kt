@@ -27,7 +27,7 @@ import java.lang.reflect.Method
  * the phone. That is what [watch] is for, and it only ever applies to the phone's own screen,
  * because a screen of ours has nobody standing over it
  */
-internal class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
+class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
 
     private var manager: InputManager? = null
     private var setDisplayIdMethod: Method? = null
@@ -123,6 +123,152 @@ internal class LwInput(private val context: Context?, private val watch: LwTouch
         }
         touch(displayId, LwServiceProtocol.TOUCH_UP, toX, toY)
         return LwServiceProtocol.GESTURE_COMPLETED
+    }
+
+    /**
+     * 一条路径上的一个点, 屏自己的坐标
+     *
+     * 手势是"每一根手指各自一条路径", 而不是一串点: 平台按 pointer id 分辨手指, 所以形状只能这么给
+     */
+    data class Path(val points: List<Pair<Float, Float>>)
+
+    /**
+     * 多指手势: 每条路径一根手指, 一起走
+     *
+     * 与 [swipe] 同一条道理 (每一步都要等一帧, 否则平台把一串同毫秒的 MOVE 合并成一次跳), 只是这一步
+     * 里所有手指一起动。步数是那条最长的路径分出来的, 短的那些在它的终点停住 —— 这正是捏合该有的样子:
+     * 两根手指中有一根可能先停下
+     *
+     * 收紧一点: 指针 id 就是路径下标, 步数按最长的路径算, 而**一条路径至少两个点**才有方向可说
+     */
+    fun gesture(displayId: Int, paths: List<Path>, durationMs: Long, brake: Boolean): Int {
+        if (paths.isEmpty()) throw IllegalArgumentException("a gesture needs at least one path")
+        paths.forEach { path ->
+            if (path.points.size < 2) {
+                throw IllegalArgumentException("a gesture path needs at least two points: " +
+                    "a single point is a tap, which lw_tap already does")
+            }
+        }
+        val steps = paths.maxOf { it.points.size - 1 }
+        val stepMs = (durationMs / steps).coerceAtLeast(MIN_STEP_MS)
+        val started = SystemClock.uptimeMillis()
+        val downTime = started
+        var last = pointsAt(paths, 0)
+
+        sendMulti(displayId, MotionEvent.ACTION_DOWN, downTime, last, firstPointerIndex = 0)
+        for (step in 1..steps) {
+            if (brake) {
+                if (interrupted(stepMs)) {
+                    sendMulti(displayId, MotionEvent.ACTION_UP, downTime, last, firstPointerIndex = 0)
+                    Log.i(TAG, "the gesture on display $displayId ended early, a real finger arrived")
+                    return (SystemClock.uptimeMillis() - started).toInt()
+                }
+            } else {
+                SystemClock.sleep(stepMs)
+            }
+            val next = pointsAt(paths, step)
+            if (step == steps && next.size > 1) {
+                // 收尾: 多指一起抬起是"每根手指各自抬" - 逐个 POINTER_UP 之后剩下的那一根才 UP, 只发
+                // 一个 ACTION_UP 的话另外那根手指会被平台留在屏幕上
+                next.indices.toList().dropLast(1).forEach { index ->
+                    sendMulti(displayId, MotionEvent.ACTION_POINTER_UP, downTime, next, index)
+                }
+            }
+            sendMulti(
+                displayId,
+                if (step == steps) MotionEvent.ACTION_UP else MotionEvent.ACTION_MOVE,
+                downTime,
+                next,
+                firstPointerIndex = 0,
+            )
+            last = next
+        }
+        return LwServiceProtocol.GESTURE_COMPLETED
+    }
+
+    /**
+     * 捏合: 两根手指在给定中心两侧起落
+     *
+     * `scale` 大于 1 是放大 (两指分开), 小于 1 是缩小。它只是 [gesture] 的糖衣, 因为捏合的形状本来
+     * 就是"两根手指各自一条直线路径"
+     */
+    fun pinch(displayId: Int, centerX: Float, centerY: Float, scale: Float, durationMs: Long, brake: Boolean): Int {
+        if (scale <= 0f) throw IllegalArgumentException("scale has to be greater than zero")
+        val spread = PINCH_SPREAD
+        val from = listOf(
+            centerX - spread to centerY,
+            centerX + spread to centerY,
+        )
+        val to = listOf(
+            centerX - spread * scale to centerY,
+            centerX + spread * scale to centerY,
+        )
+        return gesture(
+            displayId,
+            listOf(Path(listOf(from[0], to[0])), Path(listOf(from[1], to[1]))),
+            durationMs,
+            brake,
+        )
+    }
+
+    /** 第 step 步时每根手指在哪, 走完的路径停在它的终点 */
+    private fun pointsAt(paths: List<Path>, step: Int): List<Pair<Float, Float>> = paths.map { path ->
+        path.points[step.coerceAtMost(path.points.lastIndex)]
+    }
+
+    /**
+     * 一次多指事件
+     *
+     * 每一帧都把**所有**手指的位置带上: `MotionEvent` 里一条事件描述的是那一瞬间的整块手势面, 只带
+     * 一根手指的话其它手指会被平台当成抬起了
+     *
+     * @param firstPointerIndex 只抬起/按下某一根手指时它自己的下标 (ACTION_POINTER_UP 的语义)
+     */
+    private fun sendMulti(
+        displayId: Int,
+        action: Int,
+        downTime: Long,
+        points: List<Pair<Float, Float>>,
+        firstPointerIndex: Int,
+    ) {
+        val properties = Array(points.size) { index ->
+            MotionEvent.PointerProperties().apply {
+                id = index
+                toolType = MotionEvent.TOOL_TYPE_FINGER
+            }
+        }
+        val coordinates = Array(points.size) { index ->
+            MotionEvent.PointerCoords().apply {
+                x = points[index].first
+                y = points[index].second
+                pressure = 1f
+                size = 1f
+            }
+        }
+        val event = MotionEvent.obtain(
+            /* downTime = */ downTime,
+            /* eventTime = */ SystemClock.uptimeMillis(),
+            /* action = */ action,
+            /* pointerCount = */ points.size,
+            /* pointerProperties = */ properties,
+            /* pointerCoords = */ coordinates,
+            /* metaState = */ 0,
+            /* buttonState = */ 0,
+            /* xPrecision = */ 1f,
+            /* yPrecision = */ 1f,
+            /* deviceId = */ 0,
+            /* edgeFlags = */ 0,
+            /* source = */ InputDevice.SOURCE_TOUCHSCREEN,
+            /* flags = */ 0,
+        )
+        try {
+            aim(event, displayId)
+            if (!inject(event)) {
+                Log.w(TAG, "the device refused a ${points.size}-pointer event on display $displayId")
+            }
+        } finally {
+            event.recycle()
+        }
     }
 
     /**
@@ -340,6 +486,14 @@ internal class LwInput(private val context: Context?, private val watch: LwTouch
 
         /** How many points a drag is broken into, which is what gives it a speed */
         const val SWIPE_STEPS = 12
+
+        /**
+         * 捏合开始时两根手指离中心多远, 单位是屏的像素
+         *
+         * 这个数是长按不动的: 它决定捏合 "看起来" 从多宽开始, 而多数实现只关心比值。手要落在一个不被
+         * 别的东西吃掉的地方, 而中心是调用方给的
+         */
+        const val PINCH_SPREAD = 160f
 
         /**
          * One 60 Hz frame, which is the shortest a step may be

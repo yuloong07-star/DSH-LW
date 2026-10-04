@@ -119,6 +119,10 @@ class LwAccessibility : AccessibilityService() {
         private const val MAX_NODES = 400
         private const val MAX_DEPTH = 40
 
+        /** 整棵树落文件时用的两条: 缩进最多这么深, 一段文字最多留这么长 */
+        private const val MAX_DUMP_DEPTH = 24
+        private const val MAX_DUMP_TEXT = 120
+
         /** How far up from a node to look for the thing that actually takes the click */
         private const val MAX_CLICKABLE_STEPS = 12
 
@@ -328,6 +332,87 @@ class LwAccessibility : AccessibilityService() {
                 ?: onDisplay.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
                 ?: onDisplay.firstOrNull()
         }
+
+        /**
+         * 屏幕上叫这个名字的控件现在有没有, 有的话把它连坐标一起交出来
+         *
+         * 这是 `lw_wait_for` 用的那一半: 匹配与 [tap] 是同一套 (从窄到宽), 所以"等的东西"与"点的东西"
+         * 不会是两个不同的东西。它**不动手**, 只回答
+         *
+         * @returns 找到的候选 (与 [tap] 一样按"按下会按到谁"去过重)。空列表就是还没有
+         */
+        fun find(displayId: Int, name: String): Pair<List<UiNode>, String?> {
+            if (instance == null) return emptyList<UiNode>() to NOT_ENABLED
+            if (name.isBlank()) return emptyList<UiNode>() to "no name was given"
+            val window = windowOn(displayId)
+                ?: return emptyList<UiNode>() to "no window is on display $displayId"
+            val root = window.root
+                ?: return emptyList<UiNode>() to "display $displayId has no readable window content"
+            return match(gather(root), name).distinctBy { keyOf(it) }
+                .take(MAX_CANDIDATES)
+                .map { it.ui } to null
+        }
+
+        /**
+         * 整棵树, 一个节点不落
+         *
+         * 与 [tree] 是两件事: 那个只留"值得说的"节点 (有文字或能动), 是给模型快速看一眼用的; 这个把
+         * 布局容器也写下来, 是给"为什么会这样"这类问题用的 —— 有时候答案正好在一个不说话的容器上
+         */
+        fun dump(displayId: Int, limit: Int): UiDump {
+            if (instance == null) return UiDump("", 0, true, NOT_ENABLED)
+            val window = windowOn(displayId)
+                ?: return UiDump("", 0, false, "no window is on display $displayId")
+            val root = window.root
+                ?: return UiDump("", 0, false, "display $displayId has no readable window content")
+            val builder = StringBuilder()
+            var count = 0
+            var stopped = false
+
+            fun visit(node: AccessibilityNodeInfo, depth: Int) {
+                if (count >= limit) {
+                    stopped = true
+                    return
+                }
+                count++
+                val bounds = Rect()
+                runCatching { node.getBoundsInScreen(bounds) }
+                builder.append("  ".repeat(depth.coerceAtMost(MAX_DUMP_DEPTH)))
+                builder.append(node.className?.toString()?.substringAfterLast('.').orEmpty())
+                node.viewIdResourceName?.substringAfterLast('/')?.takeIf { it.isNotEmpty() }?.let {
+                    builder.append('#').append(it)
+                }
+                builder.append(" [").append(bounds.toShortString())
+                if (node.isClickable) builder.append(" click")
+                if (node.isScrollable) builder.append(" scroll")
+                if (node.isEditable) builder.append(" edit")
+                if (node.isCheckable) builder.append(if (node.isChecked) " checked" else " unchecked")
+                builder.append(']')
+                val text = node.text?.toString()?.trim().orEmpty()
+                val description = node.contentDescription?.toString()?.trim().orEmpty()
+                if (text.isNotEmpty()) builder.append(" text=\"").append(text.take(MAX_DUMP_TEXT)).append('"')
+                if (description.isNotEmpty()) {
+                    builder.append(" desc=\"").append(description.take(MAX_DUMP_TEXT)).append('"')
+                }
+                builder.append('\n')
+                val children = runCatching { node.childCount }.getOrDefault(0)
+                for (index in 0 until children) {
+                    val child = runCatching { node.getChild(index) }.getOrNull() ?: continue
+                    visit(child, depth + 1)
+                }
+            }
+
+            visit(root, 0)
+            return UiDump(builder.toString(), count, stopped, null)
+        }
+
+        /** [dump] 的结果 */
+        data class UiDump(
+            val text: String,
+            val nodes: Int,
+            val truncated: Boolean,
+            val error: String?,
+        )
 
         /** One node, the record a caller reads, and the thing that takes a click for it */
         private class Found(

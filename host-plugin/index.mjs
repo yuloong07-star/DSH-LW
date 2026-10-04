@@ -648,6 +648,351 @@ const TOOLS = [
       return formatScreenshot(await call('screenshot', drop(args)))
     },
   }),
+
+  // ---- 1.0.2 加的那一批: 通知与震动、剪贴板、传输、设备与系统信息、输入增强 ----
+  //
+  // 它们的共同点是不需要特权: 应用那一侧用 Context 自己做, 走桥只是为了把结果按同一套协议送回来。
+  // 所以每个工具就是一行 `simpleTool` —— 参数表照实写, 说明里说清"什么情况下它做不到"
+
+  simpleTool(
+    'lw_notify',
+    'Post a notification on the phone, optionally vibrating. Use it to tell the person holding the'
+    + ' device something they should see outside this app - a job finished, a decision is waiting.'
+    + ' The same notification id is reused, so a second call replaces the first rather than stacking;'
+    + ' tapping it brings DSH-LW to the front. Needs the notification permission, and says so if it'
+    + ' is missing.',
+    'notify',
+    {
+      title: { type: 'string', required: true, description: 'The notification title, one short line' },
+      text: { type: 'string', required: true, description: 'The notification body' },
+      vibrateMs: {
+        type: 'integer',
+        description: 'Vibrate for this many milliseconds as well (up to 3000). Needs the vibration'
+          + ' permission, which the device grants on its own at install',
+      },
+    },
+  ),
+
+  simpleTool(
+    'lw_vibrate',
+    'Vibrate the phone for a moment, as a nudge with no notification at all.',
+    'vibrate',
+    { ms: { type: 'integer', description: 'How long, in milliseconds. Default 200, at most 3000' } },
+  ),
+
+  simpleTool(
+    'lw_clipboard',
+    'Read or write the system clipboard. Writing works at any time and is the way to hand a long'
+    + ' piece of text to another app without typing it. Reading only works while DSH-LW is the'
+    + ' foreground app - that is an Android 10 rule, not this app\'s - and the answer says so when'
+    + ' it cannot.',
+    'clipboard',
+    {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'get to read the clipboard, set to replace it with text',
+        enum: ['get', 'set'],
+      },
+      text: { type: 'string', description: 'What to write, required when op is set' },
+    },
+  ),
+
+  simpleTool(
+    'lw_share',
+    'Hand text or a file to the system share sheet, so the person picks which app takes it. This is'
+    + ' how a file the agent wrote in the work area gets into a chat app or an editor. The chooser'
+    + ' opening is all this reports: which app takes it is the user\'s pick.',
+    'share',
+    {
+      text: { type: 'string', description: 'Text to share, or the message to go beside a file' },
+      path: { type: 'string', description: 'A file to share, as an absolute path' },
+      mime: { type: 'string', description: 'The MIME type, when the extension does not say it' },
+    },
+  ),
+
+  simpleTool(
+    'lw_open_file',
+    'Open a file with whichever app on the device handles its type. Use it to show the user a'
+    + ' picture, a PDF or a document the agent produced.',
+    'openFile',
+    {
+      path: { type: 'string', required: true, description: 'The file to open, as an absolute path' },
+      mime: { type: 'string', description: 'The MIME type, when the extension does not say it' },
+    },
+  ),
+
+  simpleTool(
+    'lw_download',
+    'Ask the system to download a URL into the shared Downloads folder, which is where a file has'
+    + ' to be for the user to find it with a file manager. The system downloads it on its own'
+    + ' schedule, so this reports that it was queued rather than that it finished.',
+    'download',
+    {
+      url: { type: 'string', required: true, description: 'The http or https URL to download' },
+      to: { type: 'string', description: 'The file name to save it as, taken from the URL by default' },
+    },
+  ),
+
+  simpleTool(
+    'lw_device',
+    'What this device is: model, Android version, ABI, screen size and density, locale, uptime, the'
+    + ' privileged channel\'s state and this app\'s own version. Call it once at the start of a'
+    + ' session rather than guessing.',
+    'device',
+  ),
+
+  simpleTool(
+    'lw_battery',
+    'Battery level, whether it is charging and from what, temperature, voltage, current draw and the'
+    + ' screen\'s own state. The screen state matters before anything else: a screenshot of a'
+    + ' sleeping device is the last frame, not what is on it.',
+    'battery',
+  ),
+
+  simpleTool(
+    'lw_storage',
+    'How full the storage and the memory are: data, shared storage and system partitions, plus total'
+    + ' and available memory and this app\'s own heap.',
+    'storage',
+  ),
+
+  simpleTool(
+    'lw_running',
+    'How loaded the device is: core count, the load average from the kernel, the memory situation.'
+    + ' Worth checking before starting anything heavy.',
+    'running',
+  ),
+
+  simpleTool(
+    'lw_volume',
+    'Read or set the device\'s volume: media, ring, notification, alarm and call streams, plus the'
+    + ' ringer mode (normal, vibrate, silent). A write is read back, because this device has been'
+    + ' seen accepting a write and keeping the old value.',
+    'volume',
+    {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'get or set for one stream\'s level, adjust for one step, mode for the ringer',
+        enum: ['get', 'set', 'adjust', 'mode'],
+      },
+      system: {
+        type: 'string',
+        description: 'Which stream: media, ring, notification, alarm or call. Default media',
+        enum: ['media', 'ring', 'notification', 'alarm', 'call'],
+      },
+      level: { type: 'integer', description: 'The level to set, for op=set' },
+      direction: {
+        type: 'string',
+        description: 'up, down or mute, for op=adjust',
+        enum: ['up', 'down', 'mute'],
+      },
+      mode: {
+        type: 'string',
+        description: 'normal, vibrate or silent, for op=mode',
+        enum: ['normal', 'vibrate', 'silent'],
+      },
+    },
+  ),
+
+  simpleTool(
+    'lw_media',
+    'Send a media transport key: play, pause, playPause, next, previous or stop. It goes to whatever'
+    + ' the device considers its current media session.',
+    'media',
+    {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'The transport control to send',
+        enum: ['play', 'pause', 'playPause', 'next', 'previous', 'stop'],
+      },
+    },
+  ),
+
+  simpleTool(
+    'lw_net',
+    'Read the network state (active transport, WiFi name, IP addresses, airplane mode), or change'
+    + ' one of the radios: airplane, data, wifi, bluetooth. Reading is free; changing needs the'
+    + ' privileged channel and may be refused by the ROM, which the answer says.',
+    'net',
+    {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'get to read, or airplane / data / wifi / bluetooth to turn one on or off',
+        enum: ['get', 'airplane', 'data', 'wifi', 'bluetooth'],
+      },
+      on: { type: 'boolean', description: 'For the changing ops: true to turn it on, false to turn it off' },
+    },
+  ),
+
+  simpleTool(
+    'lw_system',
+    'Read or write a few system settings: screen brightness, screen timeout, auto-rotate and font'
+    + ' scale. Reading also covers bluetooth, NFC and airplane mode. The protected ones need the'
+    + ' WRITE_SETTINGS grant, which is given from a system settings page; a write is read back and'
+    + ' the answer says when the device did not keep it.',
+    'system',
+    {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'get to read one key (or all of them), set to write one',
+        enum: ['get', 'set'],
+      },
+      key: {
+        type: 'string',
+        description: 'Which setting: brightness, screen_off_timeout, accelerometer_rotation, font_scale,'
+          + ' bluetooth, nfc or airplane_mode',
+      },
+      value: { type: 'integer', description: 'The value to write, for op=set' },
+    },
+  ),
+
+  simpleTool(
+    'lw_sensor',
+    'List the device\'s sensors, or read one of them once. The value is a single sample, so a sensor'
+    + ' that is not moving reports its resting value.',
+    'sensor',
+    {
+      name: { type: 'string', description: 'A sensor name or type; omit it to list them all' },
+      timeoutMs: { type: 'integer', description: 'How long to wait for a sample. Default 1500' },
+    },
+  ),
+
+  simpleTool(
+    'lw_location',
+    'Where the device is, from its last known fix, or - with fresh=true - by waiting for a new one.'
+    + ' Needs the location permission; indoors a fresh fix often does not arrive, and the answer'
+    + ' says that rather than guessing.',
+    'location',
+    {
+      fresh: { type: 'boolean', description: 'Wait for a new fix instead of reading the last known one' },
+      timeoutMs: { type: 'integer', description: 'How long to wait for a fresh fix. Default 10000' },
+    },
+  ),
+
+  simpleTool(
+    'lw_permissions',
+    'Which permissions this app has right now, per capability, and how each missing one is granted.'
+    + ' Call it when a tool says it is missing a permission, or before relying on the camera, the'
+    + ' location, notifications or the clipboard.',
+    'permissions',
+  ),
+
+  simpleTool(
+    'lw_power',
+    'The screen and the lock: state to see, on to wake it, off to put it to sleep, lock to lock it.'
+    + ' This is the way out of the sleeping device trap - a screenshot of a sleeping device is the'
+    + ' last frame, and injected touches do not wake it.',
+    'power',
+    {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'state, on, off or lock',
+        enum: ['state', 'on', 'off', 'lock'],
+      },
+    },
+  ),
+
+  simpleTool(
+    'lw_app_control',
+    'Force stop, clear the data of, uninstall or install an app. Every one of these asks for a tap'
+    + ' on the phone first: the app puts a confirmation on screen and nothing happens unless someone'
+    + ' taps it, so a call from an unattended run comes back saying nobody confirmed. Use it when the'
+    + ' user asked for exactly that change; it is not how a stuck app is normally dealt with.',
+    'syscmd',
+    {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'forceStop, clearData, uninstall or install',
+        enum: ['forceStop', 'clearData', 'uninstall', 'install'],
+      },
+      package: {
+        type: 'string',
+        required: true,
+        description: 'The package to act on, or the APK path for install',
+      },
+      user: { type: 'integer', description: 'The Android user, for a cloned app. Default 0' },
+    },
+  ),
+
+  simpleTool(
+    'lw_wait_for',
+    'Wait until a screen shows something by name, then answer where it is. Use it after an action'
+    + ' that makes a screen change: reading the tree immediately afterwards reads the old screen.'
+    + ' The match is the same one lw_tap uses, so a name this finds is a name that can be pressed.',
+    'waitFor',
+    {
+      displayId: DISPLAY_ID,
+      text: { type: 'string', required: true, description: 'The text or description to wait for' },
+      timeoutMs: {
+        type: 'integer',
+        description: 'How long to wait before giving up. Default 15000, at most 90000',
+      },
+    },
+  ),
+
+  simpleTool(
+    'lw_ui_dump',
+    'Write the whole view hierarchy of a screen to a file in the work area, layout containers'
+    + ' included, and answer with the first lines of it. lw_ui keeps only the controls worth naming;'
+    + ' this is for when the question is why the screen is laid out the way it is.',
+    'uiDump',
+    {
+      displayId: DISPLAY_ID,
+      to: { type: 'string', description: 'Where to write it; the work area by default' },
+      limit: { type: 'integer', description: 'At most this many nodes. Default 4000' },
+    },
+  ),
+
+  simpleTool(
+    'lw_gesture',
+    'Draw a multi-finger gesture: one path per finger, all moving together. Use it for the shapes'
+    + ' neither a tap nor a straight swipe can make - two fingers at once, a curve, a drag that has'
+    + ' to go round something. A point per path is not a gesture: paths need at least two.',
+    'gesture',
+    {
+      displayId: DISPLAY_ID,
+      paths: {
+        type: 'array',
+        required: true,
+        description: 'One object per finger: { "points": [ { "x": 1, "y": 2 }, ... ] }, in the'
+          + ' screen\'s own pixels',
+        items: {
+          type: 'object',
+          properties: {
+            points: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: { x: { type: 'number' }, y: { type: 'number' } },
+              },
+            },
+          },
+        },
+      },
+      durationMs: { type: 'integer', description: 'How long the whole gesture takes. Default 300' },
+    },
+  ),
+
+  simpleTool(
+    'lw_pinch',
+    'Pinch in or out around a point: two fingers starting either side of it and moving together or'
+    + ' apart. scale above 1 zooms in (the fingers spread), below 1 zooms out.',
+    'pinch',
+    {
+      displayId: DISPLAY_ID,
+      x: { type: 'number', required: true, description: 'The centre of the pinch, in screen pixels' },
+      y: { type: 'number', required: true, description: 'The centre of the pinch, in screen pixels' },
+      scale: { type: 'number', description: 'Above 1 spreads the fingers (zoom in), below 1 closes them' },
+      durationMs: { type: 'integer', description: 'How long the pinch takes. Default 300' },
+    },
+  ),
 ]
 
 /** One request, one response: the app answers a single line and closes the connection */
@@ -736,6 +1081,42 @@ function holdMs(value, fallback = 0) {
       + ' is held for the whole of it and nothing else can be done meanwhile')
   }
   return ms
+}
+
+/**
+ * 一个"做一件事, 把答案原样念出来"的工具
+ *
+ * 1.0.2 加的这批能力里大部分都是这个样子: 名字、一段给模型的说明、几个参数, 然后一次桥调用。说明在
+ * 这里统一生成, 免得二十个工具各写一遍同样的几句
+ *
+ * 答案由应用那一侧写好放在 `result.text` 里 —— **它才是唯一知道真的发生了什么的那一边** (有没有
+ * 权限、设备认不认、命令的退出码), 插件不该自己编一句
+ *
+ * @param name 工具名, `lw_` 开头
+ * @param description 模型看到的说明
+ * @param method 桥上的方法名
+ * @param parameters 参数表, 照 `defineTool` 的形状
+ */
+function simpleTool(name, description, method, parameters = {}) {
+  return defineTool({
+    name,
+    description,
+    parameters,
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      return answerOf(await call(method, drop(args)))
+    },
+  })
+}
+
+/** 应用那一侧写好的答案, 兜底是让人能读的 JSON —— 正常不该走到那一条 */
+function answerOf(result) {
+  if (typeof result === 'string') return result
+  if (result && typeof result.text === 'string' && result.text.length > 0) return result.text
+  return JSON.stringify(result)
 }
 
 /** The `hold` parameter of an acting tool, said once and shared by both of them */

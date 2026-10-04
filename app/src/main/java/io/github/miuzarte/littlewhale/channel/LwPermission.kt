@@ -25,6 +25,57 @@ import java.util.concurrent.TimeUnit
  * already in the list but not bound does not come back from a write that changes nothing. Both of
  * those are handled here rather than left for the user to work out
  */
+/**
+ * 无障碍现在到底怎么样
+ *
+ * 六件事实放在一起才算回答完了那个问题: `componentListed` 与 `running` 是"设置里写着"与"系统真的
+ * 绑上了"的区别, `writeChannelOpen` 是"我们还能不能写"的区别, 另外两个是 Android 13 那道闸的两半。
+ * 设置页显示它, `lw_probe` 回它, 所以判据只有一份
+ *
+ * @property component 我们那个无障碍组件的完整名字 (写进列表里的就是它)
+ * @property componentListed 设备当前的 `enabled_accessibility_services` 里有没有我们
+ * @property otherServices 设备上除此之外还有几个别人的无障碍服务 (写入要读出来改, 不能整串覆盖)
+ * @property masterSwitch `accessibility_enabled` 是不是 1
+ * @property running 系统有没有把服务实例绑起来 —— "开没开"最终是它说了算
+ * @property installer 设备记的 `installerPackageName`, 空串表示 null (侧载)
+ * @property restrictedSettings `ACCESS_RESTRICTED_SETTINGS` 这道 op 的值
+ * @property writeChannelOpen 应用现在写的 secure settings 会不会被设备留下 (探针的答案)
+ */
+data class AccessibilityState(
+    val component: String,
+    val componentListed: Boolean,
+    val otherServices: Int,
+    val masterSwitch: Boolean,
+    val running: Boolean,
+    val installer: String,
+    val restrictedSettings: String,
+    val writeChannelOpen: Boolean,
+) {
+
+    /** 健康的样子: 在列表里且真的绑着 */
+    val healthy: Boolean get() = componentListed && running
+
+    /** 一句能直接给用户/日志看的话, 说清现在卡在哪一层 */
+    fun reason(): String = when {
+        running && componentListed -> "服务在跑, 组件在设备的列表里"
+        running && !componentListed -> "服务在跑, 但它不在设备的列表里: 那个页面多半是这么显示的," +
+            " 而实例还活着 (去掉条目不会杀已经绑好的服务)"
+
+        !writeChannelOpen -> "这台设备不接受写入: `settings put` 返回 0 而值不变, 所以应用自己开不了它。" +
+            " 用电脑跑 tools/lw-install.ps1, 它会赶在重装之后那段窗口里写完并读回"
+
+        installer.isEmpty() -> "装的时候没带安装者身份 (installerPackageName 是 null), 而 Android 13" +
+            " 起这样的应用不许开无障碍。用带 -i 的方式重装: tools/lw-install.ps1"
+
+        restrictedSettings != "allow" -> "受限设置那道 op 还是 \"$restrictedSettings\" (要 allow);" +
+            " 这台设备上它只有带安装者身份重装之后才设得动"
+
+        !componentListed -> "组件不在设备的列表里, 写一次就能放回去 (重装会把我们踢出去)"
+
+        else -> "组件在列表里但系统没有把它绑起来: 开关会先摘掉、停一下再放回, 那一下是让系统重新评估"
+    }
+}
+
 internal class LwPermission(private val context: Context?) {
 
     /**
@@ -49,8 +100,9 @@ internal class LwPermission(private val context: Context?) {
         val alreadyListed = listed.any { it == ours }
 
         // The master switch is what the system reads first; enabling the component without it
-        // leaves the service off with no sign of why, so it goes in before the list does
-        if (enabled && !put(ACCESSIBILITY_ENABLED, "1")) return false
+        // leaves the service off with no sign of why, so it goes in before the list does.
+        // 读回校验: 这台设备上"写了但没留下"是常态, 而退出码看不出来
+        if (enabled && !putVerified(ACCESSIBILITY_ENABLED, "1")) return false
         if (enabled) allowRestrictedSettings(context.packageName)
 
         // A component that is in the list but not bound - which is what a force stop leaves behind -
@@ -140,6 +192,83 @@ internal class LwPermission(private val context: Context?) {
         return true
     }
 
+    /**
+     * 写一条 secure setting, 但**读回来**才算成功
+     *
+     * 退出码只说命令跑过了, 不说设备留下了这个值。实测过的两种"假成功"都在这条路上: 这台 vivo 上
+     * `settings put` 对任何 key 都返回 0 而值不变, 而侧载应用那道 app op 也是同一个毛病。所以凡是要
+     * 相信结果的写入都走这里
+     */
+    private fun putVerified(key: String, value: String): Boolean {
+        if (!put(key, value)) return false
+        val kept = get(key)
+        if (kept != value) {
+            Log.w(TAG, "the device kept \"$kept\" after being asked for \"$value\" ($key)")
+            return false
+        }
+        return true
+    }
+
+    /**
+     * 这台设备的写入通路现在通不通
+     *
+     * 用一个**自己的**探针 key 试一次: 写进去、读回来、再删掉。key 是本应用的名字, 一眼看得出是谁
+     * 留的, 而且它不参与任何别的判断 —— 它只回答一个问题: "我现在写的值, 设备会不会留下"
+     *
+     * 为什么值得单独做一件事: 这台 vivo 上的丢弃是整个 SettingsProvider 层面的 (三个命名空间、任何
+     * key 都一样), 所以"无障碍写不进"与"这道 op 没设上"是两件事, 而它们要的处置完全不同。分不清就
+     * 只能给一句含糊的失败, 那种提示已经误导过一次了
+     */
+    fun writeChannelOpen(): Boolean {
+        if (!put(PROBE_KEY, PROBE_VALUE)) return false
+        val kept = get(PROBE_KEY) == PROBE_VALUE
+        // 收尾要删掉: 探针留着就成了设备上一条没人认领的设置
+        run(SETTINGS, "delete", "secure", PROBE_KEY)
+        if (!kept) {
+            Log.w(
+                TAG,
+                "this device discards writes to secure settings: the probe was written and read" +
+                    " back as something else, so nothing the app writes here survives on its own",
+            )
+        }
+        return kept
+    }
+
+    /**
+     * 无障碍现在到底怎么样
+     *
+     * 一次把六件事实读齐: 组件在不在设备列表里 / 主开关的值 / 服务实例活没活 / installer 身份 /
+     * 设备记的 app op / 写入通路。设置页拿它显示, `lw_probe` 拿它回话 —— **两边同一份**, 就不会出现
+     * "页面上说已允许而工具说不支持"
+     */
+    fun inspect(): AccessibilityState {
+        val context = context
+        val component = context
+            ?.let { ComponentName(it, LwAccessibility::class.java).flattenToString() }
+            .orEmpty()
+        val listed = get(ENABLED_SERVICES).orEmpty()
+        val componentListed = listed.split(':')
+            .filter { it.isNotBlank() }
+            .any { it.trim() == component }
+        val others = listed.split(':').count { it.isNotBlank() && it.trim() != component }
+        val installer = run(CMD, "package", "list", "packages", "-i", context?.packageName.orEmpty())
+            ?.second
+            ?.substringAfter("installer=", "")
+            ?.substringBefore(' ')
+            ?.trim()
+            .orEmpty()
+        return AccessibilityState(
+            component = component,
+            componentListed = componentListed,
+            otherServices = others,
+            masterSwitch = get(ACCESSIBILITY_ENABLED) == "1",
+            running = LwAccessibility.running,
+            installer = installer,
+            restrictedSettings = context?.let { restrictedSettings(it.packageName) }.orEmpty(),
+            writeChannelOpen = writeChannelOpen(),
+        )
+    }
+
     /** Run one command, answering with its exit code and what it printed */
     private fun run(vararg command: String): Pair<Int, String>? {
         val process = try {
@@ -176,6 +305,14 @@ internal class LwPermission(private val context: Context?) {
 
         /** What that op reads as once it has been lifted, which is what the read back compares to */
         const val ALLOW = "allow"
+
+        /**
+         * 探针用的那一条设置
+         *
+         * 名字带着这是谁写的, 而值带一个不会与任何真实配置撞上的记号
+         */
+        const val PROBE_KEY = "lw_write_probe"
+        const val PROBE_VALUE = "lw-probe"
 
         /** How long the system is given to notice a component left the list before it goes back in */
         const val REBIND_GAP_MS = 800L

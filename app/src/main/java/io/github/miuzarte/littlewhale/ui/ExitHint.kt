@@ -23,33 +23,40 @@ object ExitHint {
      */
     const val VISIBLE_MS = 2_000L
 
-    /**
-     * Where the message goes
-     *
-     * Held here rather than remembered in the composition because the back callback is a plain
-     * lambda: showing happens in the home page, asking for it happens outside a composition
-     */
-    val host = SnackbarHostState()
-
     /** A press only counts as the second one inside this window, in milliseconds */
     private const val WINDOW_MS = 2_500L
 
     /** When the last press happened, or 0 when there has not been one yet */
     private var lastPress = 0L
 
-    /** When the message that is up right now was asked for, so it is only asked for once */
+    /**
+     * When the message that is up right now was put up
+     *
+     * This is how "is it still on screen" is answered: `SnackbarHostState` keeps its entries to
+     * itself (the accessor is internal to the library), while the two numbers - when it went up and
+     * how long it stays - are ours
+     */
     private var hintedAt = 0L
 
     /**
-     * One press of the back button on the home page
+     * One press of the back button
      *
-     * Answers whether the message was already up, which is the caller's cue to leave rather than to
-     * ask again: asking again would only replace the message the person is still looking at
+     * Answers true when this press means "leave", which is either the second press inside the window
+     * or a press made while the message is still readable. A first press answers false, and the
+     * caller puts the message up
      */
     fun press(): Boolean {
         val now = System.currentTimeMillis()
         if (lastPress != 0L && now - lastPress < WINDOW_MS) {
             lastPress = 0L
+            hintedAt = 0L
+            return true
+        }
+        if (now - hintedAt < VISIBLE_MS) {
+            // The message is still up, so this press is the "second one" even if the first was a
+            // while ago: pressing back twice should not put two messages up and then leave
+            lastPress = 0L
+            hintedAt = 0L
             return true
         }
         lastPress = now
@@ -57,15 +64,23 @@ object ExitHint {
     }
 
     /**
-     * Whether the message has to be put up now
+     * 这一下要不要弹提示
      *
-     * Kept apart from [press] because showing it is the part that needs a composition: this object
-     * is what the navigator can reach, while the snackbar host is drawn by the home page
+     * 与 [press] 分开是因为弹的人需要一个 composition (提示条挂在主页上), 而这个对象是导航那一层
+     * 够得到的东西
      */
-    fun shouldHint(): Boolean {
+    fun showHint(): Boolean {
         val now = System.currentTimeMillis()
-        if (now - hintedAt < WINDOW_MS) return false
+        if (now - hintedAt < VISIBLE_MS) return false
         hintedAt = now
         return true
     }
+
+    /**
+     * Where the message goes
+     *
+     * Held here rather than remembered in the composition because the back callback is a plain
+     * lambda: showing happens in the home page, asking for it happens outside a composition
+     */
+    val host = SnackbarHostState()
 }

@@ -153,6 +153,17 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 工具全在 `host-plugin/index.mjs` 一个插件里, 每个一次桥调用: `lw_probe` / `lw_screen` / `lw_screen_create` / `lw_screen_resize` / `lw_screen_rotate` / `lw_screen_release` / `lw_tap` / `lw_swipe` / `lw_screenshot` / `lw_launch` / `lw_key` / `lw_type` / `lw_ui` / `lw_ocr` / `lw_apps`
 
+**1.0.2 又加了这些**, 都在同一个插件里, 由 `simpleTool` 那个工厂生成 (它们的形状一样): `lw_notify` / `lw_vibrate` / `lw_clipboard` / `lw_share` / `lw_open_file` / `lw_download` / `lw_device` / `lw_battery` / `lw_storage` / `lw_running` / `lw_volume` / `lw_media` / `lw_net` / `lw_system` / `lw_sensor` / `lw_location` / `lw_permissions` / `lw_power` / `lw_app_control` / `lw_wait_for` / `lw_ui_dump` / `lw_gesture` / `lw_pinch`
+
+**它们大多不过 binder**: 通知、剪贴板、电池、音量、系统设置这些在 app 进程里用 `Context` 就能做, 走这条回环桥只是为了把结果按同一套协议回给 host。实现都在 `app/src/main/java/.../tool/` 下, 桥那一侧 (`PrivilegedBridge.dispatch`) 只有一行转发
+
+三条写这批时定下来的规矩, 以后加工具照办:
+
+- **每个能力先过权限闸** (`util/PermissionGate` + `PermissionCatalog`): 缺权限时回的是"缺哪一条、怎么给", **不假装成功** —— 这台设备上"退出码 0 而什么都没发生"已经坑过一次 (无障碍那条), 所以写入一律**写完读回**再报结果
+- **答案由应用那一侧写**: 桥回来的 `result.text` 才是给人看的那一句 (只有它知道权限、设备、退出码), 插件用 `answerOf` 原样念, 不自己编话
+- **只有 app uid 真做不到的才走特权**: 卸载 / 清数据 / 停应用 / 装包 / 飞行模式 / 移动数据 / 蓝牙 / 熄屏。它们在特权进程里过一张**写死的白名单表** (`channel/LwSystemCommandTable.kt`), 应用送过去的只是一个操作名与几个参数 —— 那张表就是"模型能不能凑出一条任意命令"这个问题的答案。**破坏性那四条还要人点一下** (见下)
+
+
 **每个动作都显式带 `displayId`**, 没有"默认打选中的那块" —— 选中的是用户随时能改的, 而模型手里的坐标是它在某一块屏上量出来的。**用户没说用哪块屏就用虚拟屏**: `displayId 0` 是别人手里那台手机, 动它就是把它从人手里拿走, 而那块屏自己的形状是能给的 (`resize` / `rotate`), 主屏的不行 —— 这条写在 `DISPLAY_ID` 那个共用参数与 `lw_screen` 的描述里
 
 要记住的:
@@ -186,6 +197,20 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 链路: `LwAccessibility` (**跑在 app 进程里**, 系统绑定的服务) → 取树 / 定位 / 点 → `PrivilegedBridge` 的 `ui` / `tapText` (同进程直接调) → 工具 `lw_ui` / `lw_tap(text=…)`。**取树没有 binder, 也没有特权进程**
 
+**开服务这件事与读屏是两码事**, 三条要先记住:
+
+- **带 `-i` 只是必要条件**: `installerPackageName` 非 null 才过得了 Android 13 那道闸, 而重装会把我们
+  从 `enabled_accessibility_services` 里抹掉, 所以"装完立刻读出来改再写回去"是同一个动作的两半
+- **有些 ROM 上应用自己写不动 secure settings**: 实测那台 vivo 上 `settings put` 对**任何 key** 都
+  返回 0 而值不变 (丢弃在 provider 层, 换 uid / 换通道都没用), 写入只在带 `-i` 重装之后很短的一段
+  窗口里被接受。**所以正解是电脑跑 `tools/lw-install.ps1`, 应用侧的定位是如实报告**
+- **"设置里写着"不等于"服务活着"**: 打开 vivo 那个页面会摘掉条目却不杀已绑定的实例。判据是
+  `LwAccessibility.running` (系统的绑定实例), 而 `LwPermission.inspect()` 一次把六件事实读齐
+  (在不在列表 / 主开关 / 实例 / installer / 那道 op / **写入通路通不通**), 设置页与 `lw_probe` 共用它
+
+`AccessibilityState.reason()` 按这六件事实给一句结论, 不再把"别的应用改了回去"与"受限设置挡着"并列
+—— 两者处置完全不同, 而含糊的提示误导过一次
+
 - **`getWindows()` 只返回默认屏**, 虚拟屏不在里面, 必须用 `getWindowsOnAllDisplays()` (API 30+) —— 只看前者会以为"无障碍读不到虚拟屏", 然后去写贵一个量级的 `UiAutomation`
 - **坐标是那块屏自己的原点**; 事件会从虚拟屏来; **`ACTION_CLICK` 在虚拟屏上有效**, 所以按名字点击不需要坐标也不需要注入触摸
 - **`getBoundsInScreen(Rect)` 不是表达式**, 返回 `Unit`, 得先 `val rect = Rect()` 再传, 否则是编译期的 `ARGUMENT_TYPE_MISMATCH`
@@ -209,6 +234,29 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **熄屏是静默失败, 这条最阴**: 熄屏时 `screencap` 交的还是**最后一帧** (读屏读到一个已经不在的界面), 而注入的触摸**唤不醒屏** (点进空气里), 两个都不报错。所以 `ocr` / `tap` 的答案里带了 `screen: on|dozing|off`, 工具那侧看到不是 `on` 就直说, 读屏点击则直接不点
 
 设置页那段「OCR」显示计算单元 (`NPU (HTP) · SM8550`) / 说明 / 上次耗时 + 一个**自检**按钮 (加载并预热)
+
+## 权限
+
+**清单里声明了一大批** (1.0.2 那次全量加上的, 60 条): 屏幕上那套工具用的普通权限, 加上相机 / 定位 / 录音 / 蓝牙 / 媒体读取 / 通讯录 / 短信 / 通话记录 / 日历, 以及 `WRITE_SETTINGS` / `PACKAGE_USAGE_STATS` / `SYSTEM_ALERT_WINDOW` / `REQUEST_INSTALL_PACKAGES` 这类特殊访问
+
+**声明不等于拿到**, 三个层次的差别要记住:
+
+- **普通权限**装完就有 (振动、网络状态、蓝牙的旧式那几条)
+- **运行时权限**要弹窗点, 应用里的入口是设置页「权限」段 (`PermissionRequests` → `MainActivity` 里的 launcher), **电脑上也可以用 `tools/lw-install.ps1 -Perms` 一次给掉** (`pm grant`)
+- **特殊访问**系统不接受运行时申请, 只能去一页系统设置里点; `-Perms` 用 `appops set` 代劳 (`WRITE_SETTINGS` / `GET_USAGE_STATS` / `SYSTEM_ALERT_WINDOW` / `REQUEST_INSTALL_PACKAGES`), 电池优化用 `dumpsid deviceidle whitelist`
+
+**声明但这一版没有功能用的**: 通讯录 / 短信 / 通话记录 / 日历那一批。写进清单是刻意的 ("都加上"), 但它们没有任何工具去读, 所以 `PermissionCatalog.declaredOnly` 把它们单列出来 —— 页面上不该让人以为它们在用
+
+`util/PermissionCatalog` 是唯一的一份表: 设置页照着它列, `lw_permissions` 照着它报, 所以不会出现"设置页说已允许而工具说不支持"
+
+## 破坏性操作的确认
+
+`forceStop` / `clearData` / `uninstall` / `install` 这四条**不由模型说了算**: 应用会在屏幕上弹一个 `OverlayDialog`, 点了「确定」才执行, **100 秒没人点就回一句"没人确认", 什么都不做** (`ui/DestructiveConfirm`, `LwSystemCommand.destructive`)
+
+两个实现上的要点:
+
+- **桥改成一次请求一个线程** (`PrivilegedBridge.callers`): 以前是 accept 循环上串行处理, 等一个人点 100 秒会把别的调用全冻住
+- **屏幕关着的时候弹窗看不见, 于是它不会执行** —— 这是要的: 半夜没人看手机的时候, 谁也不能悄悄把另一个应用卸掉。它与「审批全放行」不冲突, 因为审批 answerer 管的是 dsh 自己的审批流, 这道闸在应用进程里, 模型绕不过去
 
 ## 审批 (全部放行)
 

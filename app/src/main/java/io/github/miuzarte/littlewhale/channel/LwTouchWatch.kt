@@ -71,7 +71,7 @@ data class TouchState(
  * caller picks its own window, because a drag being interrupted and a call being refused are two
  * different questions
  */
-internal class LwTouchWatch {
+class LwTouchWatch {
 
     private val monitor = Any()
     private var reader: Thread? = null

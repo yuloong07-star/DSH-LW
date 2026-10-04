@@ -35,18 +35,43 @@ object AccessibilitySetting {
         private set
 
     /**
-     * Whether the device has the service bound right now
+     * 无障碍现在的真实样子
      *
-     * Kept as state of its own rather than read through on every render: the service is bound and
-     * unbound by the system on its own schedule, so this is refreshed after a change has had time
-     * to settle, not the instant the setting is written
+     * 由 [refreshState] 填: 那几件事要各起一个 `settings` / `cmd` 子进程, 只能在 worker 线程上做,
+     * 所以它是个状态而不是一个每次读都现算的属性
      */
+    var state: AccessibilityState? by mutableStateOf(null)
+        private set
+
+    /** Whether the device has the service bound right now */
     var enabled: Boolean by mutableStateOf(LwAccessibility.running)
         private set
 
     /** Read the device's answer again, which is all a page needs when it appears */
     fun refresh() {
         enabled = LwAccessibility.running
+    }
+
+    /**
+     * 把六件事实读齐, 供设置页显示
+     *
+     * 在 worker 线程上做, 因为 `inspect()` 要起几个子进程 (5 秒超时那一条), 在主线程上等就是 ANR 的
+     * 写法。读不出来就把上一次的留着, 不把状态清成 null
+     */
+    fun refreshState() {
+        worker.execute {
+            val context = PrivilegedChannel.context() ?: return@execute
+            val inspected = try {
+                LwPermission(context).inspect()
+            } catch (error: Throwable) {
+                Log.w(TAG, "could not read the accessibility state", error)
+                null
+            }
+            if (inspected != null) {
+                state = inspected
+                enabled = inspected.running
+            }
+        }
     }
 
     /**
@@ -90,9 +115,18 @@ object AccessibilitySetting {
             waited += SETTLE_STEP_MS
         }
         refresh()
+        // 读一次真实状态: 写失败的原因分好几层, 只有读齐了才说得清是哪一层, 而含糊的提示已经误导过一次
+        state = try {
+            PrivilegedChannel.context()?.let { LwPermission(it).inspect() }
+        } catch (error: Throwable) {
+            Log.w(TAG, "could not read the accessibility state after a write", error)
+            null
+        }
+        state?.let { enabled = it.running }
         if (LwAccessibility.running != on) {
-            lastError = "系统没有把服务绑上, 设置写进去了但没生效; 可能是别的应用把它改了回来," +
-                " 也可能被 Android 13+ 的受限设置挡着, 那种情况在应用详情里允许一次就好"
+            // 这一句按设备侧的实际情况分流, 不再把几种完全不同的原因并列在一句里
+            lastError = state?.reason()
+                ?: "系统没有把服务绑上, 设置写进去了但没生效"
         }
     }
 

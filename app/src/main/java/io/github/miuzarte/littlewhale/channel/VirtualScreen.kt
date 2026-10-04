@@ -519,6 +519,35 @@ object VirtualScreen {
         }
     }
 
+    /**
+     * 多指手势: 每条路径一根手指, 一起走
+     *
+     * 与单指的拖同一条路 (队列 + 两道闸), 只是"步"里所有手指一起动。切断时抛出而不是静默返回, 与
+     * [swipe] 一致: 调用方拿着一个以为已经做完的手势去读下一张截图, 是最难查的错误
+     */
+    fun multiGesture(screen: ScreenState, paths: List<LwInput.Path>, durationMs: Long, brake: Boolean) {
+        requireAcceptsControl(screen)
+        requireUserNotDriving(screen)
+        gesture(screen, "gesture") { service ->
+            val lasted = service.gesture(screen.displayId, paths, durationMs, brake)
+            if (lasted != LwServiceProtocol.GESTURE_COMPLETED) {
+                throw IllegalStateException(interruptedReason("gesture", lasted, durationMs))
+            }
+        }
+    }
+
+    /** 捏合: 两根手指在中心两侧分合, 是 [multiGesture] 的糖衣 */
+    fun pinch(screen: ScreenState, x: Float, y: Float, scale: Float, durationMs: Long, brake: Boolean) {
+        requireAcceptsControl(screen)
+        requireUserNotDriving(screen)
+        gesture(screen, "pinch") { service ->
+            val lasted = service.pinch(screen.displayId, x, y, scale, durationMs, brake)
+            if (lasted != LwServiceProtocol.GESTURE_COMPLETED) {
+                throw IllegalStateException(interruptedReason("pinch", lasted, durationMs))
+            }
+        }
+    }
+
     /** Why a gesture stopped in the middle, which is the brake working rather than a failure */
     private fun interruptedReason(what: String, lasted: Int, askedMs: Long): String =
         "the $what on the phone's own screen (displayId $MAIN_DISPLAY) was cut short after $lasted" +

@@ -414,7 +414,12 @@ private fun AccessibilityItems() {
     val context = LocalContext.current
     val working = AccessibilitySetting.working
     val error = AccessibilitySetting.lastError
-    LaunchedEffect(Unit) { AccessibilitySetting.refresh() }
+    val state = AccessibilitySetting.state
+    LaunchedEffect(Unit) {
+        AccessibilitySetting.refresh()
+        // 状态那几件事要起子进程, 所以在 worker 线程上读, 读完自己会回到 UI
+        AccessibilitySetting.refreshState()
+    }
     SwitchPreference(
         title = stringResource(R.string.settings_accessibility),
         summary = stringResource(R.string.settings_accessibility_summary),
@@ -422,10 +427,46 @@ private fun AccessibilityItems() {
         enabled = !working,
         onCheckedChange = { AccessibilitySetting.set(it) },
     )
-    // 开关自己就会经特权通道把服务打开, 这一条是写不进去时的兜底 (系统那页里能手动打开它)
+    // **只读的真实状态**: 这台设备上"设置里写着"与"系统真的绑着"经常不是一件事, 而含糊的失败提示
+    // 已经误导过一次, 所以把六个事实摊开, 让人自己看得见卡在哪一层
+    state?.let { inspected ->
+        val yes = stringResource(R.string.settings_bool_yes)
+        val no = stringResource(R.string.settings_bool_no)
+        ArrowPreference(
+            title = stringResource(R.string.settings_accessibility_state),
+            summary = stringResource(
+                R.string.settings_accessibility_state_summary,
+                inspected.reason(),
+                if (inspected.componentListed) yes else no,
+                if (inspected.running) yes else no,
+                if (inspected.writeChannelOpen) yes else no,
+            ),
+            onClick = { AccessibilitySetting.refreshState() },
+        )
+    }
+    // 这台机器上应用自己写不进 secure settings, 所以给一条能照抄的命令, 点一下就复制
+    ArrowPreference(
+        title = stringResource(R.string.settings_accessibility_script),
+        summary = error ?: stringResource(R.string.settings_accessibility_script_summary),
+        onClick = {
+            val clipboard = context.getSystemService(ClipboardManager::class.java)
+            clipboard?.setPrimaryClip(
+                ClipData.newPlainText(
+                    "lw-install",
+                    context.getString(R.string.settings_accessibility_install_command),
+                ),
+            )
+            Toast.makeText(
+                context,
+                context.getString(R.string.settings_accessibility_copied),
+                Toast.LENGTH_SHORT,
+            ).show()
+        },
+    )
+    // 那条兜底入口留着: 它在别的 ROM 上仍然是有效的, 只是在这台机器上不管用 (文案里写了)
     ArrowPreference(
         title = stringResource(R.string.settings_accessibility_manual),
-        summary = error ?: stringResource(R.string.settings_accessibility_manual_summary),
+        summary = stringResource(R.string.settings_accessibility_manual_summary),
         onClick = {
             context.startActivity(accessibilitySettingsIntent())
         },

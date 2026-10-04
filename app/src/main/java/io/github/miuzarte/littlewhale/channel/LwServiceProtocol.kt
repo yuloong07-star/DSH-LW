@@ -131,6 +131,17 @@ object LwServiceProtocol {
      */
     const val POWER = IBinder.FIRST_CALL_TRANSACTION + 21
 
+    /**
+     * 多指手势: 每条路径一根手指, 一起走
+     *
+     * 一次事务而不是一根手指一个往返: 平台按 downTime 认出这几根手指属于同一次触摸, 而分开的往返会
+     * 让它们在时间上散开, 于是捏合变成两次普通的拖
+     */
+    const val GESTURE = IBinder.FIRST_CALL_TRANSACTION + 22
+
+    /** 捏合: 两根手指在中心两侧分合 */
+    const val PINCH = IBinder.FIRST_CALL_TRANSACTION + 23
+
     /** The three moments [INPUT_TOUCH] can report */
     const val TOUCH_DOWN = 0
     const val TOUCH_MOVE = 1
@@ -310,6 +321,56 @@ class LwServiceProxy(private val remote: IBinder) {
         code = LwServiceProtocol.POWER,
         write = { writeInt(if (on) 1 else 0) },
         read = { SystemOutput(readInt(), readString().orEmpty()) },
+    )
+
+    /**
+     * 多指手势
+     *
+     * 与 `swipe` 一样是一次事务: 步伐的快慢决定平台读到的是手势还是一次跳, 而一步一个往返会让它跟着
+     * binder 的忙闲飘
+     */
+    fun gesture(
+        displayId: Int,
+        paths: List<LwInput.Path>,
+        durationMs: Long,
+        brake: Boolean,
+    ): Int = transact(
+        code = LwServiceProtocol.GESTURE,
+        write = {
+            writeInt(displayId)
+            writeInt(paths.size)
+            paths.forEach { path ->
+                writeInt(path.points.size)
+                path.points.forEach { (x, y) ->
+                    writeFloat(x)
+                    writeFloat(y)
+                }
+            }
+            writeLong(durationMs)
+            writeInt(if (brake) 1 else 0)
+        },
+        read = { readInt() },
+    )
+
+    /** 捏合, 由特权那边按两条直线路径展开 */
+    fun pinch(
+        displayId: Int,
+        x: Float,
+        y: Float,
+        scale: Float,
+        durationMs: Long,
+        brake: Boolean,
+    ): Int = transact(
+        code = LwServiceProtocol.PINCH,
+        write = {
+            writeInt(displayId)
+            writeFloat(x)
+            writeFloat(y)
+            writeFloat(scale)
+            writeLong(durationMs)
+            writeInt(if (brake) 1 else 0)
+        },
+        read = { readInt() },
     )
 
     /** 一个字符串列表, 长度跟着内容走 */

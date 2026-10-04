@@ -35,6 +35,17 @@ internal fun requireContext(): Context = toolContext
 /** 一句话的答案, 交给 `{"text": ...}` 那条路 */
 internal fun text(value: String): JsonObject = buildJsonObject { put("text", value) }
 
+/**
+ * 已经写好的字段再加一句总结
+ *
+ * 有的工具要回不止一句话 (等一个控件出现: 找到了没有、等了多久、在哪), 而那些字段是给插件看的;
+ * 真正念给模型的还是 `text` 这一个字段, 所以两边都要有
+ */
+internal fun JsonObject.message(summary: String): JsonObject = buildJsonObject {
+    this@message.forEach { (name, element) -> put(name, element) }
+    put("text", summary)
+}
+
 /** 要一个字符串参数 */
 internal fun JsonObject.string(key: String): String =
     this[key]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
