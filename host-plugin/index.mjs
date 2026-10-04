@@ -993,7 +993,9 @@ const TOOLS = [
       }
       return answerOf(await call('syscmd', {
         op,
-        package: op === 'openUrl' ? args?.url : args?.component,
+        // openUrl 把地址放在 package 上 (那一侧的 `-d` 就是它), intent 认的是 action / data / component
+        package: op === 'openUrl' ? args?.url : undefined,
+        component: op === 'intent' ? args?.component : undefined,
         action: args?.action,
         data: args?.data,
         displayId: args?.displayId,
@@ -1577,10 +1579,15 @@ function formatScreenshot(result) {
     ? `${picture.width}x${picture.height} px, so ${note.how}`
     : `the same size as the screen (${note.where})`
   // 一次截图落两个文件: 全尺寸那份给人看, 缩过的那份给模型。哪一份叫什么由设备那一侧说 (它给
-  // fullPath), 这里不猜文件名 —— `.model` 那个后缀猜错过一次
-  const pair = result.fullPath && result.fullPath !== result.path
-    ? `; its full-size twin is ${result.fullPath} - the two belong together, so deleting the`
-      + ' screenshot means deleting both'
+  // fullPath), 这里不猜文件名 —— `.model` 那个后缀猜错过一次。**只要了一块时另外说**: 那时
+  // 全尺寸那份是整屏, 不是这张图的"孪生兄弟", 把它说成一对会让人以为删一张就够
+  const partial = (picture.left ?? 0) !== 0 || (picture.top ?? 0) !== 0
+  const other = result.fullPath && result.fullPath !== result.path ? result.fullPath : ''
+  const pair = other
+    ? partial
+      ? `; the whole screen it was cut from is ${other}, so that file is a different picture`
+      : `; its full-size twin is ${other} - the two belong together, so deleting the screenshot`
+        + ' means deleting both'
     : ''
   return withJson(
     [

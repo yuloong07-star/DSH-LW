@@ -115,7 +115,9 @@ internal object LwSystemCommand {
      */
     private fun appControl(op: String, request: JsonObject): JsonObject {
         val userId = request.int("user", 0)
-        val target = request.string("package").trim()
+        // **intent 那条不读 package**: 它的组件是可选的, 而 `string()` 在缺字段时会直接抛 —— 一个
+        // "必须给包名" 的要求会把不带组件的 intent 整条堵死 (第一版就是这么写的)
+        val target = if (op == "intent") "" else request.string("package").trim()
         val arguments = when (op) {
             "enable" -> listOf(require(target, PACKAGE, "a package name"))
             "setHome" -> listOf(require(target, COMPONENT, "a component, as package/class"))
@@ -136,7 +138,10 @@ internal object LwSystemCommand {
             "enable" -> "enabled $target"
             "setHome" -> "made $target the home app"
             "openUrl" -> "opened $target"
-            else -> "started the intent"
+            else -> "started " + (
+                request.string("component", "").trim().ifEmpty { request.string("action", "").trim() }
+                    .ifEmpty { "the intent" }
+                )
         }
         return text(
             "$what: $said" + if (result.code == 0) "" else " (exit code ${result.code})",
@@ -151,13 +156,13 @@ internal object LwSystemCommand {
      */
     private fun intentArguments(request: JsonObject): List<String> {
         val arguments = mutableListOf<String>()
-        val action = request.string("action").trim()
+        val action = request.string("action", "").trim()
         if (action.isNotEmpty()) {
             arguments += listOf("-a", require(action, ACTION, "an action, as android.intent.action.X"))
         }
-        val data = request.string("data").trim()
+        val data = request.string("data", "").trim()
         if (data.isNotEmpty()) arguments += listOf("-d", data)
-        val component = request.string("component").trim()
+        val component = request.string("component", "").trim()
         if (component.isNotEmpty()) {
             arguments += listOf("-n", require(component, COMPONENT, "a component, as package/class"))
         }
