@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.util.DisplayMetrics
 import android.util.Log
@@ -659,12 +660,17 @@ object VirtualScreen {
      * @param screen the screen to capture, named rather than taken from the selection.
      * @param maxPixels the pixel budget the picture is scaled to fit.
      * @param maxBytes the byte budget the picture is scaled to fit.
+     * @param region the part of the screen to hand over, or null for all of it: 那一块仍然按整屏的坐标
+     *   量, 而答案里带它的左上角, 所以模型能把图上的点换算回屏幕上的点
+     * @param suffix 文件名后缀, 连拍时一个序号: `screen-2-1.png`
      * @returns both files of the capture, or null with [lastError] set.
      */
     fun screenshot(
         screen: ScreenState,
         maxPixels: Int = Picture.DEFAULT_MAX_PIXELS,
         maxBytes: Int = Picture.DEFAULT_MAX_BYTES,
+        region: Rect? = null,
+        suffix: String = "",
     ): Shot? {
         val staging = pictures ?: run {
             lastError = "no directory to write a picture into"
@@ -676,14 +682,13 @@ object VirtualScreen {
                 lastError = stale
                 return null
             }
-            val picture = File(screens(), "screen-${screen.displayId}.png")
+            val picture = File(screens(), "screen-${screen.displayId}$suffix.png")
             staging.copyTo(picture, overwrite = true)
             lastError = null
             // The scaling happens here rather than at the far end: once a picture is stored nothing
             // on this device can re-encode it, so what the model will read has to be the right size
             // by the time it is handed over
-            val fitted = Picture.fit(picture, maxPixels, maxBytes) ?: return null
-            Shot(fitted, picture)
+            Shot(Picture.fit(picture, maxPixels, maxBytes, region), picture)
         } catch (problem: Throwable) {
             report("screenshot", problem)
             null

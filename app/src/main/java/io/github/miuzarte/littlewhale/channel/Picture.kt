@@ -2,6 +2,7 @@ package io.github.miuzarte.littlewhale.channel
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Rect
 import android.util.Log
 import java.io.File
 import kotlin.math.sqrt
@@ -94,6 +95,7 @@ object Picture {
         source: File,
         maxPixels: Int,
         maxBytes: Int = DEFAULT_MAX_BYTES,
+        region: Rect? = null,
     ): Fitted {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(source.absolutePath, bounds)
@@ -103,10 +105,16 @@ object Picture {
             Log.w(TAG, "could not read ${source.name}, handing it over as it is")
             return Fitted(source, 0, 0, 1f)
         }
+        // 要的是一块时, 交给模型的那份就是那一块, 所以"已经装得下"那条捷径不能走 —— 它交出去的是整屏
+        val crop = region
+            ?.let { Rect(it) }
+            ?.takeIf { it.width() > 0 && it.height() > 0 && it.left >= 0 && it.top >= 0 }
+            ?.also { it.right = it.right.coerceAtMost(screenWidth); it.bottom = it.bottom.coerceAtMost(screenHeight) }
+            ?.takeIf { it.width() > 0 && it.height() > 0 }
         val budget = maxPixels.coerceAtLeast(1)
         val byteBudget = maxBytes.coerceAtLeast(1)
         val pixels = screenWidth.toLong() * screenHeight
-        if (pixels <= budget && source.length() <= byteBudget) {
+        if (crop == null && pixels <= budget && source.length() <= byteBudget) {
             Log.i(
                 TAG,
                 "${source.name} is ${screenWidth}x$screenHeight at ${source.length()} bytes," +
@@ -114,14 +122,23 @@ object Picture {
             )
             return Fitted(source, screenWidth, screenHeight, 1f)
         }
-        val decoded = BitmapFactory.decodeFile(source.absolutePath) ?: run {
+        val full = BitmapFactory.decodeFile(source.absolutePath) ?: run {
             Log.w(TAG, "could not decode ${source.name}, handing it over as it is")
             return Fitted(source, screenWidth, screenHeight, 1f)
         }
+        val decoded = if (crop != null) {
+            Log.i(TAG, "${source.name}: taking ${crop.width()}x${crop.height()} at ${crop.left},${crop.top}")
+            Bitmap.createBitmap(full, crop.left, crop.top, crop.width(), crop.height())
+        } else {
+            full
+        }
+        // 裁过之后"这块画面"就是那块矩形: 预算、长宽比与最后的答案都按它算
+        val shownWidth = decoded.width
+        val shownHeight = decoded.height
         val target = File(source.parentFile, source.nameWithoutExtension + SMALL + ".png")
         // 像素预算那一版是上限: 下面只在它以内来回找, 不越过它
-        val widest = (screenWidth * shrink(pixels, budget.toLong())).toInt().coerceAtLeast(1)
-        val highest = (screenHeight * shrink(pixels, budget.toLong())).toInt().coerceAtLeast(1)
+        val widest = (shownWidth * shrink(pixels, budget.toLong())).toInt().coerceAtLeast(1)
+        val highest = (shownHeight * shrink(pixels, budget.toLong())).toInt().coerceAtLeast(1)
         var width = widest
         var height = highest
         // 字节超了就按面积比先估一次 (估偏保守没关系: 缩过头之后还会再放回来)
@@ -173,7 +190,7 @@ object Picture {
                     "${target.name} is over $byteBudget after $attempt tries at ${width}x$height:" +
                         " the model request will refuse it",
                 )
-                Fitted(target, width, height, screenWidth.toFloat() / width)
+                Fitted(target, width, height, shownWidth.toFloat() / width)
             } else {
                 // 最后一轮可能是那次放大的失败尝试, 所以选中哪一版就把它写回去
                 if (chosen[0] != width || chosen[1] != height) {
@@ -181,16 +198,22 @@ object Picture {
                 }
                 Log.i(
                     TAG,
-                    "scaled ${source.name} from ${screenWidth}x$screenHeight (${source.length()}" +
+                    "scaled ${source.name} from ${shownWidth}x$shownHeight (${source.length()}" +
                         " bytes) to ${chosen[0]}x${chosen[1]} (${chosen[2]} bytes)",
                 )
-                Fitted(target, chosen[0], chosen[1], screenWidth.toFloat() / chosen[0])
+                Fitted(target, chosen[0], chosen[1], shownWidth.toFloat() / chosen[0])
             }
         } catch (problem: Throwable) {
             Log.w(TAG, "could not write ${target.name}", problem)
-            Fitted(source, screenWidth, screenHeight, 1f)
+            // 裁过的时候不能退回整屏: 调用方要的是那一块, 而交出去一张整屏是"看起来成功了"的错答案
+            if (crop == null) {
+                Fitted(source, shownWidth, shownHeight, 1f)
+            } else {
+                Fitted(target, decoded.width, decoded.height, 1f)
+            }
         } finally {
             decoded.recycle()
+            if (decoded !== full) full.recycle()
         }
     }
 

@@ -2,6 +2,7 @@ package io.github.miuzarte.littlewhale.channel
 
 import android.graphics.Rect
 import android.util.Log
+import io.github.miuzarte.littlewhale.tool.LwKeepAwake
 import io.github.miuzarte.littlewhale.tool.LwNotify
 import io.github.miuzarte.littlewhale.tool.LwPower
 import io.github.miuzarte.littlewhale.tool.LwSystem
@@ -347,7 +348,16 @@ object PrivilegedBridge {
                     }
                 },
             )
-            put("error", VirtualScreen.lastError ?: "")
+            // 这里**不叫 error**: `VirtualScreen.lastError` 是这一套东西上一次出错留下的那句话, 而不是
+            // 这一次的结论 —— 通道刚连上那会儿它还在, 于是答案里一边是"没有屏"一边是"需要 root 或
+            // Shizuku"。所以通道状态单独给一条实时的, 谁要用那句旧话, 先看这一条
+            put("lastError", VirtualScreen.lastError ?: "")
+            putJsonObject("channel") {
+                val state = PrivilegedChannel.state()
+                put("connected", state.connected)
+                put("backend", state.backend ?: "")
+                put("error", state.error ?: "")
+            }
         }
 
         // Give one screen back, by id and only by id
@@ -425,6 +435,16 @@ object PrivilegedBridge {
                 )
             }
             val replace = request["replace"]?.jsonPrimitive?.booleanOrNull == true
+            // 1.0.3: 落在指定的那一点上。**先按一下再打字**, 因为"往哪个字段里写"这件事只有按下去才算
+            // 数: 无障碍那条路写的是**有焦点的**那个字段, 而调用方常常知道的是坐标
+            val atX = request["x"]?.jsonPrimitive?.floatOrNull
+            val atY = request["y"]?.jsonPrimitive?.floatOrNull
+            if (atX != null || atY != null) {
+                require(atX != null && atY != null) {
+                    "putting the text at a point needs both x and y: giving one of them is not a point"
+                }
+                VirtualScreen.tap(screen, atX, atY)
+            }
             val field = LwAccessibility.type(screen.displayId, text, replace)
             when (field.outcome) {
                 "typed" -> typingJson(screen, "field", text.length, field.text, field.password, field.field)
@@ -650,23 +670,36 @@ object PrivilegedBridge {
             // 要在 host 那边重编码, 而设备上没有编码器
             val maxPixels = request["maxPixels"]?.jsonPrimitive?.intOrNull ?: ScreenshotBudget.pixels
             val maxBytes = request["maxBytes"]?.jsonPrimitive?.intOrNull ?: ScreenshotBudget.bytes
-            val shot = VirtualScreen.screenshot(screen, maxPixels, maxBytes)
+            val region = region(request)
+            // 连拍: 相隔一小段再拍一张。**不是"每帧一张"** —— 一次截图在本机要两三百毫秒, 所以几张之间
+            // 天然隔着那个时间; 它要的是"动起来的那几帧", 不是精确的帧率
+            val count = (request["count"]?.jsonPrimitive?.intOrNull ?: 1).coerceIn(1, MAX_SERIES)
+            val shots = buildJsonArray {
+                repeat(count) { index ->
+                    val shot = VirtualScreen.screenshot(
+                        screen = screen,
+                        maxPixels = maxPixels,
+                        maxBytes = maxBytes,
+                        region = region,
+                        suffix = if (count > 1) "-${index + 1}" else "",
+                    ) ?: return@repeat
+                    add(shotJson(shot, region))
+                    if (index < count - 1) Thread.sleep(SERIES_GAP_MS)
+                }
+            }
+            val first = shots.firstOrNull()?.jsonObject
             buildJsonObject {
                 put("displayId", screen.displayId)
                 put("label", screen.label)
                 put("width", screen.width)
                 put("height", screen.height)
-                put("path", shot?.fitted?.file?.absolutePath ?: "")
-                put("bytes", shot?.fitted?.file?.length() ?: 0L)
-                // 全尺寸那份也在工作区里, 而且**两份是一对**: 收尾清理要一起删。路径由应用这一侧给,
-                // 因为只有它知道缩放那份叫什么 (`.model` 后缀是 Picture 里的常量), 让上面去猜文件名
-                // 是猜不对的 —— 这里给过一次, 而且猜错了一次
-                put("fullPath", shot?.full?.absolutePath ?: "")
-                put("picture", buildJsonObject {
-                    put("width", shot?.fitted?.width ?: 0)
-                    put("height", shot?.fitted?.height ?: 0)
-                    put("scale", shot?.fitted?.scale ?: 0f)
-                })
+                // 单张时这几个字段是老样子; 连拍时它们说的是**第一张**, 而全部几张在 `shots` 里
+                put("path", first?.get("path")?.jsonPrimitive?.contentOrNull ?: "")
+                put("bytes", first?.get("bytes")?.jsonPrimitive?.longOrNull ?: 0L)
+                put("fullPath", first?.get("fullPath")?.jsonPrimitive?.contentOrNull ?: "")
+                put("picture", first?.get("picture") ?: buildJsonObject { put("scale", 0f) })
+                put("count", shots.size)
+                put("shots", shots)
                 put("error", VirtualScreen.lastError ?: "")
             }
         }
@@ -849,6 +882,8 @@ object PrivilegedBridge {
         "location" -> appContext { LwSystem.location(it, request) }
         "system" -> appContext { LwSystem.system(it, request) }
         "permissions" -> appContext { text(PermissionCatalog.report(it)) }
+        // 1.0.3: 让设备别睡 —— app 进程里一个 PARTIAL_WAKE_LOCK 就够, 不必过特权
+        "keepAwake" -> LwKeepAwake.dispatch(request)
         "power" -> appContext { LwPower.dispatch(it, request) }
         "syscmd" -> LwSystemCommand.dispatch(request)
 
@@ -983,6 +1018,45 @@ object PrivilegedBridge {
             if (System.currentTimeMillis() >= deadline) return false
             Thread.sleep(WINDOW_POLL_MS)
         }
+    }
+
+    /**
+     * 一次截图落到答案里的那几个字段
+     *
+     * **两份路径都由应用这一侧给** (见 [VirtualScreen.Shot]): 上面照着文件名去猜缩放那份叫什么, 已经
+     * 猜错过一次 —— `.model` 那个后缀加两遍就得到一个从来没有过的文件
+     */
+    private fun shotJson(shot: VirtualScreen.Shot, region: Rect?): JsonObject = buildJsonObject {
+        put("path", shot.fitted.file.absolutePath)
+        put("bytes", shot.fitted.file.length())
+        put("fullPath", shot.full.absolutePath)
+        put("picture", buildJsonObject {
+            put("width", shot.fitted.width)
+            put("height", shot.fitted.height)
+            put("scale", shot.fitted.scale)
+            // 只要了屏幕的一块时, 图上的点先按 scale 放大、再加上这个偏移, 才是屏幕上的点
+            put("left", region?.left ?: 0)
+            put("top", region?.top ?: 0)
+        })
+    }
+
+    /**
+     * 截图只要屏幕的一块时, 那一块在哪
+     *
+     * 四个数**都给**才算数: 只给一部分是调用方弄错了, 而不是"默认整屏"—— 那种默认会让它以为自己在看
+     * 一块, 实际拿到的是整屏
+     */
+    private fun region(request: JsonObject): Rect? {
+        val x = request["x"]?.jsonPrimitive?.intOrNull
+        val y = request["y"]?.jsonPrimitive?.intOrNull
+        val width = request["width"]?.jsonPrimitive?.intOrNull
+        val height = request["height"]?.jsonPrimitive?.intOrNull
+        if (x == null && y == null && width == null && height == null) return null
+        require(x != null && y != null && width != null && height != null) {
+            "a region needs all four of x, y, width and height: giving some of them is not a region"
+        }
+        require(width > 0 && height > 0) { "a region needs a positive width and height" }
+        return Rect(x, y, x + width, y + height)
     }
 
     /**
@@ -1201,6 +1275,12 @@ object PrivilegedBridge {
     /** 起完之后窗口落进无障碍那份列表要给多久, 以及多久问一次 */
     private const val WINDOW_SETTLE_MS = 1_500L
     private const val WINDOW_POLL_MS = 150L
+
+    /** 连拍最多几张: 再多就已经是一段视频, 而模型一次读不了那么多图 */
+    private const val MAX_SERIES = 5
+
+    /** 连拍两张之间歇多久 (一次截图本身要两三百毫秒, 所以它只是让两张别贴在一起) */
+    private const val SERIES_GAP_MS = 120L
 
     /** More apps than this in one answer is a listing nobody reads, so it is cut and said so */
     private const val MAX_APPS = 400

@@ -509,7 +509,9 @@ const TOOLS = [
       + 'field at all (a game, a canvas), the text goes in as key presses, which only produces what '
       + 'a keyboard has - letters, digits, punctuation - and lands wherever focus is. The answer '
       + 'says which of the two happened and what the field reads afterwards, so read it rather than '
-      + 'assuming. Typing does not submit anything: press the app\'s own button, or ENTER with '
+      + 'assuming. Give x and y to put the text into the field **at that point** - the tool presses '
+      + 'it first, which is what decides where the text lands on a screen with more than one field. '
+      + 'Typing does not submit anything: press the app\'s own button, or ENTER with '
       + 'lw_key, if it needs that. On the phone\'s own screen it is refused while the user\'s finger '
       + 'is on it, like every other acting call.',
     parameters: {
@@ -523,6 +525,8 @@ const TOOLS = [
         type: 'boolean',
         description: 'Overwrite what the field already says, instead of adding to it at the cursor',
       },
+      x: { type: 'integer', description: 'Press this point first, then type into the field there' },
+      y: { type: 'integer', description: 'Press this point first, then type into the field there' },
       note: NOTE,
     },
     output: {
@@ -638,8 +642,22 @@ const TOOLS = [
       + 'Take this when you want to see the screen as a person would, or when neither of those two '
       + 'answers. When a scaled picture is what you have, the answer says what to multiply '
       + 'coordinates measured on it by to get coordinates for lw_tap and lw_swipe. The file is '
-      + 'overwritten by the next capture of the same screen.',
-    parameters: { displayId: DISPLAY_ID },
+      + 'overwritten by the next capture of the same screen, unless you ask for more than one at a'
+      + ' time.',
+    parameters: {
+      displayId: DISPLAY_ID,
+      // 只要屏幕的一块: 文字太小看不清时, 把那一块按它自己的像素交给模型, 比整屏缩一遍有用
+      x: { type: 'integer', description: 'Left edge of the part to capture, for a partial picture' },
+      y: { type: 'integer', description: 'Top edge of the part to capture, for a partial picture' },
+      width: { type: 'integer', description: 'Width of the part to capture, with x, y and height' },
+      height: { type: 'integer', description: 'Height of the part to capture, with x, y and width' },
+      count: {
+        type: 'integer',
+        description: 'How many pictures in a row, 1 to 5, for something that is moving. Each one'
+          + ' is a separate file; leave it out for a single picture',
+      },
+      note: NOTE,
+    },
     output: {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
@@ -900,24 +918,136 @@ const TOOLS = [
 
   simpleTool(
     'lw_app_control',
-    'Force stop, clear the data of, uninstall or install an app. Every one of these asks for a tap'
-    + ' on the phone first: the app puts a confirmation on screen and nothing happens unless someone'
-    + ' taps it, so a call from an unattended run comes back saying nobody confirmed. Use it when the'
+    'Force stop, clear the data of, uninstall, install, disable or enable an app, or make one the'
+    + ' home app. **forceStop, clearData, uninstall, install and disable each ask for a tap on the'
+    + ' phone first**: the app puts a confirmation on screen and nothing happens unless someone taps'
+    + ' it, so a call from an unattended run comes back saying nobody confirmed. disable is in that'
+    + ' group because it is stickier than a force stop - the app leaves the launcher and only comes'
+    + ' back if someone enables it again. enable and setHome act straight away. Use these when the'
     + ' user asked for exactly that change; it is not how a stuck app is normally dealt with.',
     'syscmd',
     {
       op: {
         type: 'string',
         required: true,
-        description: 'forceStop, clearData, uninstall or install',
-        enum: ['forceStop', 'clearData', 'uninstall', 'install'],
+        description: 'forceStop, clearData, uninstall, install, disable, enable or setHome',
+        enum: ['forceStop', 'clearData', 'uninstall', 'install', 'disable', 'enable', 'setHome'],
       },
       package: {
         type: 'string',
         required: true,
-        description: 'The package to act on, or the APK path for install',
+        description: 'The package to act on, or the APK path for install; for setHome, the component'
+          + ' as package/class',
       },
       user: { type: 'integer', description: 'The Android user, for a cloned app. Default 0' },
+    },
+  ),
+
+  // 1.0.3: 打开一个链接, 或者起一个具体的 intent
+  //
+  // 这两条与 lw_launch 是同一件事的两个层次: lw_launch 认应用名, 而这里认动作与地址。**只有 am 的
+  // start 那一个动词进得了白名单**, 所以它能做的仍然只是"起一个 activity", 不是一条命令
+  defineTool({
+    name: 'lw_intent',
+    description:
+      'Open a link, or start an activity by its action or component, on one screen. Use openUrl for'
+      + ' a plain http/https address - a browser, a shop page, a map link. Use action or component'
+      + ' when the user named something more specific: a mail composer (android.intent.action.SENDTO'
+      + ' with a mailto: address), a settings page of another app, a specific class. The screen is'
+      + ' named the same way every other acting tool names one, and the activity lands on it.'
+      + ' Nothing here is a shell: the one command this reaches is `am start`, with an action, a'
+      + ' piece of data, a component and a display.',
+    parameters: {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'openUrl for an http(s) address, intent for anything else',
+        enum: ['openUrl', 'intent'],
+      },
+      url: { type: 'string', description: 'The http or https address, for openUrl' },
+      action: {
+        type: 'string',
+        description: 'An intent action such as android.intent.action.SENDTO, for intent',
+      },
+      data: {
+        type: 'string',
+        description: 'What the action is about - a mailto: address, a content:// uri, for intent',
+      },
+      component: {
+        type: 'string',
+        description: 'A class to start, as package/class, for intent',
+      },
+      displayId: DISPLAY_ID,
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      const op = args?.op === 'openUrl' ? 'openUrl' : 'intent'
+      const target = op === 'openUrl' ? args?.url : args?.component || args?.action
+      if (typeof target !== 'string' || target.length === 0) {
+        return op === 'openUrl'
+          ? 'openUrl needs a url: give the http or https address to open'
+          : 'intent needs an action or a component: on its own, a display is not something to start'
+      }
+      return answerOf(await call('syscmd', {
+        op,
+        package: op === 'openUrl' ? args?.url : args?.component,
+        action: args?.action,
+        data: args?.data,
+        displayId: args?.displayId,
+        note: args?.note,
+      }))
+    },
+  }),
+
+  // 键与打字的补充: 一次按住几个键 (Ctrl+A 那种), 以及把文本放进指定的字段
+  defineTool({
+    name: 'lw_key_combo',
+    description:
+      'Hold two or more keys down together and let go - Ctrl+A, Shift+Tab, Alt+Tab, Ctrl+Shift+T.'
+      + ' Use it for the shortcuts a single key cannot express: select all, the app switcher, a new'
+      + ' tab. Send the keys in the order they should be held, modifiers first. Names are the'
+      + ' Android ones without the KEYCODE_ prefix (CTRL_LEFT, SHIFT_LEFT, ALT_LEFT, A, TAB, ...),'
+      + ' and a name Android does not have is refused instead of being pressed as some other key.',
+    parameters: {
+      keys: {
+        type: 'array',
+        required: true,
+        description: 'The keys to hold, modifiers first, at least two, at most four',
+        items: { type: 'string' },
+      },
+      note: NOTE,
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      const keys = Array.isArray(args?.keys) ? args.keys : []
+      return answerOf(await call('syscmd', { op: 'keyCombo', keys, note: args?.note }))
+    },
+  }),
+
+  // 让设备别睡
+  simpleTool(
+    'lw_keep_awake',
+    'Hold a wake lock so the device does not sleep while something takes a while: a long download,'
+    + ' a batch of screenshots, a step that must not be interrupted. **The screen may still go off**'
+    + ' - this keeps the CPU awake, not the display - and a screen that has gone off hands back its'
+    + ' last frame without saying so, which is why lw_screenshot and lw_ocr report the screen state'
+    + ' too. **It does not let go on its own**: nothing here times out, so call it again with off'
+    + ' when the work is done, or the device stays awake until something else stops it. Ask with op'
+    + ' status to see whether it is held and for how long.',
+    'keepAwake',
+    {
+      op: {
+        type: 'string',
+        description: 'on to hold it, off to let go, status to ask. Default on',
+        enum: ['on', 'off', 'status'],
+      },
+      note: NOTE,
     },
   ),
 
@@ -1286,6 +1416,15 @@ function formatScreens(result) {
     }
   }
   lines.push(brakeLine(result.touch))
+  // 通道不通才说那句话: `lastError` 是**上一次**出错留下的, 通道已经连上时它还在, 念出来就是一句
+  // 已经不成立的话 (2026-10-04 在模拟器上就是这么误导的)
+  const channel = result.channel ?? {}
+  if (channel.connected !== true) {
+    lines.push(
+      'the screen side is not connected right now: '
+      + `${channel.error || result.lastError || 'no reason reported'}`,
+    )
+  }
   return withJson(lines, result)
 }
 
@@ -1380,6 +1519,26 @@ function formatGesture(verb, result, note) {
   return said(withJson([`the device did not report the gesture as delivered`], result), note)
 }
 
+/** 这张图是哪一块, 以及图上的点怎么换算回屏幕上的点 */
+function pictureNote(picture) {
+  const left = picture.left ?? 0
+  const top = picture.top ?? 0
+  const scale = picture.scale ?? 1
+  const partial = left !== 0 || top !== 0
+  const where = partial ? `the part of the screen at ${left},${top}` : 'the whole screen'
+  let how
+  if (scale > 1 && partial) {
+    how = `multiply a coordinate on the picture by ${scale.toFixed(2)}, then add ${left},${top}`
+  } else if (scale > 1) {
+    how = `multiply a coordinate on the picture by ${scale.toFixed(2)} to get the screen coordinate`
+  } else if (partial) {
+    how = `add ${left},${top} to a coordinate on the picture to get the screen coordinate`
+  } else {
+    how = 'coordinates on it are screen coordinates already'
+  }
+  return { where, how }
+}
+
 /** Where the picture went, and how to read coordinates off it */
 function formatScreenshot(result) {
   if (!result.path) {
@@ -1387,13 +1546,36 @@ function formatScreenshot(result) {
     // (在它上面起个应用再拍) —— 理由由设备那一侧写, 这里原样念
     return `no picture was written: ${result.error || 'no reason reported'}`
   }
+  const shots = Array.isArray(result.shots) ? result.shots : []
+  if (shots.length > 1) {
+    const lines = [
+      `took ${shots.length} pictures of displayId ${result.displayId} "${result.label}" one after`
+      + ' another: separate files, nothing overwritten. Read them in order - the screen moved'
+      + ' between them, which is the whole point of taking more than one.',
+    ]
+    shots.forEach((shot, index) => {
+      const note = pictureNote(shot.picture ?? {})
+      lines.push(
+        `  ${index + 1}. ${shot.path} - ${note.where}, ${(shot.bytes / 1024).toFixed(1)} KB,`
+        + ` ${note.how}`,
+      )
+    })
+    const twin = shots[0].fullPath
+    if (twin) {
+      lines.push(
+        `Each one also left its full-size twin beside it (the first is ${twin}) - the two belong`
+        + ' together, so deleting a picture means deleting both.',
+      )
+    }
+    return withJson(lines, result)
+  }
   const kilobytes = (result.bytes / 1024).toFixed(1)
   const picture = result.picture ?? {}
-  const scaled = picture.scale > 1
+  const note = pictureNote(picture)
+  const scaled = (picture.scale ?? 1) > 1
   const size = scaled
-    ? `${picture.width}x${picture.height} px, so multiply coordinates measured on the picture by`
-      + ` ${picture.scale.toFixed(2)} to get screen coordinates`
-    : 'the same size as the screen'
+    ? `${picture.width}x${picture.height} px, so ${note.how}`
+    : `the same size as the screen (${note.where})`
   // 一次截图落两个文件: 全尺寸那份给人看, 缩过的那份给模型。哪一份叫什么由设备那一侧说 (它给
   // fullPath), 这里不猜文件名 —— `.model` 那个后缀猜错过一次
   const pair = result.fullPath && result.fullPath !== result.path

@@ -27,11 +27,15 @@ internal object LwSystemCommandTable {
      * @property binary 要跑的那个可执行文件
      * @property prefix 固定的那几个词
      * @property userId 用哪个 user 跑, null 表示不带 `--user` (不是每条命令都吃这个参数)
+     * @property maxArguments 这条吃几个参数。默认就是全局上限, **只有通用 intent 一条放得更宽** ——
+     *   `am start` 的动作 / 数据 / 组件 / 目标屏四样都要占位置, 放不进 4 个参数。宽的那一条仍然落在
+     *   同一套边界里: 同一个二进制、同一个动词、每个参数一样长, 拼不出第二个动词
      */
     private class Entry(
         val binary: String,
         val prefix: List<String>,
         val userId: Boolean = false,
+        val maxArguments: Int = MAX_ARGUMENTS,
     )
 
     private val entries = mapOf(
@@ -45,6 +49,18 @@ internal object LwSystemCommandTable {
         "bluetooth" to Entry("svc", listOf("bluetooth")),
         "wake" to Entry("input", listOf("keyevent", "KEYCODE_WAKEUP")),
         "sleep" to Entry("input", listOf("keyevent", "KEYCODE_SLEEP")),
+        // 1.0.3 应用控制的其余几条: 启用 / 停用 / 换默认桌面。都是 pm 与 cmd 的具体动作, 名字认不
+        // 出来一律拒 —— 这张表就是"模型能不能凑出一条任意命令"这个问题的答案
+        "enable" to Entry("pm", listOf("enable"), userId = true),
+        "disable" to Entry("pm", listOf("disable-user"), userId = true),
+        "setHome" to Entry("cmd", listOf("package", "set-home-activity"), userId = true),
+        // 打开一个链接: 动词固定 VIEW, url 是 `-d` 的值, 目标屏跟在它后面。**不带 userId** ——
+        // `--user` 会插在 `-d` 与它的值中间, 把 url 顶成 am 自己的选项
+        "openUrl" to Entry("am", listOf("start", "-a", "android.intent.action.VIEW")),
+        // 通用 intent: 只放 `am start` 这一个动词, 参数最多 8 个
+        "intent" to Entry("am", listOf("start")),
+        // 组合键: `input keycombination KEYCODE_CTRL_LEFT KEYCODE_A`
+        "keyCombo" to Entry("input", listOf("keycombination")),
     )
 
     /**
@@ -56,7 +72,7 @@ internal object LwSystemCommandTable {
         val entry = entries[operation]
             ?: return SystemOutput(2, "this device's privileged side does not know the operation \"$operation\"")
 
-        val bounded = arguments.take(MAX_ARGUMENTS).map { it.take(MAX_ARGUMENT_CHARS) }
+        val bounded = arguments.take(entry.maxArguments).map { it.take(MAX_ARGUMENT_CHARS) }
         if (bounded.any { it.isEmpty() }) {
             return SystemOutput(2, "the $operation operation needs a non-empty argument")
         }
