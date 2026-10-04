@@ -60,10 +60,10 @@
     <string name="settings_accessibility">Let DSH read the screen through the accessibility service</string>
     <string name="settings_accessibility_summary">Once on, the model reads the text and the exact position of every control on the screen</string>
     <string name="settings_accessibility_manual">Open accessibility settings</string>
-    <string name="settings_accessibility_manual_summary">On this device that page is not much use: opening it strips the entry without stopping the service, so its "off" is an illusion. On other ROMs it is still a way in</string>
+    <string name="settings_accessibility_manual_summary">Opening it strips the entry without stopping the service, so what that page shows as off is an illusion; on other ROMs it is still a way in</string>
     <string name="settings_accessibility_state">What is actually true</string>
     <string name="settings_accessibility_state_summary">%1$s\nlisted: %2$s / bound: %3$s / writes accepted: %4$s</string>
-    <string name="settings_accessibility_script">The way in on this device: run the install script on a computer</string>
+    <string name="settings_accessibility_script">Run the install script on a computer</string>
     <string name="settings_accessibility_script_summary">There is a short window after a reinstall in which the entry can be written back, and the script is built to hit it. Tap to copy the command</string>
     <string name="settings_accessibility_copied">Command copied</string>
     <string name="settings_bool_yes">yes</string>
@@ -107,12 +107,13 @@
     <string name="exit_hint_again">Press back again to exit</string>
 
     <string name="settings_section_permissions">Permissions</string>
-    <string name="settings_permissions_summary">This version declares every permission the tools can use. Android grants the normal ones on its own; the ones below are either tapped here or handed out in bulk by tools/lw-install.ps1 -Perms on a computer</string>
+    <string name="settings_permissions_summary">These permissions are switched on and off by the user, and DSH-LW is free to build on them.</string>
     <string name="settings_permission_granted">Granted</string>
     <string name="settings_permission_denied">Not granted</string>
     <string name="settings_permission_ask">Grant</string>
     <string name="settings_permission_settings">Open settings</string>
     <string name="settings_permission_missing">Not declared</string>
+    <string name="settings_permission_no_entry">There is no page to open for this permission on this system, so a tap cannot do anything here: tools/lw-install.ps1 -Perms on a computer gives it directly</string>
 
     <string name="notification_channel_tools">Tool notifications</string>
     <string name="notification_channel_tools_description">Notifications the model posts with lw_notify</string>

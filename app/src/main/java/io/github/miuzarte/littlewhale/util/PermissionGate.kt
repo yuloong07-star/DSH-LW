@@ -3,7 +3,8 @@ package io.github.miuzarte.littlewhale.util
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
+import android.provider.Settings
+import androidx.core.net.toUri
 
 /**
  * 能力要权限时先过的那道闸
@@ -51,32 +52,47 @@ object PermissionGate {
      * 请用户在应用里点一下授权
      *
      * 只有 [Capability.special] 为 false 的能力能走这条路: 特殊访问那些系统不接受运行时申请, 只能
-     * 打开它那一页. 所以这里返回 false 时 caller 应该去开 [Capability.settings]
+     * 打开它那一页
      *
-     * 已经"拒绝且不再问"时不重复申请 (Android 11 起系统会静默拒绝, 白弹一次), 直接返回 false
+     * **不去看 `shouldShowRequestPermissionRationale`**: 曾经用"不该再问"当闸, 而它在真机上会
+     * 因为设备或版本不同而给出不同的答案 —— 结果是点一下什么都不发生 (实测: 相机那一条点了连系统框
+     * 都不弹)。这里改成只要没授权就直接申请: 系统自己会在"拒绝过且不再问"时静默回调, 而那条路至少
+     * 会走完一次请求, 应用那一侧也就知道该把状态重算一遍
      */
     fun ask(activity: Activity, capability: Capability): Boolean {
         if (capability.special || capability.permissions.isEmpty()) return false
         if (PermissionCatalog.state(activity, capability) == Grant.GRANTED) return false
-        val permanently = capability.permissions.any { permission ->
-            activity.checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED &&
-                !activity.shouldShowRequestPermissionRationale(permission)
-        }
-        if (permanently) return false
         PermissionRequests.request(capability.permissions)
         return true
     }
 
-    /** 打开这个能力要的那一页系统设置 */
+    /**
+     * 打开这个能力要的那一页
+     *
+     * **三级回退**: 它自己那页 → 应用详情页 → 都没有就报 false 让人给一句提示。第二级是必需的:
+     * `ACTION_MANAGE_WRITE_SETTINGS` 这类页面在个别 ROM 上没有接收者, 而"这一次点击没有下文"是
+     * 用户唯一看得见的东西, 所以宁可退到一个一定存在、而且能看权限状态的地方
+     */
     fun openSettings(context: Context, capability: Capability): Boolean {
-        val intent = capability.settings ?: return false
-        return try {
-            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            true
-        } catch (error: Throwable) {
-            false
-        }
+        capability.settings?.let { if (start(context, it)) return true }
+        return start(context, appDetails(capability.context))
     }
+
+    private fun start(context: Context, intent: Intent): Boolean = try {
+        context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        true
+    } catch (error: Throwable) {
+        false
+    }
+
+    /** 应用详情页: 一定存在的那一页, 权限开关都在上面 */
+    private fun appDetails(owner: String?): Intent = Intent(
+        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+        "package:${owner ?: APP_PACKAGE}".toUri(),
+    )
+
+    /** 本应用自己的包名, 给"没有携带包名"的能力当回退目标 */
+    private const val APP_PACKAGE = "io.github.miuzarte.littlewhale"
 
     private const val FIX_MANIFEST = "this build does not declare the permission this capability needs"
 }

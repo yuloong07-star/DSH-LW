@@ -40,6 +40,7 @@ import java.util.concurrent.TimeUnit
  * @property installer 设备记的 `installerPackageName`, 空串表示 null (侧载)
  * @property restrictedSettings `ACCESS_RESTRICTED_SETTINGS` 这道 op 的值
  * @property writeChannelOpen 应用现在写的 secure settings 会不会被设备留下 (探针的答案)
+ * @property readAt 这一份是什么时候读的 (毫秒时间戳), 见 [reason] 里为什么需要它
  */
 data class AccessibilityState(
     val component: String,
@@ -50,30 +51,41 @@ data class AccessibilityState(
     val installer: String,
     val restrictedSettings: String,
     val writeChannelOpen: Boolean,
+    val readAt: Long,
 ) {
 
     /** 健康的样子: 在列表里且真的绑着 */
     val healthy: Boolean get() = componentListed && running
 
-    /** 一句能直接给用户/日志看的话, 说清现在卡在哪一层 */
+    /**
+     * 一句能直接给用户/日志看的话, 说清现在卡在哪一层
+     *
+     * **末尾那个时间不是装饰**: 设置页那一行点一下就是重新读一次, 而读出来的内容常常与上一次逐字相同
+     * (状态没变时它就该相同) —— 于是"点了没反应"与"点了、结果一样"在屏幕上看不出区别。把读取时刻带上,
+     * 每一次点击都会让那一行真的变一下, 而它同时说明了这份状态有多新
+     */
     fun reason(): String = when {
-        running && componentListed -> "服务在跑, 组件在设备的列表里"
+        running && componentListed -> "服务在跑, 组件在设备的列表里$AT"
+
         running && !componentListed -> "服务在跑, 但它不在设备的列表里: 那个页面多半是这么显示的," +
-            " 而实例还活着 (去掉条目不会杀已经绑好的服务)"
+            " 而实例还活着 (去掉条目不会杀已经绑好的服务)$AT"
 
         !writeChannelOpen -> "这台设备不接受写入: `settings put` 返回 0 而值不变, 所以应用自己开不了它。" +
-            " 用电脑跑 tools/lw-install.ps1, 它会赶在重装之后那段窗口里写完并读回"
+            " 用电脑跑 tools/lw-install.ps1, 它会赶在重装之后那段窗口里写完并读回$AT"
 
         installer.isEmpty() -> "装的时候没带安装者身份 (installerPackageName 是 null), 而 Android 13" +
-            " 起这样的应用不许开无障碍。用带 -i 的方式重装: tools/lw-install.ps1"
+            " 起这样的应用不许开无障碍。用带 -i 的方式重装: tools/lw-install.ps1$AT"
 
         restrictedSettings != "allow" -> "受限设置那道 op 还是 \"$restrictedSettings\" (要 allow);" +
-            " 这台设备上它只有带安装者身份重装之后才设得动"
+            " 这台设备上它只有带安装者身份重装之后才设得动$AT"
 
-        !componentListed -> "组件不在设备的列表里, 写一次就能放回去 (重装会把我们踢出去)"
+        !componentListed -> "组件不在设备的列表里, 写一次就能放回去 (重装会把我们踢出去)$AT"
 
-        else -> "组件在列表里但系统没有把它绑起来: 开关会先摘掉、停一下再放回, 那一下是让系统重新评估"
+        else -> "组件在列表里但系统没有把它绑起来: 开关会先摘掉、停一下再放回, 那一下是让系统重新评估$AT"
     }
+
+    private val AT: String
+        get() = " (" + java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(readAt) + ")"
 }
 
 internal class LwPermission(private val context: Context?) {
@@ -266,6 +278,7 @@ internal class LwPermission(private val context: Context?) {
             installer = installer,
             restrictedSettings = context?.let { restrictedSettings(it.packageName) }.orEmpty(),
             writeChannelOpen = writeChannelOpen(),
+            readAt = System.currentTimeMillis(),
         )
     }
 

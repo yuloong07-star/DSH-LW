@@ -43,6 +43,8 @@ enum class Grant {
  * @property permissions 它要的权限清单; 特殊访问那几条放的是系统页的 action
  * @property special true 表示这几条只能去系统设置页点, 运行时要不来
  * @property settings 去系统设置页的入口, 只有 [special] 的能力才有
+ * @property context 那几页系统设置是**哪个包**的 (设置那一侧只认包名, 从 [settings] 的 intent 里解析
+ *   不出来); 回退到应用详情页时按它打开对应那一页, null 表示就是本应用自己
  * @property note 给人看的一句说明 (比如"声明了但这一版没有功能用它们")
  */
 data class Capability(
@@ -51,6 +53,7 @@ data class Capability(
     val permissions: List<String>,
     val special: Boolean = false,
     val settings: Intent? = null,
+    val context: String? = null,
     val note: String? = null,
 )
 
@@ -157,6 +160,7 @@ object PermissionCatalog {
             permissions = listOf(Settings.ACTION_USAGE_ACCESS_SETTINGS),
             special = true,
             settings = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS),
+            context = SETTINGS_PACKAGE,
         ),
         Capability(
             name = "忽略电池优化",
@@ -164,6 +168,7 @@ object PermissionCatalog {
             permissions = listOf(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
             special = true,
             settings = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+            context = SETTINGS_PACKAGE,
         ),
         Capability(
             name = "精确闹钟",
@@ -192,6 +197,9 @@ object PermissionCatalog {
 
     /** 本应用自己的包名, 几条系统页要按包名打开 */
     private const val APP_PACKAGE = "io.github.miuzarte.littlewhale"
+
+    /** 系统设置自己的包名: "使用情况访问"与"忽略电池优化"那两页是它的, 不属于任何应用 */
+    private const val SETTINGS_PACKAGE = "com.android.settings"
 
     /** 一条权限现在的状态 */
     fun state(context: Context, permission: String): Grant = try {

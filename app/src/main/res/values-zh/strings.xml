@@ -60,10 +60,10 @@
     <string name="settings_accessibility">允许 DSH 通过无障碍服务读取屏幕内容</string>
     <string name="settings_accessibility_summary">启用后, 模型直接能读到屏幕上每个控件的文字与精确位置</string>
     <string name="settings_accessibility_manual">跳转到无障碍设置</string>
-    <string name="settings_accessibility_manual_summary">这台机器上那个页面不太管用: 打开它会摘掉条目而不杀服务, 所以它显示的"已关闭"是假象。别的 ROM 上它仍然是有效的一条路</string>
+    <string name="settings_accessibility_manual_summary">打开它会摘掉条目而不杀服务, 所以那个页面显示的"已关闭"是假象; 别的 ROM 上它仍然是有效的一条路</string>
     <string name="settings_accessibility_state">现在到底怎么样</string>
     <string name="settings_accessibility_state_summary">%1$s\n组件在列表里: %2$s / 服务绑着: %3$s / 能写设置: %4$s</string>
-    <string name="settings_accessibility_script">这台机器上的正解: 电脑跑装机脚本</string>
+    <string name="settings_accessibility_script">用电脑跑装机脚本</string>
     <string name="settings_accessibility_script_summary">重装之后有一小段窗口能把条目写回去, 脚本就是赶那一段。点一下复制命令</string>
     <string name="settings_accessibility_copied">命令已复制</string>
     <string name="settings_bool_yes">是</string>
@@ -107,12 +107,13 @@
     <string name="exit_hint_again">再按一次退出</string>
 
     <string name="settings_section_permissions">权限</string>
-    <string name="settings_permissions_summary">这一版把能力要用的权限都声明了。系统只自动给普通权限, 下面这些要么在这里点一下, 要么用电脑上的 tools/lw-install.ps1 -Perms 批量给</string>
+    <string name="settings_permissions_summary">此权限由用户自行开关，可供DSH-LW自由开发。</string>
     <string name="settings_permission_granted">已允许</string>
     <string name="settings_permission_denied">未允许</string>
     <string name="settings_permission_ask">授权</string>
     <string name="settings_permission_settings">去设置</string>
     <string name="settings_permission_missing">未声明</string>
+    <string name="settings_permission_no_entry">这条权限目前没有可打开的入口: 系统里找不到对应的设置页。用电脑跑 tools/lw-install.ps1 -Perms 可以直接给</string>
 
     <string name="notification_channel_tools">工具通知</string>
     <string name="notification_channel_tools_description">模型用 lw_notify 发出来的通知</string>

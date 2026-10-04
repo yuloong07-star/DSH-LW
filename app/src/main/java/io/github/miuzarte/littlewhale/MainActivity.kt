@@ -22,10 +22,27 @@ class MainActivity : ComponentActivity() {
      *
      * 申请只能从 Activity 发起, 而按钮在设置页里, 所以设置页只把"要什么"写进
      * [PermissionRequests.pending], 由 `setContent` 里那个 `LaunchedEffect` 看到之后再弹系统框
+     *
+     * **一次只发一条**: 一次带两条时 `Activity` 会打 `W Can request only one set of permissions at
+     * a time` 并丢掉后一条 (真机 logcat 实测), 于是点一下什么都没有发生。所以结果回来之后立刻问队列
+     * 要下一条, 直到问完为止
      */
     private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) { PermissionRequests.done() }
+        ActivityResultContracts.RequestPermission(),
+    ) {
+        PermissionRequests.answered()
+        launchNextPermission()
+    }
+
+    /** 把队列里下一条还没问过的权限弹出去, 没有了就收尾 */
+    private fun launchNextPermission() {
+        val next = PermissionRequests.next(consume = true)
+        if (next != null) {
+            permissionLauncher.launch(next)
+            return
+        }
+        PermissionRequests.done()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,7 +68,7 @@ class MainActivity : ComponentActivity() {
             // 是因为申请要跟着 Activity 活着, 页面来回切不该把它弄丢
             val pending = PermissionRequests.pending ?: return@setContent
             LaunchedEffect(pending) {
-                permissionLauncher.launch(pending.permissions.toTypedArray())
+                launchNextPermission()
             }
         }
     }

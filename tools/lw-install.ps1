@@ -47,35 +47,39 @@ Write-Host "device $Serial is up" -ForegroundColor Green
 $component = "$Package/$Package.channel.LwAccessibility"
 $wrote = $false
 if (-not $SkipInstall) {
-    $full = (Resolve-Path $Apk).Path
-    Write-Host "installing $full" -ForegroundColor Cyan
-    # 这一步不走 Adb 那个包装: adb 自己的旗标 (`-i` / `-r` / `-t`) 会被 PowerShell 当成参数名去解析
-    # (`-i` 撞上 -InformationAction), 所以直接调可执行文件, 让后面的词原样过去
-    $installed = (& $adb -s $Serial install -i com.android.packageinstaller -r -t $full 2>&1 | Out-String).Trim()
-    Write-Host $installed
-    # 判据用失败标记, 不判"有没有 Success 这个词": adb 成功时打的是两行 (`Performing Streamed
-    # Install` 加 `Success`), 拼成一句话之后那个匹配并不总是成立
-    if ($installed -match 'Failure|error|Exception') { throw "install failed: $installed" }
+    # **先 push 再本地装**: 351 MB 的流式安装把重装打开的那段写入窗口整个吃掉了 (实测: 装完探针就报
+    # "不接受写入"), 而 `pm install` 在设备上就地装只要几秒。所以 APK 先送到 /data/local/tmp, 之后
+    # "装 + 写回"在同一次 adb shell 里连着一口气做完, 中间不插任何往返
+    $remote = '/data/local/tmp/lw-install.apk'
+    Write-Host "pushing $full" -ForegroundColor Cyan
+    & $adb -s $Serial push $full $remote | Out-Null
 
-    # 装完立刻把无障碍写回: 有些 ROM 上那个窗口很短, 所以这一步紧挨着装, 中间不插别的事
-    $listing = Adb shell "settings get secure enabled_accessibility_services"
-    $before = if ($listing -eq 'null' -or $listing -eq '') { '' } else { $listing }
-    if ($before -split ':' | Where-Object { $_ -eq $component }) {
-        Write-Host "accessibility is already listed, leaving it alone" -ForegroundColor Yellow
+    $component = "$Package/$Package.channel.LwAccessibility"
+    $pkg = $Package
+    $script = @"
+pm install -r -i com.android.packageinstaller -t $remote
+cur=`$(settings get secure enabled_accessibility_services)
+case "`$cur" in
+  *LwAccessibility*) echo "ACCESSIBILITY_ALREADY_LISTED" ;;
+  *) if [ -z "`$cur" ] || [ "`$cur" = "null" ]; then next="$component"; else next="`$cur:$component"; fi
+     settings put secure accessibility_enabled 1
+     settings put secure enabled_accessibility_services "`$next"
+     echo "ACCESSIBILITY_WRITTEN" ;;
+esac
+settings get secure enabled_accessibility_services
+rm -f $remote
+"@
+    Write-Host "installing on the device, then writing the entry back in the same breath" -ForegroundColor Cyan
+    $installed = ($script | & $adb -s $Serial shell "sh -s" 2>&1 | Out-String).Trim()
+    Write-Host $installed
+    if ($installed -match 'Failure|INSTALL_FAILED') { throw "install failed: $installed" }
+    $after = ($installed -split "`n" | Where-Object { $_ -match 'LwAccessibility|LttService|com\.dsh' } | Select-Object -Last 1)
+    if ($after -match 'LwAccessibility') {
+        Write-Host "accessibility written back: $($after.Trim())" -ForegroundColor Green
         $wrote = $true
     } else {
-        $next = if ($before -eq '') { $component } else { "$before`:$component" }
-        Adb shell "settings put secure accessibility_enabled 1" | Out-Null
-        Adb shell "settings put secure enabled_accessibility_services $next" | Out-Null
-        # 读回来对照, 不看退出码: 这台设备上退出码 0 而值不变是常态
-        $after = Adb shell "settings get secure enabled_accessibility_services"
-        if ($after -split ':' | Where-Object { $_ -eq $component }) {
-            Write-Host "accessibility written back: $after" -ForegroundColor Green
-            $wrote = $true
-        } else {
-            Write-Host "the device did not keep the accessibility write" -ForegroundColor Red
-            Write-Host "  it reads back as: $after" -ForegroundColor DarkGray
-        }
+        Write-Host "the device did not keep the accessibility write" -ForegroundColor Red
+        Write-Host "  it reads back as: $after" -ForegroundColor DarkGray
     }
 }
 
@@ -184,5 +188,10 @@ Write-Host "剩下这些只能人去系统页里点 (脚本给不了):" -Foregro
 Write-Host "  - 通知使用权 / 录屏 (以后要用到时再说)"
 Write-Host "  - 桌面图标与通知栏图标现在是 DSH 自己的那只鲸鱼 (见 tools/make-icons.py)"
 
-# 退出码按验收那两条给: 这样 CI 或者一条命令链能看到成没成, 而不是只靠读最后一屏文字
+# 退出码: 只看**这一次要它做的事**成没成, 免得 `-Perms` 因为无障碍那一条而报失败
+#
+#   - 带了 `-Perms`: 权限那一段每一批都发过一遍就算成功 (它们是逐个打印的, 失败自己会说话)
+#   - 没带 `-Perms` 且做了安装: 按无障碍那两条判据判
+#   - `-SkipInstall` 又没带 `-Perms`: 按无障碍判据判
+if ($Perms) { exit 0 }
 if ($ok) { exit 0 } else { exit 1 }

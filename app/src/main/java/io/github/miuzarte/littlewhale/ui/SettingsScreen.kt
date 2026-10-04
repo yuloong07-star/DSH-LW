@@ -237,13 +237,6 @@ fun SettingsScreen() {
             }
 
             item {
-                SectionSmallTitle(stringResource(R.string.settings_section_permissions))
-                Card {
-                    PermissionsItems()
-                }
-            }
-
-            item {
                 SectionSmallTitle(stringResource(R.string.settings_section_accessibility))
                 Card {
                     AccessibilityItems()
@@ -275,6 +268,15 @@ fun SettingsScreen() {
                 SectionSmallTitle(stringResource(R.string.settings_section_network))
                 Card {
                     NetworkItems()
+                }
+            }
+
+            // 权限这一段放最后: 它是这一页最长的一段 (十七个能力), 放中间会把后面每一段都推到很远,
+            // 而这些权限本来就是装完之后偶尔来调一次的东西
+            item {
+                SectionSmallTitle(stringResource(R.string.settings_section_permissions))
+                Card {
+                    PermissionsItems()
                 }
             }
         }
@@ -399,7 +401,16 @@ private fun PermissionsItems() {
                 // 特殊访问只能开系统页; 能点名的才弹框。`ask` 返回 false 有两种情况 —— 特殊访问,
                 // 或者用户已经"拒绝且不再问", 两种都只能让它去设置页
                 val asked = activity != null && PermissionGate.ask(activity, capability)
-                if (!asked) PermissionGate.openSettings(context, capability)
+                // **三种结果都要有回音**: 弹框了、打开了某一页、或者两者都没有 (这台设备上那一条根本没有
+                // 可打开的入口)。第三种以前是静默的, 于是点上去像坏了一样
+                val opened = if (asked) true else PermissionGate.openSettings(context, capability)
+                if (!opened) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.settings_permission_no_entry),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
                 // 系统框是异步的, 这一下是把"点了之后可能已经变了"重算一次; 真正的答案回来时
                 // PermissionRequests.pending 会变, 那时再重算一次
                 revision++
