@@ -82,9 +82,10 @@ internal object LwSystemCommand {
     suspend fun dispatch(request: JsonObject): JsonObject = when (val op = request.string("op")) {
         "forceStop", "clearData", "uninstall", "install" -> destructive(op, request)
         "airplane", "data", "wifi", "bluetooth" -> text(toggle(request, op))
+        "shell" -> shell(request)
         else -> throw IllegalArgumentException(
             "op has to be one of forceStop, clearData, uninstall, install, airplane, data, wifi," +
-                " bluetooth, not \"$op\"",
+                " bluetooth, shell, not \"$op\"",
         )
     }
 
@@ -130,6 +131,27 @@ internal object LwSystemCommand {
         return text(toggle(request, what))
     }
 
+    /**
+     * 一条 shell 命令, 跑在特权进程的 uid 上
+     *
+     * 与前面那几条不同, 这条命令的内容完全由调用方给 —— 权限也就完全由调用方担着: 它跑在 shizuku 给的
+     * 那个 shell uid 上 (本机是 2000), 看得见的比这个应用多, 改得动的也一样。四条边界照旧: 特权侧那张表
+     * 最长只收 512 字的参数、最多 4 个, 超时一到就杀, 输出只留最后 20 行
+     */
+    private fun shell(request: JsonObject): JsonObject {
+        val command = request.string("command")
+        val result = run(
+            operation = "shell",
+            arguments = listOf(command),
+            userId = request.int("user", 0),
+            timeoutMs = request.int("timeoutMs", DEFAULT_TIMEOUT_MS.toInt()).toLong(),
+        )
+        return text(
+            "$ " + command + "\n" +
+                result.output.ifBlank { "(no output)" } +
+                if (result.code == 0) "" else "\n(exit code " + result.code + ")",
+        )
+    }
     const val DEFAULT_TIMEOUT_MS = 30_000L
 
     /** 装一个包要解压、要校验, 30 秒不够 */
