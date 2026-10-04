@@ -4,16 +4,25 @@
 
 **DSH** for Android, built on **[LittleWhale](https://github.com/Miuzarte/LittleWhale)**
 
+本应用围绕 DSHLW 应用基于 Little 开发, 部分功能与特点取自 DSHA。
+
 把 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) 装进手机的一个应用: 一台安卓设备同时当 dsh 的**主机**与**受控端**, 界面就是 dsh 自己的 Web GUI (装在 WebView 里), 原生那一半把屏幕与输入能力做成 dsh 原生工具交给模型
 
 不需要另一台电脑, 也不需要 Termux
 
 屏幕那套工具要 **root (KernelSU / Magisk) 或 [Shizuku](https://github.com/RikkaApps/Shizuku) 之一**, 二选一
 
+## 特点
+
+1. **权限与开发**: 应用安全审查度极低, 几乎不做任何审查, 并且可获得手机几乎所有权限, 用户可自行拉取权限进行手机自动化开发
+2. **存储机制**: 应用没有虚拟机框架, 手机存储不受沙盒限制
+3. **安全评估**: 对于安全方面, 用户需自行评估
+4. **启动体验**: 打开即用, 不需要启动运行环境, 点击即进入 DSH 界面, 更方便快捷; 自带虚拟屏支持后台运行
+
 > [!WARNING]
-> **审批是全部放行的, 而且这是有意的决定**: 模型要动主屏时应用自己在后台, 审批框没人点得到, 摆在那里只会让每次点击卡到超时。所以模型点屏幕不会问任何人, 唯一的刹车是**真人一碰屏幕就停手** —— 只管主屏, 而且只有软停 (手势中止 + 工具报错让模型收手), 没有硬停
+> **这就是上面第 1 条与第 3 条的意思**: 它把权限与屏幕能力几乎原样交给模型, 而且**审批是全部放行的** —— 模型要动主屏时应用自己在后台, 审批框没人点得到, 摆在那里只会让每次点击卡到超时。所以模型点屏幕不会问任何人, 唯一的刹车是**真人一碰屏幕就停手** (只管主屏, 只有软停: 手势中止 + 工具报错让模型收手)
 >
-> 这是给自愿把设备交给 agent 的人用的, 别装在别人也要用的机器上
+> 装之前请自己做完安全评估, 别装在别人也要用的机器上
 
 ## 和 LittleWhale 的关系
 
@@ -47,8 +56,7 @@ DSH-LW 是在它之上做的**应用发行版**, 目前相对上游多了:
 ## 已知问题
 
 - **交互那条线只在模拟器上验过** —— Android 16 / arm64 (x86_64 镜像带 ARM 翻译, 跑得起来)。真机只验到"装得上、跑得起来", 触摸与手势这类问题截图看不出来, 要人点一下才算
-
-- **侧载安装的 APK 开无障碍要额外的 app op** —— 应用会自己 best effort 处理, 但**每次重装 APK 都会把无障碍踢掉**。设置页「无障碍」段会显示它现在到底怎么样 (在不在设备列表里 / 服务绑没绑 / 能不能写设置); **写不动的机器上要电脑跑 `tools/lw-install.ps1`**, 它会带 `-i` 装完立刻把条目写回去并读回校验, 没过就非零退出
+- **侧载安装的 APK 开无障碍要额外的 app op** —— 应用会自己 best effort 处理, 但**每次重装 APK 都会把无障碍踢掉**。设置页「无障碍」段显示它现在到底怎么样 (在不在设备列表里 / 服务绑没绑 / 能不能写设置); **写不动的机器上要电脑跑 `tools/lw-install.ps1`**, 它会带 `-i` 装完立刻把条目写回去并读回校验, 没过就非零退出
 - **root 那条第一次要你手动授权** —— 应用侧查不出来有没有 root (没在名单上的 app 连 `su` 都看不见), 只能试; 而且试也不会弹框
 - **主屏的刹车只有软停** —— 抬手 1 秒之后就能再动手
 - **熄屏是静默失败** —— `screencap` 交的还是最后一帧, 注入的触摸唤不醒屏, 两个都不报错。现在有 `lw_power` 能点亮它
@@ -86,6 +94,7 @@ git submodule update --init --recursive
 ## Credits
 
 - **[Miuzarte/LittleWhale](https://github.com/Miuzarte/LittleWhale) (Apache-2.0)** —— **本项目的基础**。把 dsh 移植到安卓的架构、特权通道、自建虚拟屏、dsh 工具、无障碍读屏与端侧 OCR 都是它的工作
+- **DSHA** —— 部分功能与特点取自它
 - [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (MIT) —— 被搬过来的东西本身
 - [compose-miuix-ui/miuix](https://github.com/compose-miuix-ui/miuix) —— 界面组件
 - [Miuzarte/ScrcpyForAndroid](https://github.com/Miuzarte/ScrcpyForAndroid) (Apache-2.0) —— 界面视觉细节参考
