@@ -1394,10 +1394,10 @@ function formatScreenshot(result) {
     ? `${picture.width}x${picture.height} px, so multiply coordinates measured on the picture by`
       + ` ${picture.scale.toFixed(2)} to get screen coordinates`
     : 'the same size as the screen'
-  // 一次截图落两个文件: 全尺寸那份给人看, 缩过的那份给模型。清理要两份一起删, 而这件事以前没有
-  // 任何一处写出来, 收尾时就得自己在两个名字之间对账
+  // 一次截图落两个文件: 全尺寸那份给人看, 缩过的那份给模型 (`Picture.SMALL` 就是 ".model")。
+  // 清理要两份一起删, 而这件事以前没有任何一处写出来, 收尾时就得自己在两个名字之间对账
   const pair = scaled
-    ? `; the scaled copy is ${result.path.replace(/\.png$/i, '-small.png')}`
+    ? `; the copy scaled for you is ${result.path.replace(/\.png$/i, '.model.png')}`
       + ' - the two belong together, so deleting the screenshot means deleting both'
     : ''
   return withJson(
