@@ -3,6 +3,7 @@ package io.github.miuzarte.littlewhale.channel
 import android.graphics.Rect
 import android.util.Log
 import io.github.miuzarte.littlewhale.tool.LwNotify
+import io.github.miuzarte.littlewhale.tool.LwOverlay
 import io.github.miuzarte.littlewhale.tool.LwPower
 import io.github.miuzarte.littlewhale.tool.LwSpeech
 import io.github.miuzarte.littlewhale.tool.LwSpeak
@@ -796,6 +797,7 @@ object PrivilegedBridge {
         "power" -> appContext { LwPower.dispatch(it, request) }
         "speech" -> appContext { LwSpeech.dispatch(it, request) }
         "speak" -> appContext { LwSpeak.dispatch(it, request) }
+        "overlay" -> appContext { LwOverlay.dispatch(it, request) }
         "syscmd" -> LwSystemCommand.dispatch(request)
 
         // 等一个控件出现: 在无障碍树里轮询, 找到就立刻回话, 不找到就回到超时为止。上限压在与桥那条

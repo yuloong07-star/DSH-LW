@@ -1134,6 +1134,53 @@ const TOOLS = [
         : answer.detail
     },
   }),
+  defineTool({
+    name: 'lw_overlay',
+    description:
+      'Float the dsh GUI over other apps as a system overlay window, which is what makes its input '
+      + 'box reachable without leaving whatever app the person is in. The window is the same GUI as '
+      + 'a second client of the same host - same sessions, same cookies - so the composer, the '
+      + 'voice input button and the read-aloud button all work inside it. It has a title bar that '
+      + 'drags it, a 收起 button that leaves only that bar, an 应用 button that brings the full app '
+      + 'forward and a × that closes it. op=show puts it up (default: full width, 45% of the screen, '
+      + 'near the bottom, all of which width/height/x/y can override in pixels); op=hide closes it; '
+      + 'op=state says whether the overlay permission is granted, whether a window is up and what '
+      + 'page it is on. Because the window takes focus so a keyboard can type into it, touches '
+      + 'outside it no longer pass through - keep it small.',
+    parameters: {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'show, hide or state',
+      },
+      width: { type: 'number', description: 'Window width in pixels (op=show)' },
+      height: { type: 'number', description: 'Window height in pixels (op=show)' },
+      x: { type: 'number', description: 'Distance from the left edge in pixels (op=show)' },
+      y: { type: 'number', description: 'Distance from the top edge in pixels (op=show)' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      const request = { op: args.op }
+      for (const key of ['width', 'height', 'x', 'y']) {
+        if (args[key] !== undefined) request[key] = args[key]
+      }
+      const answer = await call('overlay', request)
+      if (args.op === 'show') {
+        return `the window is up at ${answer.x},${answer.y} sized ${answer.width}x${answer.height},`
+          + ` showing ${answer.url}`
+      }
+      if (args.op === 'hide') return answer.detail
+      return [
+        `overlay permission: ${answer.permission ? 'granted' : 'not granted'}`,
+        `window: ${answer.showing ? `up on ${answer.url}` : 'not up'}`,
+        `host: ${answer.host}`,
+        answer.page ? `last problem: ${answer.page}` : '',
+      ].filter(Boolean).join('\n')
+    },
+  }),
 ]
 
 /** One request, one response: the app answers a single line and closes the connection */
