@@ -29,6 +29,23 @@ internal class LwCapture {
      *   铺上去) —— 处置完全不同, 而以前的答案只有一句"没有画面", 只能靠人猜
      */
     fun capture(name: String, path: String): String {
+        val first = shot(name, path)
+        if (first.isEmpty()) return ""
+        // 换面之后 (收起预览 / 切后台 / resize) 合成器的名单要过一会儿才更新: 那一小段里它报的
+        // 还是旧 id, 而 screencap 只认新的, 于是"换面后的第一次拍"必然以 Display Id ... is not
+        // valid 收场 —— 这不是"屏没了", 隔一下重解析就好。模型只会拍一次, 所以这条重试得做在
+        // 这里, 不然它会据此以为那块屏丢了, 而不是"再拍一张"
+        repeat(RETRIES) {
+            Thread.sleep(RETRY_DELAY_MS)
+            known.remove(name)
+            val again = shot(name, path)
+            if (again.isEmpty()) return ""
+        }
+        return first
+    }
+
+    /** One attempt: resolve the compositor id now, shoot, and say what came of it */
+    private fun shot(name: String, path: String): String {
         val target = known[name] ?: resolve(name) ?: return gone(name)
         return written(run(SCREENCAP, "-d", target, "-p", fresh(path)), path, "display $target") {
             // The screen may have been rebuilt under a new id, so the next call looks again
@@ -135,6 +152,16 @@ internal class LwCapture {
 
         const val TOOLBOX = "/system/bin/dumpsys"
         const val SCREENCAP = "/system/bin/screencap"
+
+        /**
+         * 换面之后重试的次数与间隔
+         *
+         * 实测模拟器上换面那一刻到合成器名单更新之间有几秒: 收起小窗后 3.4 s 拍还在报旧 id 不合法,
+         * 隔十几秒再拍就好了。所以给的预算比那宽一点 (6 × 500 ms = 3 s), 而没拍成时交回去的仍是
+         * 第一趟那句话 (含 screencap 的原话), 不会因为重试把原因说模糊
+         */
+        const val RETRIES = 6
+        const val RETRY_DELAY_MS = 500L
 
         /** `Display 11529215049018179454 (Virtual display): displayName="LittleWhale 1"` */
         val PHYSICAL_ID = Regex("""Display\s+(\d+)""")
