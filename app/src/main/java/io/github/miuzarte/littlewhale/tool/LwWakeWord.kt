@@ -6,6 +6,7 @@ import android.content.Intent
 import androidx.core.content.ContextCompat
 import io.github.miuzarte.littlewhale.util.Capability
 import io.github.miuzarte.littlewhale.util.PermissionGate
+import io.github.miuzarte.littlewhale.voice.VoiceState
 import io.github.miuzarte.littlewhale.wake.WakeWordModel
 import io.github.miuzarte.littlewhale.wake.WakeWordService
 import io.github.miuzarte.littlewhale.wake.WakeWordState
@@ -89,6 +90,19 @@ internal object LwWakeWord {
             put("startedAt", WakeWordState.startedAt)
             put("microphoneForeground", WakeWordState.microphoneForeground)
             put("lastError", WakeWordState.lastError ?: "")
+            // 常驻语音链那三个"成不成"与它切出来的东西: 采集 / 切段 / 出字
+            put("capturing", VoiceState.capturing)
+            put("vadReady", VoiceState.vadReady)
+            put("vadDetail", VoiceState.vadDetail)
+            put("asrReady", VoiceState.asrReady)
+            put("asrDetail", VoiceState.asrDetail)
+            put("segments", VoiceState.segments)
+            put("recognized", VoiceState.recognized)
+            put("pending", VoiceState.pending)
+            put("dropped", VoiceState.dropped)
+            put("lastTruncated", VoiceState.lastTruncated)
+            put("lastText", VoiceState.lastText ?: "")
+            put("lastAt", VoiceState.lastAt)
             put(
                 "text",
                 table(
@@ -103,6 +117,12 @@ internal object LwWakeWord {
                         "listening" to WakeWordState.listening.toString(),
                         "hits" to WakeWordState.hits.toString(),
                         "last heard" to (WakeWordState.lastKeyword ?: "nothing yet"),
+                        "capture running" to VoiceState.capturing.toString(),
+                        "silero VAD" to VoiceState.vadDetail,
+                        "SenseVoice" to VoiceState.asrDetail,
+                        "segments cut" to "${VoiceState.segments} (recognised ${VoiceState.recognized},"
+                            .plus(" pending ${VoiceState.pending}, dropped ${VoiceState.dropped})"),
+                        "last text" to (VoiceState.lastText ?: "nothing yet"),
                         "last problem" to (WakeWordState.lastError ?: "none"),
                     ),
                 ),

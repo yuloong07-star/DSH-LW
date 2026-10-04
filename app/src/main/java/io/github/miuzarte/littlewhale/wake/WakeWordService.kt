@@ -9,9 +9,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
 import android.os.IBinder
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -32,7 +29,13 @@ import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.host.DshHost
 import io.github.miuzarte.littlewhale.host.HostStatus
 import io.github.miuzarte.littlewhale.overlay.OverlayService
+import io.github.miuzarte.littlewhale.tool.LwSpeech
+import io.github.miuzarte.littlewhale.voice.AudioCapture
+import io.github.miuzarte.littlewhale.voice.SpeechSegmenter
+import io.github.miuzarte.littlewhale.voice.VoiceState
 import java.io.File
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /** 唤醒词现在什么样: 通道方法 `wakeword` 的 status 就读这里 */
 internal object WakeWordState {
@@ -66,17 +69,21 @@ internal object WakeWordState {
 }
 
 /**
- * 一直听着麦克风, 听到唤醒词就叫一声
+ * 一直听着麦克风: 唤醒词在那一路音频上等着, 切段与识别在同一条音频上跑
  *
- * 这是「喊一声素云」的落点。三件事与浮窗那套不同:
+ * 这是「喊一声素云」的落点, 也是 2.0.0「一直听」的落点。三件事与浮窗那套不同:
  *
- * 1. **它靠 sherpa-onnx 的关键词检测 (KWS) 跑在本地**: 3.3M 参数的 zipformer, 16 kHz 单声道,
- *    一句话不出设备。识别器与模型是 `LwSpeech` 那套的同一份 AAR, 只是换了 `KeywordSpotter`
- *    这一个类
+ * 1. **它靠 sherpa-onnx 跑在本地**: 唤醒词是关键词检测 (KWS, 3.3M 参数的 zipformer), 切段是
+ *    silero VAD, 出字是 SenseVoice —— 同一份 AAR、同一个 16 kHz 单声道音频, 一句话不出设备
  * 2. **前台服务, 类型是 microphone**: 后台一直开麦克风必须有这个类型, 而且起服务那一刻应用
  *    得在前台 (或握着 `SYSTEM_ALERT_WINDOW`, 见下面 [fend] 的注释)。通知栏留一条常驻, 上面
  *    一个「停止」按钮 —— 一直开着的麦克风必须有一眼看得见、一下就关得掉的地方
  * 3. **听到之后的动作是可配的**: 默认把应用提到前面, 也可以把浮窗叫起来 (见 [onWake])
+ *
+ * **采集只有一路** ([AudioCapture]): 唤醒词与切段是同一段音频的两个消费者, 两个消费者都在采集
+ * 线程上跑, 而切出来的整段话交给另一条线程去认 —— 在采集线程上认一段话会卡住采集几百毫秒, 那就
+ * 是丢音频。这条链有三个独立的"成不成" (采集 / 切段 / 出字), 任何一个不成都不该把别的带走: 缺
+ * silero 模型时唤醒词照样好用, 只是没有"说一句话进会话", 那时 [VoiceState] 要如实说明是哪一条
  *
  * 关键词不接受中文原文: sherpa-onnx 的 keywords 文件里每一行是**模型的 token 序列**加一个
  * `@显示名` (见模型自带的 keywords.txt), EncodeKeywords 只认 token 表里有的符号。所以词表由
@@ -86,16 +93,27 @@ class WakeWordService : Service() {
 
     private var spotter: KeywordSpotter? = null
     private var stream: OnlineStream? = null
-    private var recorder: AudioRecord? = null
-    private var worker: Thread? = null
+    private var vad: SpeechSegmenter? = null
+    private var capture: AudioCapture? = null
+    private var transcriber: Thread? = null
+
+    /** 切出来等着认的段: 上限是"设备认不过来时丢最新的", 而丢了多少要看得见 */
+    private val segments = ArrayBlockingQueue<FloatArray>(SEGMENT_QUEUE)
+
+    @Volatile
+    private var transcribing = false
 
     @Volatile
     private var listening = false
 
     private var keywordsFile: File? = null
     private var modelDirectory: File? = null
-    private var threshold = DEFAULT_THRESHOLD
-    private var score = DEFAULT_SCORE
+
+    // 类型写出来是必须的: 这两个数从 Intent 那来的是 Double (extra 只有 double), 而 sherpa 的
+    // 配置要的是 Float。原来靠 `= DEFAULT_THRESHOLD` 推出来的类型是 Double, 于是同一个文件里
+    // ".toFloat() 赋给 Double 字段" 与 "Double 传给要 Float 的形参" 两处都过不了编译
+    private var threshold = DEFAULT_THRESHOLD.toFloat()
+    private var score = DEFAULT_SCORE.toFloat()
     private var onWake = WAKE_TO_APP
     private var vibrateMs = DEFAULT_VIBRATE_MS
 
@@ -140,6 +158,10 @@ class WakeWordService : Service() {
      *
      * 顺序是刻意的: 先看权限, 再建识别器 (它会读模型, 慢), 最后才开麦克风 —— 这样"缺权限"
      * 与"模型坏了"分得开, 而麦克风一旦开了就一定有人在读它
+     *
+     * 只有唤醒词那一条是"起不来就别听了" (它是这个服务的门槛, 也是主人按下那个开关的意图)。切段
+     * 与出字是两条**尽力而为**的附加链: silero 模型没下、识别模型没下、原生库起不来, 都只记在
+     * [VoiceState] 里, 服务照常听着唤醒词 —— 反过来做就会变成"没下模型导致喊不醒"
      */
     private fun startListening(): Boolean {
         val directory = modelDirectory ?: return false
@@ -165,7 +187,7 @@ class WakeWordService : Service() {
             KeywordSpotter(
                 assetManager = null,
                 config = KeywordSpotterConfig(
-                    featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = FEATURE_DIM),
+                    featConfig = FeatureConfig(sampleRate = AudioCapture.SAMPLE_RATE, featureDim = FEATURE_DIM),
                     modelConfig = OnlineModelConfig(
                         transducer = OnlineTransducerModelConfig(
                             encoder = model.encoder.absolutePath,
@@ -193,17 +215,20 @@ class WakeWordService : Service() {
             fail("the keyword stream would not come up: ${error.message ?: error}")
             return false
         }
-        val microphone = try {
-            openMicrophone()
-        } catch (error: Throwable) {
-            stream.release()
-            spotter.release()
-            fail("the microphone would not open: ${error.message ?: error}")
-            return false
-        }
         this.spotter = spotter
         this.stream = stream
-        recorder = microphone
+        prepareSegmentation()
+        prepareRecognition()
+        val device = AudioCapture(::onCaptureError).also { capture = it }
+        device.add(keywordSink)
+        vad?.let { device.add(it) }
+        if (!device.start()) {
+            // 麦克风起不来是这条链的唯一硬失败: 谁来读都没有音频了
+            stopListening()
+            fail(VoiceState.lastError ?: "the microphone would not open")
+            return false
+        }
+        startTranscribing()
         listening = true
         WakeWordState.listening = true
         WakeWordState.keywords = keywords.readLines()
@@ -211,36 +236,130 @@ class WakeWordService : Service() {
             .map { keywordName(it) }
         WakeWordState.startedAt = System.currentTimeMillis()
         WakeWordState.lastError = null
-        microphone.startRecording()
-        worker = Thread({ listen(spotter, stream, microphone) }, "lw-wake-word").apply { start() }
+        VoiceState.capturing = true
         announce(listeningText())
         Log.i(TAG, "listening for ${WakeWordState.keywords.joinToString()}")
         return true
     }
 
-    /** 100 ms 一段读进来交给识别器, 与 sherpa-onnx 那个 Android 样例同一个尺寸 */
-    private fun listen(spotter: KeywordSpotter, stream: OnlineStream, microphone: AudioRecord) {
-        val buffer = ShortArray(SAMPLE_RATE / 10)
-        while (listening) {
-            val read = try {
-                microphone.read(buffer, 0, buffer.size)
-            } catch (error: Throwable) {
-                fail("reading the microphone failed: ${error.message ?: error}")
-                return
-            }
-            if (read <= 0) continue
-            val samples = FloatArray(read) { buffer[it] / 32768.0f }
-            stream.acceptWaveform(samples, SAMPLE_RATE)
-            while (spotter.isReady(stream)) {
-                spotter.decode(stream)
-                val heard = spotter.getResult(stream).keyword
-                if (heard.isNotBlank()) {
-                    // 命中之后必须立刻复位, 不然同一个词会被连着报好几次
-                    spotter.reset(stream)
-                    hit(heard)
-                }
+    /**
+     * 唤醒词这一路消费者: 与原来那条循环一模一样, 只是音频从共享采集那来
+     *
+     * 它在采集线程上跑, 而 KWS 一次只认 100 ms (几十毫秒的活), 所以不会拖住采集
+     */
+    private val keywordSink = AudioCapture.Sink { samples ->
+        val spotter = spotter ?: return@Sink
+        val stream = stream ?: return@Sink
+        stream.acceptWaveform(samples, AudioCapture.SAMPLE_RATE)
+        while (spotter.isReady(stream)) {
+            spotter.decode(stream)
+            val heard = spotter.getResult(stream).keyword
+            if (heard.isNotBlank()) {
+                // 命中之后必须立刻复位, 不然同一个词会被连着报好几次
+                spotter.reset(stream)
+                hit(heard)
             }
         }
+    }
+
+    /** 切段那一路消费者: 把整段话丢进队列就走, 不等识别 */
+    private fun rememberSegment(samples: FloatArray) {
+        VoiceState.segments += 1
+        VoiceState.lastTruncated = vad?.lastWasTruncated ?: false
+        if (!segments.offer(samples)) {
+            // 队列满 = 这台设备认不过来。丢的是最新的那一段, 而丢了多少必须看得见
+            VoiceState.dropped += 1
+            Log.w(TAG, "the transcriber is behind: dropped a ${samples.size} sample segment")
+        }
+        VoiceState.pending = segments.size
+    }
+
+    /** 切段器: silero 模型不在或不对就只记原因, 不影响唤醒词 */
+    private fun prepareSegmentation() {
+        val path = LwSpeech.vadModel(this)
+        val refusal = SpeechSegmenter.inspect(path)
+        if (refusal != null) {
+            VoiceState.vadReady = false
+            VoiceState.vadDetail = refusal
+            Log.w(TAG, refusal)
+            return
+        }
+        val created = try {
+            SpeechSegmenter.open(path, ::rememberSegment)
+        } catch (error: Throwable) {
+            VoiceState.vadReady = false
+            VoiceState.vadDetail = "the silero VAD would not come up: ${error.message ?: error}"
+            Log.w(TAG, VoiceState.vadDetail)
+            return
+        }
+        vad = created
+        VoiceState.vadReady = true
+        VoiceState.vadDetail = "ready: ${SpeechSegmenter.MIN_SILENCE_SECONDS}s of silence ends a segment, "
+            .plus("at most ${SpeechSegmenter.MAX_SPEECH_SECONDS}s each")
+    }
+
+    /** 出字那一段有没有模型: 没有就说清楚, 识别器那时**一个都不会建** (240 MB) */
+    private fun prepareRecognition() {
+        val ready = LwSpeech.ready(this)
+        VoiceState.asrReady = ready
+        VoiceState.asrDetail = if (ready) {
+            "ready: the SenseVoice model is on disk and gets loaded by the first segment"
+        } else {
+            "the SenseVoice model is not downloaded yet: run lw_speech op=prepare once"
+        }
+        if (!ready) Log.w(TAG, VoiceState.asrDetail)
+    }
+
+    private fun onCaptureError(reason: String) {
+        VoiceState.lastError = reason
+        Log.w(TAG, reason)
+    }
+
+    /**
+     * 认字那条线程: 一段一段地认, 一次一段
+     *
+     * 单独一条线程是必须的: SenseVoice 认一句要几百毫秒, 放在采集线程上就是几百毫秒不读麦克风。
+     * 队列留着上限, 满时丢最新的那一段并计数 —— 悄悄丢比报错更难查
+     */
+    private fun startTranscribing() {
+        if (transcribing) return
+        transcribing = true
+        transcriber = Thread({ transcribeLoop() }, "lw-voice-asr").apply { start() }
+    }
+
+    private fun transcribeLoop() {
+        // 收工那一刻还要把队列里的认完: 主人停下来之前说的最后一句通常正是有用的那句
+        while (transcribing || segments.isNotEmpty()) {
+            val segment = try {
+                segments.poll(POLL_MS, TimeUnit.MILLISECONDS)
+            } catch (interrupted: InterruptedException) {
+                return
+            } ?: continue
+            VoiceState.pending = segments.size
+            val text = try {
+                LwSpeech.recognize(this, segment)
+            } catch (error: Throwable) {
+                VoiceState.lastError = "recognising a segment failed: ${error.message ?: error}"
+                Log.w(TAG, VoiceState.lastError!!, error)
+                null
+            } ?: continue
+            if (text.isBlank()) continue
+            VoiceState.recognized += 1
+            deliver(text)
+        }
+    }
+
+    /**
+     * 出字之后去哪儿
+     *
+     * **批次 1 只到这里**: 进日志与通知栏, 一句话都不进会话 —— 那一步是批次 2 的投递, 而它是"开始
+     * 自动把话发进对话"之前最后一道能改主意的关口, 所以单独一批、单独一个提交
+     */
+    private fun deliver(text: String) {
+        VoiceState.lastText = text
+        VoiceState.lastAt = System.currentTimeMillis()
+        Log.i(TAG, "segment ${VoiceState.recognized}: $text")
+        runCatching { announce(listeningText()) }
     }
 
     /**
@@ -285,36 +404,30 @@ class WakeWordService : Service() {
 
     private fun stopListening() {
         listening = false
-        worker?.let { runCatching { it.join(WORKER_JOIN_MS) } }
-        worker = null
-        recorder?.let { device ->
-            runCatching { device.stop() }
-            runCatching { device.release() }
+        // 采集先停: 它同时喂着唤醒词与切段, 反过来的话手上那半段话会被下一帧接上, 切成一段怪的
+        capture?.let { device ->
+            device.remove(keywordSink)
+            vad?.let(device::remove)
+            device.stop()
         }
-        recorder = null
+        capture = null
+        // 收尾: 手里剩的那半句交出去, 再由转写线程认完 (它的循环要等队列空了才退)
+        vad?.let { segmenter ->
+            runCatching { segmenter.flush() }
+            runCatching { segmenter.close() }
+        }
+        vad = null
+        VoiceState.pending = segments.size
+        transcribing = false
+        transcriber?.let { runCatching { it.join(WORKER_JOIN_MS) } }
+        transcriber = null
+        segments.clear()
         stream?.let { runCatching { it.release() } }
         stream = null
         spotter?.let { runCatching { it.release() } }
         spotter = null
         WakeWordState.listening = false
-    }
-
-    private fun openMicrophone(): AudioRecord {
-        val bytes = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING)
-        if (bytes <= 0) throw IllegalStateException("this device reports no usable microphone buffer")
-        val record = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            SAMPLE_RATE,
-            CHANNEL,
-            ENCODING,
-            // 两倍是留一段余量: 一段读 100 ms, 缓冲只有一段长就会被读空
-            bytes * 2,
-        )
-        if (record.state != AudioRecord.STATE_INITIALIZED) {
-            record.release()
-            throw IllegalStateException("the audio recorder came back uninitialized")
-        }
-        return record
+        VoiceState.capturing = false
     }
 
     private fun hasMicrophone(): Boolean =
@@ -353,9 +466,22 @@ class WakeWordService : Service() {
         }
     }
 
+    /**
+     * 通知栏那一行: 唤醒词与常驻链的状态都在这里
+     *
+     * 这条通知是"一直开着的麦克风"唯一的可见处 (纪律: 一眼看得见、一下就关得掉), 所以它要说清
+     * 三件事里的哪几件真的在跑 —— 只有唤醒词在听、切段没就绪、刚认出来什么
+     */
     private fun listeningText(): String {
         val words = WakeWordState.keywords
-        return if (words.isEmpty()) "正在听着麦克风" else "正在听「${words.joinToString("」「")}」"
+        val base = if (words.isEmpty()) "正在听着麦克风" else "正在听「${words.joinToString("」「")}」"
+        val heard = VoiceState.lastText
+        return when {
+            heard != null -> "$base · 刚听到: $heard"
+            !VoiceState.vadReady -> "$base · 切段没就绪"
+            !VoiceState.asrReady -> "$base · 识别模型还没下"
+            else -> "$base · 常驻识别在跑"
+        }
     }
 
     private fun heardText(keyword: String): String = "听到「$keyword」"
@@ -426,15 +552,23 @@ class WakeWordService : Service() {
         const val EXTRA_HEARD = "heard"
 
         /** 关键词检测是 16 kHz / 80 维 fbank, 与模型训练时那几个数对不上就什么都听不出来 */
-        private const val SAMPLE_RATE = 16000
         private const val FEATURE_DIM = 80
-        private const val CHANNEL = AudioFormat.CHANNEL_IN_MONO
-        private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
 
         /** sherpa-onnx 的缺省值, 与它自己文档里那组一致: 分数越低越容易触发, 阈值越低越容易报 */
         private const val DEFAULT_THRESHOLD = 0.25
         private const val DEFAULT_SCORE = 1.5
         private const val DEFAULT_VIBRATE_MS = 200
+
+        /**
+         * 等着认的段最多几段
+         *
+         * 一段最长 15 s, 而认一段是几百毫秒到几秒 —— 8 段是"这台设备明显认不过来"的那个量级,
+         * 到那时丢新的并计数, 而不是让内存跟着一起涨
+         */
+        private const val SEGMENT_QUEUE = 8
+
+        /** 转写线程取队列的等待: 只影响收工那一刻的响应, 不影响延迟 */
+        private const val POLL_MS = 200L
 
         private const val WORKER_JOIN_MS = 2000L
 

@@ -8,6 +8,7 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
 import com.k2fsa.sherpa.onnx.VersionInfo
 import com.k2fsa.sherpa.onnx.WaveReader
+import io.github.miuzarte.littlewhale.voice.SpeechSegmenter
 import java.io.File
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -33,6 +34,9 @@ internal object LwSpeech {
     /** 现在只有 SenseVoice 一套: 中英日韩粤, 自带标点与逆文本规整 */
     const val MODEL_NAME = "sense-voice"
 
+    /** 切段那个 silero 模型住在同一层的另一个子目录里, 两者互不相干 */
+    const val VAD_NAME = "silero-vad"
+
     private const val MODEL_FILE = "model.int8.onnx"
     private const val TOKENS_FILE = "tokens.txt"
 
@@ -51,8 +55,20 @@ internal object LwSpeech {
 
     /** 模型在哪儿: 缺省 filesDir/speech-models/sense-voice, 调用方也可以点名别处 */
     fun modelDirectory(context: Context, request: JsonObject): File =
-        request.stringOrNull("model")?.let { File(it) }
-            ?: File(File(context.filesDir, MODEL_ROOT), MODEL_NAME)
+        request.stringOrNull("model")?.let { File(it) } ?: modelDirectory(context)
+
+    /** 同一个缺省目录, 给不经过通道的调用方 (常驻语音链) 用 */
+    fun modelDirectory(context: Context): File = File(File(context.filesDir, MODEL_ROOT), MODEL_NAME)
+
+    /** 切段模型的那一个文件: 宿主那侧照 status 报出来的 vadPath 放, 应用这侧照它读 */
+    fun vadModel(context: Context): File =
+        File(File(File(context.filesDir, MODEL_ROOT), VAD_NAME), SpeechSegmenter.MODEL_FILE)
+
+    /** 识别模型在不在位 (常驻语音链据此决定要不要去加载那 240 MB) */
+    fun ready(context: Context): Boolean {
+        val directory = modelDirectory(context)
+        return File(directory, MODEL_FILE).isFile && File(directory, TOKENS_FILE).isFile
+    }
 
     fun dispatch(context: Context, request: JsonObject): JsonObject = when (val op = request.string("op")) {
         "status" -> status(context, request)
@@ -66,6 +82,7 @@ internal object LwSpeech {
         val directory = modelDirectory(context, request)
         val model = File(directory, MODEL_FILE)
         val tokens = File(directory, TOKENS_FILE)
+        val vad = vadModel(context)
         val present = model.isFile && tokens.isFile
         val held = synchronized(lock) { loaded }
         // **模型不在就不要碰原生库**: `VersionInfo.version` 是一条 JNI 调用, 会把 sherpa 那个
@@ -95,6 +112,9 @@ internal object LwSpeech {
             put("modelBytes", model.length())
             put("tokensBytes", tokens.length())
             put("present", present)
+            put("vadPath", vad.absolutePath)
+            put("vadPresent", vad.isFile)
+            put("vadBytes", vad.length())
             put("loaded", held != null && held.directory == directory.absolutePath)
             put("languages", LANGUAGES.joinToString(", "))
         }
@@ -144,8 +164,32 @@ internal object LwSpeech {
         }
     }
 
-    /** 认出模型文件建一个识别器; 找不到就建, 模型或语言换了就重建 */
-    private fun recognizerFor(directory: File, model: File, tokens: File, language: String): OfflineRecognizer {
+    /**
+     * 认一段内存里的采样, 给常驻语音链用 —— 它手里是 VAD 切出来的一段 float, 不是一个 wav 文件
+     *
+     * 返回 null 表示模型不在: 调用方据此知道"这次没出字"而不是拿到一个空串以为"没人说话"。识别器
+     * 是同一个常驻实例 ([recognizerFor] 按目录与语言缓存), 所以第二段之后不再重复加载那 240 MB
+     */
+    fun recognize(context: Context, samples: FloatArray, language: String = "auto"): String? {
+        if (samples.isEmpty()) return null
+        val directory = modelDirectory(context)
+        val model = File(directory, MODEL_FILE)
+        val tokens = File(directory, TOKENS_FILE)
+        if (!model.isFile || !tokens.isFile) return null
+        return synchronized(lock) {
+            val recognizer = recognizerFor(directory, model, tokens, languageOf(language))
+            val stream = recognizer.createStream()
+            try {
+                stream.acceptWaveform(samples, SAMPLE_RATE)
+                recognizer.decode(stream)
+                recognizer.getResult(stream).text.trim()
+            } finally {
+                stream.release()
+            }
+        }
+    }
+
+    /** 认出模型文件建一个识别器; 找不到就建, 模型或语言换了就重建 */    private fun recognizerFor(directory: File, model: File, tokens: File, language: String): OfflineRecognizer {
         val held = loaded
         if (held != null && held.directory == directory.absolutePath && held.language == language) {
             return held.recognizer

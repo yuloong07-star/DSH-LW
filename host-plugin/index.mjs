@@ -22,7 +22,7 @@ import { createWriteStream } from 'node:fs'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
@@ -1399,9 +1399,10 @@ const TOOLS = [
       + 'and runs SenseVoice (Chinese, English, Cantonese, Japanese and Korean, with punctuation) '
       + 'in its own process, so the audio never leaves the device. op=status reports the engine and '
       + 'whether the model is on disk; op=prepare downloads it once, about 240 MB from the '
-      + 'hf-mirror copy of the model (huggingface.co itself is unreachable from this phone); '
-      + 'op=transcribe turns one 16 kHz mono PCM16 WAV file into text. This is the same engine the '
-      + "GUI's own voice input button uses, so prepare is what makes that button usable.",
+      + 'hf-mirror copy of the model (huggingface.co itself is unreachable from this phone), plus '
+      + 'the 1.8 MB silero voice-activity model that the always-listening chain cuts segments '
+      + 'with; op=transcribe turns one 16 kHz mono PCM16 WAV file into text. This is the same '
+      + "engine the GUI's own voice input button uses, so prepare is what makes that button usable.",
     parameters: {
       op: {
         type: 'string',
@@ -1432,6 +1433,10 @@ const TOOLS = [
           info.present
             ? `downloaded: ${info.modelBytes} bytes of weights, ${info.tokensBytes} bytes of tokens`
             : 'the model is not downloaded yet, so op=prepare is what comes first',
+          info.vad
+            ? `silero VAD downloaded: ${info.vadBytes} bytes at ${info.vadPath}`
+            : `the silero VAD is missing (${info.vadBytes} bytes at ${info.vadPath}): the wake word`
+              + ' still listens, but nothing gets cut into segments until op=prepare fetches it',
           `loaded in memory: ${info.loaded ? 'yes' : 'no'}`,
           `languages: ${info.languages}`,
         ].join('\n')
@@ -2457,6 +2462,27 @@ const SPEECH_FILES = [
   },
 ]
 
+/**
+ * The silero voice-activity model the always-listening chain cuts segments with
+ *
+ * Same file and same sha256 as the one dsh's own `speech-to-text-sensevoice` package pins, so the
+ * segmentation behaves the way that package's does. It is 1.8 MB - small enough that the app hashes
+ * it on every start instead of trusting the download - and it is *not* part of the voice input
+ * button's needs, so it is tracked separately from `present`: a phone that already downloaded the
+ * 240 MB recogniser must not be told to download it again just because the VAD arrived later
+ */
+const SPEECH_VAD = {
+  name: 'silero_vad.onnx',
+  bytes: 1807522,
+  sha256: 'a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28',
+}
+
+/** Same repo layout as the recogniser: the hf-mirror copy first, huggingface.co as the fallback */
+const SPEECH_VAD_SOURCES = [
+  'https://hf-mirror.com/csukuangfj/vad/resolve/main',
+  'https://huggingface.co/csukuangfj/vad/resolve/main',
+]
+
 /** How far the model is, as the page's voice input reads it */
 const speechState = { phase: 'checking', detail: 'looking for the model' }
 const speechListeners = new Set()
@@ -2488,30 +2514,38 @@ async function speechInspect() {
     SPEECH_FILES.map((file) => speechSize(join(info.directory, file.name))),
   )
   const present = SPEECH_FILES.every((file, index) => sizes[index] === file.bytes)
+  const vad = await speechSize(info.vadPath) === SPEECH_VAD.bytes
   speechAnnounce(
-    present ? 'ready' : 'unprepared',
-    present ? `sherpa-onnx ${info.sherpa}` : 'the model is not downloaded yet',
+    present && vad ? 'ready' : 'unprepared',
+    present && vad
+      ? `sherpa-onnx ${info.sherpa}`
+      : present ? 'the silero VAD is not downloaded yet' : 'the model is not downloaded yet',
   )
-  return { ...info, present }
+  return { ...info, present, vad }
 }
 
 /** Fetch the model once, from whichever mirror answers */
 async function speechPrepare() {
   const info = await speechInspect()
-  if (info.present) return info
   await mkdir(info.directory, { recursive: true })
-  for (const file of SPEECH_FILES) {
-    const target = join(info.directory, file.name)
-    if (await speechSize(target) === file.bytes) continue
-    await speechDownload(file, target)
+  if (!info.present) {
+    for (const file of SPEECH_FILES) {
+      const target = join(info.directory, file.name)
+      if (await speechSize(target) === file.bytes) continue
+      await speechDownload(file, target)
+    }
+  }
+  if (!info.vad) {
+    await mkdir(dirname(info.vadPath), { recursive: true })
+    await speechDownload(SPEECH_VAD, info.vadPath, SPEECH_VAD_SOURCES)
   }
   speechAnnounce('ready', `sherpa-onnx ${info.sherpa}`)
-  return { ...info, present: true }
+  return { ...info, present: true, vad: true }
 }
 
-async function speechDownload(file, target) {
+async function speechDownload(file, target, sources = SPEECH_SOURCES) {
   let failure = null
-  for (const base of SPEECH_SOURCES) {
+  for (const base of sources) {
     const partial = `${target}.part`
     try {
       speechAnnounce('downloading', `${file.name} from ${new URL(base).host}`)
