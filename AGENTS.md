@@ -430,6 +430,8 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
 
 ## 构建与验证
 
+**发版前必须干净构建, 而且构建完要验一遍 APK 里没有"无归属区间"** (2026-10-05 实测的教训): 增量构建会在 APK 里留**连续空洞** —— 1.0.3 那个 363.8 MiB 的包里夹着 **96.5 MiB** 死字节 (位置在 `classes7.dex` 末尾与 `assets/ocr/det.onnx` 开头之间, 大段零字节夹零星 `PK\x03\x04`), 而同一份源码干净构建只有 **275.6 MiB** (最大无归属区间 4 KB)。验法: `python tools/apk-bytes.py app/build/outputs/apk/debug/app-debug.apk` —— 它逐条走本地头, 把没人认领的区间按大小列出来, 最大的那条应当只有几 KB (对齐与数据描述符)。同一份脚本配 `python tools/host-tree-size.py <host.zip>` 看 host 树的成分 (按包名分组排大小)
+
 **提交时直接跳过签名, 不要为这个去解锁 key**: 全局 git config 开了 `commit.gpgsign` / `tag.gpgsign` 且 `gpg.format=ssh`, 用的 key 带 passphrase, 而开发机上没有 ssh-agent, 所以非交互提交必然失败; 本仓库已经在本地 config 里关掉了 (`git config commit.gpgsign false` / `tag.gpgsign false`), **新克隆要再跑一次, 或者单次用 `git commit --no-gpg-sign`**
 
 ### 常用命令

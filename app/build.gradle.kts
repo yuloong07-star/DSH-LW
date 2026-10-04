@@ -156,6 +156,20 @@ android {
     }
 
     buildTypes {
+        // 1.2.0: 发的就是 debug 包 (同一个 debug keystore, 才能覆盖安装、会话与记忆不丢), 而 R8 与
+        // 资源裁剪对哪个 build type 都适用 —— 所以把优化开在 debug 上, 不必改发 release 包。
+        // 关掉优化时 dex 是 69.6 MiB (十一个 classes*.dex), 那是这一版最大的一笔
+        debug {
+            optimization {
+                enable = true
+            }
+            // 默认只有 release 才吃 proguard-rules.pro, 而这一版**发的是 debug 包**, 所以显式挂上。
+            // 那份规则里最要紧的一条是特权进程的入口类名 (见文件里的注释)
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+        }
         release {
             optimization {
                 enable = false
