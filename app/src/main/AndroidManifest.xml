@@ -170,6 +170,18 @@
                 android:value="floats the dsh input window over other apps" />
         </service>
 
+        <!-- 唤醒词: 一直听着麦克风的前台服务。microphone 是它真正要的那一条类型, specialUse 是
+             "长跑"这件事本身; 通知栏留一条常驻, 上面一个停止按钮 —— 一直开着的麦克风必须有一眼
+             看得见、一下就关得掉的地方 -->
+        <service
+            android:name=".wake.WakeWordService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="listens for a wake word so the agent can be called by voice" />
+        </service>
+
         <!-- 工作区里的文件要交给别的应用: `lw_share` 与 `lw_open_file` 走 ACTION_SEND / ACTION_VIEW,
              而 Android 10 起 `file://` 一律被拒, 所以交给它们的是这个 provider 发出来的
              `content://`。根目录挂在 `/` 上: 工作区既可能在 /sdcard 也可能是应用自己的媒体目录,

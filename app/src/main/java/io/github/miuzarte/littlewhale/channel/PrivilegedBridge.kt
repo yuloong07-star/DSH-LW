@@ -9,6 +9,7 @@ import io.github.miuzarte.littlewhale.tool.LwSpeech
 import io.github.miuzarte.littlewhale.tool.LwSpeak
 import io.github.miuzarte.littlewhale.tool.LwSystem
 import io.github.miuzarte.littlewhale.tool.LwSystemCommand
+import io.github.miuzarte.littlewhale.tool.LwWakeWord
 import io.github.miuzarte.littlewhale.tool.text
 import io.github.miuzarte.littlewhale.util.PermissionCatalog
 import io.github.miuzarte.littlewhale.workspace.Workspace
@@ -798,6 +799,7 @@ object PrivilegedBridge {
         "speech" -> appContext { LwSpeech.dispatch(it, request) }
         "speak" -> appContext { LwSpeak.dispatch(it, request) }
         "overlay" -> appContext { LwOverlay.dispatch(it, request) }
+        "wakeword" -> appContext { LwWakeWord.dispatch(it, request) }
         "syscmd" -> LwSystemCommand.dispatch(request)
 
         // 等一个控件出现: 在无障碍树里轮询, 找到就立刻回话, 不找到就回到超时为止。上限压在与桥那条
