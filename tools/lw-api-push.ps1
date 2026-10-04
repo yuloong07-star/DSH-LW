@@ -55,6 +55,11 @@ if ($Limit -gt 0) { $commits = @($commits[0..($Limit - 1)]) }
 Write-Host "replaying $($commits.Count) of $((@(git rev-list --reverse "$RemoteRef..HEAD")).Count) commit(s)"
 
 $known = @{}
+# 提交 -> 它那棵树的 SHA。**历史里有 merge**, 所以"上一次重放的那个提交"不等于"这个提交的父提交":
+# 每个提交的 base_tree 必须取它**自己的第一父**那棵树。按反向拓扑序重放时, 父要么是远端那个 base,
+# 要么是前面已经重放过的提交, 两种都在这张表里
+$trees = @{}
+$trees[$base] = $remoteTree
 $parentSha = $base
 $parentTree = $remoteTree
 $index = 0
@@ -62,17 +67,31 @@ $index = 0
 foreach ($commit in $commits) {
     $index++
     $line = (git rev-list --parents -n 1 $commit).Trim()
-    if (($line -split ' ').Count -ne 2) { throw "$commit is not a single-parent commit" }
+    $parts = $line -split ' '
+    if ($parts.Count -lt 2) { throw "$commit has no parent to base its tree on" }
+    $parentSha = $parts[1]
+    if (-not $trees.ContainsKey($parentSha)) {
+        throw "$($commit.Substring(0, 7)) 的第一父 $($parentSha.Substring(0, 7)) 还没被重放过"
+    }
+    $parentTree = $trees[$parentSha]
 
     $entries = @()
-    foreach ($raw in @(git diff-tree -r --raw --no-commit-id $commit)) {
+    # 与第一父逐条比: merge 提交直接 `git diff-tree <commit>` 什么都不输出, 显式给两棵树才是那个 diff
+    foreach ($raw in @(git diff-tree -r --raw --no-commit-id $parentSha $commit)) {
         if ($raw -notmatch '^:(\d+) (\d+) ([0-9a-f]+) ([0-9a-f]+) ([A-Z])\s+(.+)$') {
             throw "unparsed diff line: $raw"
         }
         $oldMode = $Matches[1]; $newMode = $Matches[2]; $newBlob = $Matches[4]
         $status = $Matches[5]; $path = $Matches[6]
         if ($status -eq 'D') {
-            $entries += @{ path = $path; mode = $oldMode; type = 'blob'; sha = $null }
+            $kind = if ($oldMode -eq '160000') { 'commit' } else { 'blob' }
+            $entries += @{ path = $path; mode = $oldMode; type = $kind; sha = $null }
+            continue
+        }
+        if ($newMode -eq '160000') {
+            # submodule: 这个 sha 指的是**另一个仓库里的提交**, 树条目原样带过去就行 —— 拿它去
+            # `git cat-file blob` 会失败 (它不是 blob), 建出来的树也就对不上了
+            $entries += @{ path = $path; mode = '160000'; type = 'commit'; sha = $newBlob }
             continue
         }
         if (-not $known.ContainsKey($newBlob)) {
@@ -94,6 +113,7 @@ foreach ($commit in $commits) {
     $tree = (& $Gh api -X POST "repos/$Repo/git/trees" --input $jsonFile --jq '.sha').Trim()
     $want = (git rev-parse "$commit^{tree}").Trim()
     if ($tree -ne $want) { throw "tree mismatch at $($commit.Substring(0,7)) : api=$tree local=$want" }
+    $trees[$commit] = $tree
 
     # 提交对象逐字节重放: header + 空行 + 正文, 正文末尾那个换行是对象里本来就有的
     $objFile = Join-Path $tmp 'commit.obj'
