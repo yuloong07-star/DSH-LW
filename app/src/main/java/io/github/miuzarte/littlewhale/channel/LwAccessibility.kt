@@ -69,6 +69,21 @@ data class UiTyping(
 )
 
 /**
+ * 一次滚动做了什么
+ *
+ * @property outcome `scrolled`, `refused` (控件拒绝了动作, 多半已经到顶或到底), `none` (这一屏没有可滚动的
+ *   东西), `unavailable`
+ * @property scrolled 真正滚了几屏
+ * @property node 滚的是哪一个控件
+ * @property error 没滚成的原因, 滚成了是 null
+ */
+data class UiScroll(
+    val outcome: String,
+    val scrolled: Int,
+    val node: UiNode?,
+    val error: String?,
+)
+/**
  * What the device says is on a screen, read through an accessibility service
  *
  * This is the one part of the channel that runs in the app's own process: the service is declared
@@ -128,6 +143,8 @@ class LwAccessibility : AccessibilityService() {
 
         /** How many candidates an ambiguous name is worth listing */
         private const val MAX_CANDIDATES = 12
+        /** 一次调用最多连着滚几屏, 免得一个笔误把长列表拖到底 */
+        private const val MAX_SCROLL_TIMES = 10
 
         /** The system owns the service's lifetime, so this is the app's only handle on it */
         @Volatile
@@ -222,6 +239,82 @@ class LwAccessibility : AccessibilityService() {
             return UiTap("clicked", listOf(hit.ui), if (target === hit.node) "self" else "ancestor", bounds, null)
         }
 
+        /**
+         * 滚一屏可滚动的内容, 走无障碍自己的滚动动作
+         *
+         * 平台把"再往下看一屏"交给了控件自己 (`ACTION_SCROLL_FORWARD`), 所以列表、表单、滚动容器都不必
+         * 先知道手指该从哪儿划到哪儿 —— 比注入的拖动既准又稳, 也不受"注入的 MOVE 到不了某些屏"那条限制
+         *
+         * @param forward 往后看一屏 (内容往上走); false 是往前回一屏
+         * @param name 从哪儿滚: 给了名字就用那个控件所在的可滚动容器, 不给就用这一屏上最大的那块可滚动区域
+         * @param times 连着滚几屏, 上限 [MAX_SCROLL_TIMES]
+         */
+        fun scroll(displayId: Int, forward: Boolean, name: String?, times: Int): UiScroll {
+            if (instance == null) return UiScroll("unavailable", 0, null, NOT_ENABLED)
+            val window = windowOn(displayId)
+                ?: return UiScroll("none", 0, null, "no window is on display $displayId")
+            val root = window.root
+                ?: return UiScroll("none", 0, null, "display $displayId has no readable window content")
+            try {
+                root.refresh()
+            } catch (error: Throwable) {
+                Log.d(TAG, "could not refresh the tree", error)
+            }
+            val gathered = gather(root)
+            val wanted = name?.takeIf { it.isNotBlank() }
+            var chosen: Pair<AccessibilityNodeInfo, UiNode>? = null
+            if (wanted == null) {
+                chosen = gathered.list
+                    .filter { it.ui.scrollable }
+                    .maxByOrNull { areaOf(it.ui.bounds) }
+                    ?.let { it.node to it.ui }
+            } else {
+                for (found in match(gathered, wanted)) {
+                    val node = scrollTarget(found.node)
+                    if (node != null) {
+                        chosen = node to found.ui
+                        break
+                    }
+                }
+            }
+            val target = chosen
+                ?: return UiScroll(
+                    "none",
+                    0,
+                    null,
+                    if (wanted == null) {
+                        "nothing on display $displayId scrolls"
+                    } else {
+                        "nothing scrollable around the named control on display $displayId"
+                    },
+                )
+            val action = if (forward) {
+                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            } else {
+                AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            }
+            var done = 0
+            for (step in 1..times.coerceIn(1, MAX_SCROLL_TIMES)) {
+                val took = try {
+                    target.first.performAction(action)
+                } catch (error: Throwable) {
+                    Log.w(TAG, "could not scroll", error)
+                    false
+                }
+                if (!took) break
+                done++
+            }
+            return UiScroll(
+                outcome = if (done > 0) "scrolled" else "refused",
+                scrolled = done,
+                node = target.second,
+                error = if (done > 0) {
+                    null
+                } else {
+                    "the scrollable control refused the scroll action, which is what reaching its end looks like"
+                },
+            )
+        }
         /**
          * Put text into the field one screen is showing
          *
@@ -523,6 +616,24 @@ class LwAccessibility : AccessibilityService() {
             return null
         }
 
+        /** 一块矩形的面积, 用来在一屏上认出最大的那块可滚动区域 */
+        private fun areaOf(rect: Rect): Int = rect.width().coerceAtLeast(0) * rect.height().coerceAtLeast(0)
+
+        /** The node itself when it scrolls, else the closest ancestor that does */
+        private fun scrollTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+            var current: AccessibilityNodeInfo? = node
+            var steps = 0
+            while (current != null && steps < MAX_CLICKABLE_STEPS) {
+                if (current.isScrollable) return current
+                current = try {
+                    current.parent
+                } catch (error: Throwable) {
+                    null
+                }
+                steps++
+            }
+            return null
+        }
         /** The nodes a name reaches, through successively looser readings of that name */
         private fun match(gathered: Gathered, name: String): List<Found> {
             val list = gathered.list
