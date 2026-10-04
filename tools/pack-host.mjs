@@ -195,6 +195,29 @@ writeFileSync(join(out, 'package.json'), `${JSON.stringify({
 // them has to start anyway
 run('npm', ['install', '--no-audit', '--no-fund', '--package-lock=false', '--omit=optional'], out)
 
+// 裁掉这台设备上永远用不到的构建期 / 浏览器自动化包 (2026-10-05, 1.2.0 的瘦身那一步)
+//
+// 依据是"运行时真正挂了什么": profile 只挂 `dsh-base` + `dsh-web-app` 两个 bundle, 把它们的
+// package.json 依赖闭包算出来 (`tools/host-reach.py`), 树里有 **206 个包不在那份闭包里**, 解压后
+// 145 MiB。但**不可达不等于能删**: `@img/sharp-wasm32` 与 `dsh-web-mobile` 都是运行时按名字找的,
+// 删了会静默坏掉。所以这里只裁"安卓上根本没有对应物"的那一类 —— 浏览器自动化 (设备上没有
+// playwright 要的浏览器二进制)、端到端测试与打包工具链 (vitest / vite / testing-library)。
+// 裁完必须跑一遍真机/模拟器冒烟: host 起得来、GUI 渲染、工具数 51、读屏 / 通知 / OCR / 朗读
+const deadWeight = [
+  'playwright', 'playwright-core', '@puppeteer/browsers',
+  'chrome-devtools-mcp', '@browserbasehq/stagehand', '@browserbasehq/sdk',
+  'vitest', 'vite',
+  '@testing-library/dom', '@testing-library/react', 'react-dom', 'react',
+]
+let pruned = 0
+for (const name of deadWeight) {
+  const path = join(out, 'node_modules', ...name.split('/'))
+  if (!existsSync(path)) continue
+  rmSync(path, { recursive: true, force: true })
+  pruned += 1
+}
+console.log(`pack-host: pruned ${String(pruned)} package(s) this device cannot run`)
+
 // The mobile web-ui plugin is fetched into a scratch directory and copied in, rather than declared
 // as a dependency of the tree. Declaring it would drag npm's peer resolution over the whole install:
 // its peer range admits released 0.1.x and 0.2.0-rc.1+, but not the prerelease this tree is built
