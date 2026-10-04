@@ -62,6 +62,18 @@ object VirtualScreen {
 
     private const val TAG = "LwScreen"
 
+    /**
+     * 一次截图留下的那两个文件
+     *
+     * 两份都在工作区里, 而且**是一对**: 全尺寸那份给人看, [fitted] 那份给模型。名字由这一层说,
+     * 因为只有它知道缩放那份叫什么 (`.model` 后缀是 [Picture] 里的常量) —— 让上面照着全尺寸那个名字
+     * 去猜, 猜错过一次
+     *
+     * @property fitted 交给模型的那一份 (装得下预算时就是全尺寸那份本身)
+     * @property full 工作区里的全尺寸那份
+     */
+    data class Shot(val fitted: Picture.Fitted, val full: File)
+
     /** Every screen the device is hosting, in the order they were made */
     var screens: List<ScreenState> by mutableStateOf(emptyList())
         private set
@@ -647,13 +659,13 @@ object VirtualScreen {
      * @param screen the screen to capture, named rather than taken from the selection.
      * @param maxPixels the pixel budget the picture is scaled to fit.
      * @param maxBytes the byte budget the picture is scaled to fit.
-     * @returns the picture to hand over, or null with [lastError] set.
+     * @returns both files of the capture, or null with [lastError] set.
      */
     fun screenshot(
         screen: ScreenState,
         maxPixels: Int = Picture.DEFAULT_MAX_PIXELS,
         maxBytes: Int = Picture.DEFAULT_MAX_BYTES,
-    ): Picture.Fitted? {
+    ): Shot? {
         val staging = pictures ?: run {
             lastError = "no directory to write a picture into"
             return null
@@ -670,7 +682,8 @@ object VirtualScreen {
             // The scaling happens here rather than at the far end: once a picture is stored nothing
             // on this device can re-encode it, so what the model will read has to be the right size
             // by the time it is handed over
-            Picture.fit(picture, maxPixels, maxBytes)
+            val fitted = Picture.fit(picture, maxPixels, maxBytes) ?: return null
+            Shot(fitted, picture)
         } catch (problem: Throwable) {
             report("screenshot", problem)
             null

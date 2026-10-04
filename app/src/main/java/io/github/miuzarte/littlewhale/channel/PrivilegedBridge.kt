@@ -656,12 +656,16 @@ object PrivilegedBridge {
                 put("label", screen.label)
                 put("width", screen.width)
                 put("height", screen.height)
-                put("path", shot?.file?.absolutePath ?: "")
-                put("bytes", shot?.file?.length() ?: 0L)
+                put("path", shot?.fitted?.file?.absolutePath ?: "")
+                put("bytes", shot?.fitted?.file?.length() ?: 0L)
+                // 全尺寸那份也在工作区里, 而且**两份是一对**: 收尾清理要一起删。路径由应用这一侧给,
+                // 因为只有它知道缩放那份叫什么 (`.model` 后缀是 Picture 里的常量), 让上面去猜文件名
+                // 是猜不对的 —— 这里给过一次, 而且猜错了一次
+                put("fullPath", shot?.full?.absolutePath ?: "")
                 put("picture", buildJsonObject {
-                    put("width", shot?.width ?: 0)
-                    put("height", shot?.height ?: 0)
-                    put("scale", shot?.scale ?: 0f)
+                    put("width", shot?.fitted?.width ?: 0)
+                    put("height", shot?.fitted?.height ?: 0)
+                    put("scale", shot?.fitted?.scale ?: 0f)
                 })
                 put("error", VirtualScreen.lastError ?: "")
             }
