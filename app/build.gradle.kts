@@ -1,3 +1,7 @@
+import java.io.File
+import java.net.URI
+import java.security.MessageDigest
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -25,35 +29,41 @@ val sherpaAar = layout.buildDirectory.file("sherpa-onnx/sherpa-onnx-static-link-
 val sherpaAarLocal = rootProject.file("app/libs/sherpa-onnx.aar")
 val sherpaAarSha256 = "b22c3fc1b6a45666d28892bb2f7694beeb77a8362d7ebd77c1a5431ec9435471"
 
-fun sha256Of(file: java.io.File): String {
-    val digest = java.security.MessageDigest.getInstance("SHA-256")
-    file.inputStream().use { stream ->
-        val buffer = ByteArray(1 shl 16)
-        while (true) {
-            val read = stream.read(buffer)
-            if (read <= 0) break
-            digest.update(buffer, 0, read)
-        }
-    }
-    return digest.digest().joinToString("") { "%02x".format(it) }
-}
-
+// 短名要 import 才用得了: 脚本里 `java` 会被解析成 Gradle 那个 `java` 扩展, 所以 `java.security.*`
+// 与 `java.net.*` 在这里是"在扩展上找成员", 编译期直接报 Unresolved reference
+// 配置缓存的安全写法: 动作里**不许**碰脚本级的东西 (上面那个 `sha256Of` 是脚本类的成员函数,
+// 而 `logger` 是脚本属性) —— 引用了就等于把整个脚本对象塞进任务, 配置缓存会以
+// "cannot serialize Gradle script object references" 拒绝, 构建在 :app:compileDebugKotlin
+// **成功之后**才失败 (看着像编译错, 其实不是)。所以取哈希与打印都在动作内部就地写
 val fetchSherpaOnnxAar = tasks.register("fetchSherpaOnnxAar") {
     group = "littlewhale"
     description = "Fetch the sherpa-onnx AAR the app links for on-device speech recognition"
     val target = sherpaAar.get().asFile
+    val expected = sherpaAarSha256
+    val source = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaVersion/" +
+        "sherpa-onnx-static-link-onnxruntime-$sherpaVersion.aar"
     outputs.file(target)
     doLast {
-        if (target.isFile && sha256Of(target) == sherpaAarSha256) return@doLast
+        fun digestOf(file: File): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { stream ->
+                val buffer = ByteArray(1 shl 16)
+                while (true) {
+                    val read = stream.read(buffer)
+                    if (read <= 0) break
+                    digest.update(buffer, 0, read)
+                }
+            }
+            return digest.digest().joinToString("") { "%02x".format(it) }
+        }
+        if (target.isFile && digestOf(target) == expected) return@doLast
         target.parentFile.mkdirs()
-        val url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaVersion/" +
-            "sherpa-onnx-static-link-onnxruntime-$sherpaVersion.aar"
-        logger.lifecycle("fetching $url")
-        java.net.URI(url).toURL().openStream().use { input ->
+        println("fetching $source")
+        URI(source).toURL().openStream().use { input ->
             target.outputStream().use { output -> input.copyTo(output) }
         }
-        val actual = sha256Of(target)
-        if (actual != sherpaAarSha256) {
+        val actual = digestOf(target)
+        if (actual != expected) {
             target.delete()
             throw GradleException("the sherpa-onnx AAR is not the pinned one: sha256 $actual")
         }
@@ -132,8 +142,8 @@ android {
         targetSdk = 37
         // 1.0.3: 先修「一个工具都用不上」的那几处 (插件 schema / OCR 进包 / 图片编码), 再补
         // 四/五级能力 (应用控制、事件订阅、录屏、通知监听) 与无障碍滚动
-        versionCode = 3
-        versionName = "1.0.3"
+        versionCode = 4
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
