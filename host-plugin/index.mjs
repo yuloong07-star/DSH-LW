@@ -1018,6 +1018,41 @@ const TOOLS = [
     },
   ),
 
+  defineTool({
+    name: 'lw_shell',
+    description:
+      'Run one shell command on the device through the privileged side, where it runs as the'
+      + ' shell uid (usually 2000) instead of as this app - so pm, am, input and dumpsys answer'
+      + ' it here, while they refuse a call that comes from the app itself. It is one command'
+      + ' line, 512 characters at most, with a timeout that kills it, and it is not a session:'
+      + ' nothing persists between calls. Be careful with it - it is the one tool here that is'
+      + ' not limited to a fixed list of operations.',
+    parameters: {
+      command: {
+        type: 'string',
+        required: true,
+        description: 'What to run, as one line: for example "pm list packages -3" or "id"',
+      },
+      user: { type: 'integer', description: 'The Android user, for a cloned app. Default 0' },
+      timeoutMs: { type: 'integer', description: 'How long to allow it in ms. Default 30000' },
+      note: NOTE,
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      const answer = await call('syscmd', {
+        op: 'shell',
+        command: args?.command,
+        user: args?.user,
+        timeoutMs: args?.timeoutMs,
+      })
+      const said = answerOf(answer)
+      return args?.note ? said + ' (' + args.note + ')' : said
+    },
+  }),
+
 ]
 
 /** One request, one response: the app answers a single line and closes the connection */
