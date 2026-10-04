@@ -965,11 +965,15 @@ const TOOLS = [
           + ' screen\'s own pixels',
         items: {
           type: 'object',
+          // 对象节点必须自己声明开闭: dsh 的作者侧 schema 把 additionalProperties 定成必填, 少一个
+          // 就是模块求值期抛错, 整包 UNSUPPORTED_SCHEMA, 会话里一个 lw_ 工具都不剩
+          additionalProperties: false,
           properties: {
             points: {
               type: 'array',
               items: {
                 type: 'object',
+                additionalProperties: false,
                 properties: { x: { type: 'number' }, y: { type: 'number' } },
               },
             },

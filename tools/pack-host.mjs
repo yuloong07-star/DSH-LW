@@ -201,6 +201,16 @@ const installed = join(out, 'node_modules', 'littlewhale-channel')
 cpSync(plugin, installed, { recursive: true })
 console.log(`pack-host: installed the LittleWhale plugin from ${plugin}`)
 
+// 真把这个包 import 一次, 数一数注册出来几个工具
+//
+// `defineTool` 在模块求值的时候就编译一遍参数 schema, 而插件的 TOOLS 是模块级的常量数组: 一张不
+// 合规的 schema 抛在 import 上, 整包一起死, 表现是"会话里一个 lw_ 工具都没有"。装完之后立刻验,
+// 比装上手机再发现便宜得多。这里不用上面那个 run(): 它带 shell, 而参数里的路径可能带空格
+execFileSync(process.execPath, [
+  fileURLToPath(new URL('./check-host-plugin.mjs', import.meta.url)),
+  join(installed, 'index.mjs'),
+], { cwd: out, stdio: 'inherit' })
+
 // sharp has no binding this device can load - libvips is built for glibc, and --omit=optional
 // dropped even the platform package - so the tree gets a stand-in that answers the one consumer's
 // two questions from the PNG header instead. Its own file says what it does and does not do
