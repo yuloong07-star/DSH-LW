@@ -1492,7 +1492,8 @@ function formatLaunched(result, note) {
   const output = (result.output ?? '').trim()
   if (output) lines.push(output)
   // 起完的自查: `am start` 报成功不等于窗口落在这块屏上, 而"没有窗口"这件事以前只有模型自己去发现
-  if (result.windowOnDisplay === false) {
+  // (windowOnDisplay 为 null 表示这次查不了: 无障碍没开, 窗口列表读不到)
+  if (result.windowOnDisplay === false || result.windowOnDisplay === null) {
     lines.push(result.windowNote
       || `displayId ${result.displayId} has no window on it after the launch`)
     lines.push('Read the screen back with lw_ui before acting on it.')

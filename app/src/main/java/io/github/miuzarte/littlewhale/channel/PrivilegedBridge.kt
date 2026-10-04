@@ -613,11 +613,12 @@ object PrivilegedBridge {
                 put("user", userId)
                 put("code", code)
                 put("started", code == 0 && output.contains(STARTED_MARK))
-                // 起完自查一次窗口: 见 waitForWindow 上那段
-                val window = waitForWindow(screen.displayId)
+                // 起完自查一次窗口: 见 waitForWindow 上那段。**无障碍没开时不下这个结论** —— 那时
+                // 窗口列表根本读不到, "没有窗口"与"读不到窗口"是两件事, 而前者会让模型白白去重建屏
+                val window = if (LwAccessibility.running) waitForWindow(screen.displayId) else null
                 put("windowOnDisplay", window)
-                if (!window) {
-                    put(
+                when (window) {
+                    false -> put(
                         "windowNote",
                         "the launch was accepted but displayId ${screen.displayId} still has no" +
                             " window on it. An app that is already running keeps its window where it" +
@@ -626,6 +627,16 @@ object PrivilegedBridge {
                             " fresh one (lw_screen_create) and launch again: a second launch on the" +
                             " same screen does not move the running window onto it.",
                     )
+
+                    null -> put(
+                        "windowNote",
+                        "the launch was accepted, and this answer cannot say whether anything is on" +
+                            " displayId ${screen.displayId}: that check reads the accessibility" +
+                            " window list, and the accessibility service is off. Read the screen" +
+                            " back with lw_ui once it is on.",
+                    )
+
+                    true -> Unit
                 }
                 put("output", output.trim())
             }
