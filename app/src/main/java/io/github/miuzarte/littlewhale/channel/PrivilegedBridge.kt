@@ -444,6 +444,9 @@ object PrivilegedBridge {
                     "putting the text at a point needs both x and y: giving one of them is not a point"
                 }
                 VirtualScreen.tap(screen, atX, atY)
+                // 按下去之后那块界面可能还没画出来 (常常是打开了一个新页面), 而字段不在树里的时候
+                // `type` 会退回按键 —— 按键落进空气里, 答案却只说"打了几个键"。所以给它一小段时间
+                waitForField(screen.displayId)
             }
             val field = LwAccessibility.type(screen.displayId, text, replace)
             when (field.outcome) {
@@ -1021,6 +1024,20 @@ object PrivilegedBridge {
     }
 
     /**
+     * 等这块屏上出现能打字的字段, 给"先按一下再打字"那条路用
+     *
+     * 按下去常常是打开一个新页面, 而那个页面的字段要等它画出来才在无障碍树里。等不到也不报错: 交给
+     * `type` 自己走它的退路 (按键), 而答案里那句 `via` 会说清走的是哪一条
+     */
+    private fun waitForField(displayId: Int) {
+        val deadline = System.currentTimeMillis() + FIELD_SETTLE_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (LwAccessibility.hasEditable(displayId)) return
+            Thread.sleep(WINDOW_POLL_MS)
+        }
+    }
+
+    /**
      * 一次截图落到答案里的那几个字段
      *
      * **两份路径都由应用这一侧给** (见 [VirtualScreen.Shot]): 上面照着文件名去猜缩放那份叫什么, 已经
@@ -1281,6 +1298,9 @@ object PrivilegedBridge {
 
     /** 连拍两张之间歇多久 (一次截图本身要两三百毫秒, 所以它只是让两张别贴在一起) */
     private const val SERIES_GAP_MS = 120L
+
+    /** 按下一点之后等那个字段出现等多久 (一个页面画出来的时间) */
+    private const val FIELD_SETTLE_MS = 1_500L
 
     /** More apps than this in one answer is a listing nobody reads, so it is cut and said so */
     private const val MAX_APPS = 400

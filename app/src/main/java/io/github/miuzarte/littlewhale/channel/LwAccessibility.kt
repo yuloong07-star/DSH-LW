@@ -419,6 +419,24 @@ class LwAccessibility : AccessibilityService() {
          */
         fun hasWindow(displayId: Int): Boolean = windowOn(displayId) != null
 
+        /**
+         * 这块屏上现在有没有能打字的字段
+         *
+         * "先按一下那个点、再打字"那条路要用它: 按下去常常是**打开一个新页面** (设置里的搜索框就是),
+         * 而那个页面的字段要等它画出来才在树里。不等这一下就会退回按键 —— 按键落进空气里, 而答案
+         * 只会说"打了几个键"
+         */
+        fun hasEditable(displayId: Int): Boolean {
+            val window = windowOn(displayId) ?: return false
+            val root = window.root ?: return false
+            return try {
+                gather(root).list.any { it.ui.editable }
+            } catch (error: Throwable) {
+                Log.d(TAG, "could not look for an editable field on display $displayId", error)
+                false
+            }
+        }
+
         /** The window a caller means, preferring the one an app is actually showing there */
         private fun windowOn(displayId: Int): AccessibilityWindowInfo? {            val all = try {
                 instance?.windowsOnAllDisplays

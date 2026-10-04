@@ -155,6 +155,8 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 **1.0.2 又加了这些**, 都在同一个插件里, 由 `simpleTool` 那个工厂生成 (它们的形状一样): `lw_notify` / `lw_vibrate` / `lw_clipboard` / `lw_share` / `lw_open_file` / `lw_download` / `lw_device` / `lw_battery` / `lw_storage` / `lw_running` / `lw_volume` / `lw_media` / `lw_net` / `lw_system` / `lw_sensor` / `lw_location` / `lw_permissions` / `lw_power` / `lw_app_control` / `lw_wait_for` / `lw_ui_dump` / `lw_gesture` / `lw_pinch`
 
+**1.0.3 加的 (共 42 个工具)**: `lw_scroll` (走无障碍的滚动动作, 不注入触摸) / `lw_keep_awake` (`PARTIAL_WAKE_LOCK`, 谁开谁关) / `lw_key_combo` (`input keycombination`, 二到四个键) / `lw_intent` (`openUrl` 打开 http(s) 链接, `intent` 按动作或组件起一个 activity)。另外 `lw_app_control` 多了 `enable` / `disable` / `setHome`, `lw_screenshot` 多了分区 (`x` / `y` / `width` / `height`) 与连拍 (`count`, 最多 5 张), `lw_type` 多了 `x` / `y` (先按那一点再打字)。**`disable` 与那四条破坏性的一样要人点一下确认** —— 它比停应用更粘: 被停用的应用从桌面上消失, 要有人记得回去打开
+
 **它们大多不过 binder**: 通知、剪贴板、电池、音量、系统设置这些在 app 进程里用 `Context` 就能做, 走这条回环桥只是为了把结果按同一套协议回给 host。实现都在 `app/src/main/java/.../tool/` 下, 桥那一侧 (`PrivilegedBridge.dispatch`) 只有一行转发
 
 三条写这批时定下来的规矩, 以后加工具照办:
@@ -218,7 +220,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **匹配从窄到宽** (text 全等 → desc 全等 → text 包含 → desc 包含), 所以 `lw_tap(text="返回")` 能命中只有 `desc="返回"` 的返回键
 - **一行里的标题和副标题是两个节点一个行**, 候选按"按下去按到哪个节点"去重; 去重后仍不止一个就**什么都不按**, 把候选连矩形返回 (**最多 12 条**, 工具那句"多少个"是上限不是总数)
 - `ACTION_CLICK` 返回 `false` 时退回在 target 中心注一次真触摸 (`via: "finger"`), 因为少数自绘控件不吃无障碍动作; 树已经说了东西在哪, 这次注入不是猜
-- **开启服务只能由特权进程写 `Settings.Secure`**, 而 `Settings.Secure` 在特权进程里**走不通** (`app_process` 没有 `IApplicationThread`) —— 正解是 `ProcessBuilder("/system/bin/settings", "get"/"put", ...)`。写入必须**读出来改** (设备上还有别人的无障碍服务)、开启时**先**写 `accessibility_enabled=1` 再写组件列表、写完**读回来核对**
+- **开启服务只能由特权进程写 `Settings.Secure`**, 而 `Settings.Secure` 在特权进程里**走不通** (`app_process` 没有 `IApplicationThread`) —— 正解是 `ProcessBuilder("/system/bin/settings", "get"/"put", ...)`。写入必须**读出来改** (设备上还有别人的无障碍服务)、开启时**先**写 `accessibility_enabled=1` 再写组件列表、写完**读回来核对**。**但读取不能走那条命令**: `/system/bin/settings` 是一条 shell 命令, Android 14 起对非 shell 的 uid 直接 `SecurityException: getCurrentUser() ... requires INTERACT_ACROSS_USERS`, 于是应用自己读回来的永远是 null —— 设置页与 `lw_probe` 会把"组件在列表里"说成"不在" (2026-10-04 实测, 已改成读 `ContentResolver`, 那条命令只留给特权进程当兜底)
 - **光写设置不够, 还有两件事**: 组件**已经在列表里但没被绑上**时 (强停之后就是这样), 把同样的值再写一遍不一定能让系统重新评估, 所以**先摘掉、停 800ms、再放回**; 而侧载安装的应用 (`installerPackageName=null`) 在 Android 13 起**不许开无障碍**, 那道闸是一个 app op —— 开启时顺手 `cmd appops set <pkg> ACCESS_RESTRICTED_SETTINGS allow` (best effort, 失败只记日志), 否则服务可能起不来而没有任何提示
 - **重装 APK 会把我们踢出 `enabled_accessibility_services`**, 所以设置页那个开关不是可选项, 而且**开关自己就会经特权通道把服务打开**; 「开没开」不是设置而是"系统有没有绑上", 状态从 `LwAccessibility.running` 读, 写完等最多 3s 再报真实状态
 
@@ -251,7 +253,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 ## 破坏性操作的确认
 
-`forceStop` / `clearData` / `uninstall` / `install` 这四条**不由模型说了算**: 应用会在屏幕上弹一个 `OverlayDialog`, 点了「确定」才执行, **100 秒没人点就回一句"没人确认", 什么都不做** (`ui/DestructiveConfirm`, `LwSystemCommand.destructive`)
+`forceStop` / `clearData` / `uninstall` / `install` / `disable` 这五条**不由模型说了算**: 应用会在屏幕上弹一个 `OverlayDialog`, 点了「确定」才执行, **100 秒没人点就回一句"没人确认", 什么都不做** (`ui/DestructiveConfirm`, `LwSystemCommand.destructive`)。`disable` 是 1.0.3 加进来的第五条 —— 它比停应用更粘, 被停用的应用从桌面上消失
 
 两个实现上的要点:
 
