@@ -102,7 +102,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - 过渡风格只有 `Miuix` / `AOSP` 两项, **没有 "无"**; AOSP 那套手感是搬来的 `ui/CrossActivityTransition.kt` (Miuix 0.9.4 的 `NavTransitions` 里没这个预设), 选中时 `cornerClipMode` 跟着换成 `All`
 - 系统栏图标深浅由 `theme/SystemBars.kt` 按**实际渲染出来的配色**定, 在 `MiuixTheme` 里调一次; **顶栏没有模糊也没有那个选项** (画面自己不透明, 糊了没人看得见)
 - **设置页右上角有一个 ⋮**: 要重启 host 才生效的改动 (工作区授权 / 局域网开关) 全收在那一个菜单里, 以后加选项就是往那个 `items` 里再加一条; 注意 **material3 不是本项目的依赖** (只有 `material3-window-size-class`), 没有 `androidx.compose.material3.DropdownMenu` 可用
-- **「截图」那段是两条预算, 都是滑块** (见 `channel/ScreenshotBudget.kt`): **像素**三档 (低 262144 = dsh 的 `imagePixelBudget: low`、默认 640000 = dsh 的缺省、高 1690000 = DeepSeek 那头的处理预算), **字节** 256 KiB~1 MiB 连续可滑 (吸附点 256/512/768/1024, 打字给到 4096)。两条给的都是 **app 这一半** (截图产生时缩到多少), 路由那一半 (`imagePixelBudget` / `imageMaxBytes`) 在 dsh 自己的 `settings.yaml` 里, **app 读不到也写不到** —— app 这一半超过路由那一半没用, 只会把注定被拒的图交出去 (超了要在 host 那边重编码, 而设备上没有编码器), 所以滑块上端就停在路由缺省那个数。滑块是搬来的 SFA `ArrowSlider` (`scaffolds/`, 点标题那一行可打字给精确值)
+- **「截图」那段是两条预算, 都是滑块** (见 `channel/ScreenshotBudget.kt`): **像素**三档 (低 262144 = dsh 的 `imagePixelBudget: low`、默认 640000 = dsh 的缺省、高 1690000 = DeepSeek 那头的处理预算), **字节** 256 KiB~1 MiB 连续可滑 (吸附点 256/512/768/1024, 打字给到 4096)。两条给的都是 **app 这一半** (截图产生时缩到多少), 路由那一半 (`imagePixelBudget` / `imageMaxBytes`) 在 dsh 自己的 `settings.yaml` 里, **app 读不到也写不到** —— app 这一半超过路由那一半没用, 只会把注定要被重编码的图交出去 (超了要在 host 那边重编码, 多一次往返也多一次质量损失), 所以滑块上端就停在路由缺省那个数。滑块是搬来的 SFA `ArrowSlider` (`scaffolds/`, 点标题那一行可打字给精确值)
 - **`AndroidView` 里的 WebView 必须显式设 `layoutParams`** (MATCH_PARENT / MATCH_PARENT), 否则它处在 `WRAP_CONTENT` 状态, **所有 viewport unit 都解析成 0** —— dsh 用 `100vh` / `100dvh` 量弹窗、菜单、设置页与目录选择器, 一塌就是空面板
 - **虚拟屏预览放不进网页端**: 预览是合成器直接写进原生 `SurfaceView` 的, 浏览器拿不到那个 surface; dsh 的插件 (`ctx.slots` / `ctx.sidebarRightTabs`) 跑在浏览器 JS 里, **拿不到 Shizuku / root 通道**
 - 远期点子: `ActivityOptions#setLaunchDisplayId()` 能把自己的 Activity 启到虚拟屏上, 让模型直接操作 dsh GUI
@@ -155,13 +155,17 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 **1.0.2 又加了这些**, 都在同一个插件里, 由 `simpleTool` 那个工厂生成 (它们的形状一样): `lw_notify` / `lw_vibrate` / `lw_clipboard` / `lw_share` / `lw_open_file` / `lw_download` / `lw_device` / `lw_battery` / `lw_storage` / `lw_running` / `lw_volume` / `lw_media` / `lw_net` / `lw_system` / `lw_sensor` / `lw_location` / `lw_permissions` / `lw_power` / `lw_app_control` / `lw_wait_for` / `lw_ui_dump` / `lw_gesture` / `lw_pinch`
 
+**1.0.3 加的 (共 48 个工具)**: `lw_scroll` (走无障碍的滚动动作, 不注入触摸) / `lw_keep_awake` (`PARTIAL_WAKE_LOCK`, 谁开谁关) / `lw_key_combo` (`input keycombination`, 二到四个键) / `lw_intent` (`openUrl` 打开 http(s) 链接, `intent` 按动作或组件起一个 activity) / `lw_files` (工作区里的列 / 读 / 写, 每一条都带上"手机怎么看这个文件") / `lw_media_scan` (让媒体库看见一个路径) / `lw_take_photo` (系统相机拍一张, 落在工作区的 `photos/`) / `lw_notifications` (读通知栏与清通知) / `lw_events_subscribe` 与 `lw_events_wait` (事件订阅: 等到一件事发生, 而不是反复读屏)。另外 `lw_app_control` 多了 `enable` / `disable` / `setHome`, `lw_screenshot` 多了分区 (`x` / `y` / `width` / `height`) 与连拍 (`count` 最多 12 张 · `intervalMs` · `sheet`), `lw_type` 多了 `x` / `y` (先按那一点再打字), `lw_notify` 多了 `banner` (全屏 intent)。**`disable` 与那四条破坏性的一样要人点一下确认** —— 它比停应用更粘: 被停用的应用从桌面上消失, 要有人记得回去打开
+
+**`lw_files` 是三条路里最容易被写成重复的那一条**: 这个会话自己就带着 `read` / `write` / `glob` / `grep` / `bash` (`packages/fs/*` + `packages/shell/*`), 而工作区就是那套工具的家 (进程 cwd 与 home 都在那儿), 所以"在工作区里读写一个文件"模型本来就会做 —— 加三个同名的工具只会让它在两个都行的选择之间犹豫。所以它**只做 app 这一侧拿得到的三件事**: 手机怎么看这个文件 (媒体库有没有它、系统认的 mime、一张图多大), 一个不随会话目录漂移的锚 (工作区是 `Workspace.resolve` 解析出来的, 而会话的目录是用户在界面里选的), 以及**写完顺手让系统看见** (两步动作模型只会记住一步)。围栏照计划书: 只认工作区里的路径, 越界一律拒
+
 **它们大多不过 binder**: 通知、剪贴板、电池、音量、系统设置这些在 app 进程里用 `Context` 就能做, 走这条回环桥只是为了把结果按同一套协议回给 host。实现都在 `app/src/main/java/.../tool/` 下, 桥那一侧 (`PrivilegedBridge.dispatch`) 只有一行转发
 
 三条写这批时定下来的规矩, 以后加工具照办:
 
 - **每个能力先过权限闸** (`util/PermissionGate` + `PermissionCatalog`): 缺权限时回的是"缺哪一条、怎么给", **不假装成功** —— 这台设备上"退出码 0 而什么都没发生"已经坑过一次 (无障碍那条), 所以写入一律**写完读回**再报结果
 - **答案由应用那一侧写**: 桥回来的 `result.text` 才是给人看的那一句 (只有它知道权限、设备、退出码), 插件用 `answerOf` 原样念, 不自己编话
-- **只有 app uid 真做不到的才走特权**: 卸载 / 清数据 / 停应用 / 装包 / 飞行模式 / 移动数据 / 蓝牙 / 熄屏。它们在特权进程里过一张**写死的白名单表** (`channel/LwSystemCommandTable.kt`), 应用送过去的只是一个操作名与几个参数 —— 那张表就是"模型能不能凑出一条任意命令"这个问题的答案。**破坏性那四条还要人点一下** (见下)
+- **只有 app uid 真做不到的才走特权**: 卸载 / 清数据 / 停应用 / 装包 / 停用 / 飞行模式 / 移动数据 / 蓝牙 / 熄屏。它们在特权进程里过一张**写死的白名单表** (`channel/LwSystemCommandTable.kt`), 应用送过去的只是一个操作名与几个参数 —— 那张表就是"模型能不能凑出一条任意命令"这个问题的答案 (**1.0.3 起那张表里还有 `enable` / `setHome` / `openUrl` / `intent` / `keyCombo` 五条**; 通用的 `intent` 是唯一一条参数上限放宽到 8 的, 因为动作、数据、组件与目标屏放不进四个)。**破坏性那五条还要人点一下** (见下)
 
 
 **每个动作都显式带 `displayId`**, 没有"默认打选中的那块" —— 选中的是用户随时能改的, 而模型手里的坐标是它在某一块屏上量出来的。**用户没说用哪块屏就用虚拟屏**: `displayId 0` 是别人手里那台手机, 动它就是把它从人手里拿走, 而那块屏自己的形状是能给的 (`resize` / `rotate`), 主屏的不行 —— 这条写在 `DISPLAY_ID` 那个共用参数与 `lw_screen` 的描述里
@@ -170,16 +174,20 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 - **双开的应用是另一个 Android user, 不是一个新包名**: HyperOS 的双开 = `user 999` (名字 `XSpace`), 包名 / APK / 启动组件与原版**一模一样**, 只有 userId 不同 —— 所以 `lw_launch` 有 `user` (`am start --user 999`), 那个数字来自 `lw_probe` 里多问的一句 `pm list users` (app uid 问不了这条命令, 它是特权侧的活)
 - **列应用只能这么列**: `lw_apps(user?, query?)` 给"能启动什么" (名字 + 包名), `lw_launch` 也认名字 (对上不止一个就什么都不起)。**模型的 bash 列不出来**: `pm list packages` 不带 `--user` 要跨 user, 而 `INTERACT_ACROSS_USERS_FULL` 是 signature 权限; 带上 `--user 0` 又只看得见它自己 (Android 11 包可见性) —— 所以名单来自 app 侧 `queryIntentActivities` 与 manifest 里那行 MAIN/LAUNCHER 的 `<queries>` (窄声明), **每个 user 装了哪些**来自特权侧 `pm list packages --user N`
+- **`queryIntentActivities` 看不见一个明明在的应用, 而且它会骗人**: `lw_take_photo` 要用它点名是哪个相机接活, 而 `<queries>` 里只有 MAIN/LAUNCHER 时它**空手而归** —— 于是"这台设备不能拍照"会是一句假话。修法是两条一起: 清单里加一条 `IMAGE_CAPTURE` 的 `<queries>` 声明 (窄声明, 不是 `QUERY_ALL_PACKAGES`), **并且**空手而归时照样去 `startActivity`, 真的没有接收者由 `ActivityNotFoundException` 说出真相
 - **`lw_launch` 只能走特权进程**: `am` 以 `com.android.shell` 自居, app uid 调它一律被拒 (模型的 bash 也是 app uid), 所以是特权进程里 `ProcessBuilder("/system/bin/am", …)`; **包名先解析成组件再起** (`cmd package resolve-activity --brief -c LAUNCHER <pkg>` → `am start -n <component>`), 因为 `am start -p` 那条路带 `MATCH_DEFAULT_ONLY`, 而 Flutter / Unity 的 manifest 不写 `CATEGORY_DEFAULT`。不走 `startActivity` + `setLaunchDisplayId` 是因为撞 BAL
 - **按键与打字是另外两条路**: `input keyevent` / `input text` 撞的是与 `am` 同一堵墙 (INJECT_EVENTS), 而 BACK / HOME / 音量这类**平台自己处理**的键不在任何屏的树里 —— 所以按键走特权进程 (`INPUT_KEY`), **键传名字不传编号**, 表从 `android/keycodes.h` 生成 (`tools/gen-keycodes.mjs`): 名字不认识可以拒, 编号不认识就是**另一个键** (5 是打电话, 26 是电源键); `HOME` / `POWER` / `SLEEP` / `SOFT_SLEEP` 只在主屏放行 (我们的屏没有 launcher, 发完 HOME 那块屏 `state OFF` 而截图照旧交旧帧)。**打字优先走无障碍**: `ACTION_SET_TEXT` 写焦点字段的文本, 中文与 emoji 都行, 也不需要 IME; 整块屏没有任何字段时才退回按键 (`INPUT_TEXT`, 只有 ASCII, 中文直接拒), 两条路用 `via: field|keys` 分开
 - **`tap` / `swipe` / 按住都阻塞到设备收下为止** (队列保顺序, `.get()` 保"做完了"), 而预览的手指仍然只往队列里丢: 工具返回后模型马上会截图看结果, 所以"已排队"对它没用
 - **`swipe` 是一次事务**: 特权侧按 `durationMs` 均分 12 步, **每一步至少睡一帧 (16 ms)** —— 一批同毫秒的 move 在平台看来是跳, 分帧读输入的应用 (Unity 那种) 会把"按下又抬起"当成**一次点击**; 分步放到 app 侧又会让手势快慢随 binder 负载漂移
 - **按住多久是一个参数, 不再是一个布尔** (`lw_tap(hold=…)` / `lw_key(hold=…)`): 值是**字符串**, 认 `"1s"` / `"500ms"` / `"1.5s"` / 裸数字 (按秒), 也认 `short` (600ms) / `medium` (1.5s) / `long` (3s); 上限 10s。**三个名字都压在平台自己的长按阈值 (500ms) 之上那一小段**, 因为那才是分界线, 真要用 `"8s"` 写出来 (8 秒的电源键在很多机器上是硬重启, 不该有一个 `long` 随手就能碰到)。设备侧: 长按 = 按住那么久 + UP 带 `FLAG_LONG_PRESS`; 只差一点点的 (500-650ms) 补到 650ms, 因为平台的检测器就在那一刻跑; `lw_tap(text=…)` 带 hold 时优先用节点的 `ACTION_LONG_CLICK`, 树里没有就用**按住的手指**落在它的矩形上。**按住也算动手, 所以也归刹车管** (真手指一来当场抬手)
 - **截图落 `<工作区>/screenshots/screen-<id>.png`** (特权进程先写 app 的 cache, app 再拷进工作区): 模型的文件工具只在工作区里解析路径, 留在 cache 里就是能告诉它路径、它永远打不开
-- **截图在产生时同时缩到两个预算** (像素与字节都按设置页那两条): **只按像素缩不够** —— 一整屏游戏画面在 536x1192 就能压到 1.29 MB → host 要重新编码 → 设备上没编码器 → **整个模型请求变成 `TRANSPORT`, 重试 5 次后本轮失败, 而那张图留在上下文里, 之后每轮都再失败一次**。`Picture.fit` 会对同一个画面编码到装得下为止 (猜一版 → 量真实字节 → 往预算内放大回去, 最多 4 轮); **换 JPEG 走不通** —— 附件库入库要全量解码当证明, 而设备上的 `sharp` 替身只解 PNG (629 字节的真 JPEG 也直接 `INVALID_IMAGE`)
+- **截图在产生时同时缩到两个预算** (像素与字节都按设置页那两条): **只按像素缩不够** —— 一整屏游戏画面在 536x1192 就能压到 1.29 MB, 而超了预算就要在 host 那边重编码, 多一次往返也多一次质量损失。`Picture.fit` 会对同一个画面编码到装得下为止 (猜一版 → 量真实字节 → 往预算内放大回去, 最多 4 轮)。**1.0.3 之前这条还会把整轮请求打死**: 那时的 `sharp` 是只解 PNG 的替身, 重编码必抛, 抛出被包成 `TRANSPORT` (可重试), 重试 5 次后本轮失败, 而那张图留在上下文里, 之后每轮都再失败一次 —— 现在 host 侧真能重编码了, 但"截图时就缩到预算内"仍然是省事的那条路。滑块是搬来的 SFA `ArrowSlider` (`scaffolds/`, 点标题那一行可打字给精确值)
 - **截图的描述里写明了它会很小** (1080x2400 可能只有 536x1192), 所以"读屏用 `lw_ui` / `lw_ocr`, 截图只用来'像人一样看一眼'"这句话进了 `lw_screenshot` 的描述
-- **host 树里的 `sharp` 是 `image-backend/sharp/` 那个纯 JS 替身** (`pack-host.mjs` 在 `npm install` 之后覆盖上去): 它从 PNG 头读事实, 用 `zlib` 真解一遍像素当"字节完整"的证明, **终端编码一律明确报错** —— 所以**只有 PNG 且不超预算的图能进模型**, JPEG 与大图还读不了
+- **连拍是"一段过程"那条路, 而且量到的间隔才算数**: 上限 12 张 (原来 5 张), `intervalMs` (50..5000, 默认 120) 说的是**墙钟上两张之间隔多久**, 不是"拍完再歇多久" —— 后者会让真实间隔随设备忙闲漂移, 而一次截图本身要两三百毫秒, 所以做不到时答案报的是量到的 `offsets` 而**不是要的那个数** (`spanMs` 与 `(count-1) × intervalMs` 差得多就直说是这台设备拍不了那么快)。`sheet` 把这几张拼成一张网格 (`VirtualScreen.contactSheet`: 先按预算把每一格缩到位再拼, 而不是拼一张大的再整张缩一遍 —— 后者要在内存里开一张 12 倍大的图), 用一次读图换掉十二次; 但**它是用来看动起来的, 不是用来量坐标或读小字的**, 所以它不进"图上的点乘多少回到屏幕"那一套 (每一格都是小副本, 原图都还在)
+- **host 树里的 `sharp` 是官方 0.35.5 的 WebAssembly 构建** (`sharp` + `@img/sharp-wasm32`, 由 `pack-host.mjs` 当普通依赖装进树里): 原生那条路在这台设备上是死的 (平台包裹的 libvips 按 glibc 编, 而且 `--omit=optional` 本来就不装), 而 wasm 不需要任何原生 binding, sharp 自己会挑。**1.0.3 之前树里放的是一个只解 PNG 的纯 JS 替身**, 代价是相册里的 JPEG / WebP / GIF 一律 `INVALID_IMAGE`, 而且超过 route 预算的图必然把整轮请求打成 `TRANSPORT` —— 那条限制随替身一起没了, 历史见 `image-backend/README.md` 与 `docs/step5-record.md`
 - 验证用 `tools/lw-bridge.ps1` (单次桥调用) 与 `tools/lw-device-turn.ps1` (run-as 起一次 headless turn, 用设备自己的树和凭据); 但**读图不能在 run-as 里验** —— 它不给 app 的 mount namespace, 而且打不开 `/data/user/0` 的祖先目录
+- **桥验的是应用那一侧, 插件那一层要另验**: `defineTool` 的参数表 -> `drop(args)` -> 一行 JSON -> `answerOf` 这段只有在模型调用时才走到, 所以有 `tools/lw-plugin-call.mjs` —— 它用与自检同一个注册表把工具取出来直接 `execute`, 不花模型的钱 (2026-10-04 就是它试出 `lw_media_scan` 只认绝对路径而 `lw_files` 认相对路径这条不一致)。用法: 先把端口 forward 到本机, 再 `LW_CHANNEL_ENDPOINT=127.0.0.1:<端口> LW_CHANNEL_TOKEN=<token> node tools/lw-plugin-call.mjs lw_files '{"op":"list"}'`
+- **两个 PS 脚本与 `push-host.mjs` 里的 adb 路径是开发机那一台的** (`B:\Software\AndroidSDK\...`), 换机器时用 `$env:LW_ADB` 覆盖, 不用改文件
 
 ## 主屏 (displayId 0) 与触摸刹车
 
@@ -218,9 +226,79 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **匹配从窄到宽** (text 全等 → desc 全等 → text 包含 → desc 包含), 所以 `lw_tap(text="返回")` 能命中只有 `desc="返回"` 的返回键
 - **一行里的标题和副标题是两个节点一个行**, 候选按"按下去按到哪个节点"去重; 去重后仍不止一个就**什么都不按**, 把候选连矩形返回 (**最多 12 条**, 工具那句"多少个"是上限不是总数)
 - `ACTION_CLICK` 返回 `false` 时退回在 target 中心注一次真触摸 (`via: "finger"`), 因为少数自绘控件不吃无障碍动作; 树已经说了东西在哪, 这次注入不是猜
-- **开启服务只能由特权进程写 `Settings.Secure`**, 而 `Settings.Secure` 在特权进程里**走不通** (`app_process` 没有 `IApplicationThread`) —— 正解是 `ProcessBuilder("/system/bin/settings", "get"/"put", ...)`。写入必须**读出来改** (设备上还有别人的无障碍服务)、开启时**先**写 `accessibility_enabled=1` 再写组件列表、写完**读回来核对**
+- **开启服务只能由特权进程写 `Settings.Secure`**, 而 `Settings.Secure` 在特权进程里**走不通** (`app_process` 没有 `IApplicationThread`) —— 正解是 `ProcessBuilder("/system/bin/settings", "get"/"put", ...)`。写入必须**读出来改** (设备上还有别人的无障碍服务)、开启时**先**写 `accessibility_enabled=1` 再写组件列表、写完**读回来核对**。**但读取不能走那条命令**: `/system/bin/settings` 是一条 shell 命令, Android 14 起对非 shell 的 uid 直接 `SecurityException: getCurrentUser() ... requires INTERACT_ACROSS_USERS`, 于是应用自己读回来的永远是 null —— 设置页与 `lw_probe` 会把"组件在列表里"说成"不在" (2026-10-04 实测, 已改成读 `ContentResolver`, 那条命令只留给特权进程当兜底)
 - **光写设置不够, 还有两件事**: 组件**已经在列表里但没被绑上**时 (强停之后就是这样), 把同样的值再写一遍不一定能让系统重新评估, 所以**先摘掉、停 800ms、再放回**; 而侧载安装的应用 (`installerPackageName=null`) 在 Android 13 起**不许开无障碍**, 那道闸是一个 app op —— 开启时顺手 `cmd appops set <pkg> ACCESS_RESTRICTED_SETTINGS allow` (best effort, 失败只记日志), 否则服务可能起不来而没有任何提示
 - **重装 APK 会把我们踢出 `enabled_accessibility_services`**, 所以设置页那个开关不是可选项, 而且**开关自己就会经特权通道把服务打开**; 「开没开」不是设置而是"系统有没有绑上", 状态从 `LwAccessibility.running` 读, 写完等最多 3s 再报真实状态
+
+## 通知栏
+
+链路: `LwNotificationListener` (**跑在 app 进程里**, 系统绑定的服务) → 取当前通知 / 清一条 →
+`PrivilegedBridge` 的 `notifications` (同进程直接调) → 工具 `lw_notifications`。**既不过 binder 也不需要
+特权 uid**, 与无障碍那条一模一样 —— 而它要的那道授权同样由特权进程去给
+
+- **那道授权只有系统自己那条命令给得到**: 通知使用权是 `enabled_notification_listeners` 这个 secure
+  setting, 但**直写它是不够的**, 这是 2026-10-04 在模拟器上量出来的 —— 值写进去了、读回来也在、设备
+  也留着, 而系统**根本不理它**: 服务不会被绑上, 系统那份"用户设过"的名单里也没有它 (通知那一页会把
+  这个应用列在 **Not allowed** 下面, 直到有人点过那个确认框)。正解是 `cmd notification allow_listener
+  <组件>` / `disallow_listener`, 也就是设置页上「允许」按钮走的同一条路 —— 双向都实测过:
+  `disallow_listener` 之后服务真的解绑 (`running: false`), `allow_listener` 之后真的重新绑上。
+  **所以 `LwPermission.setNotificationListener` 先走那条命令, 直写名单只当退路** (没有那条命令的
+  设备), 而两者都以名单读回为准
+- **首次授权要系统那个确认框**: 一个从没被允许过的应用, 命令/直写都可能不被采纳 —— 那时正解是在
+  设置页「通知」那一段的入口里打开 DSH-LW 并点「允许」。这一段有两个 `ArrowPreference` (通知使用权 /
+  全屏通知), 它们的 `startActivity` 都带**退到应用详情页**的回退 —— 那一页在个别 ROM 上没有接收者,
+  而点击换来的崩溃最不该有
+- **读写都要读出来改**: 那个名单是与别的应用共用的 (模拟器上本来就有 Google 的 AiAi 与 Launcher3
+  两条), 比较用 `ComponentName` 而不是字符串 (同一个组件有两种拼法); 写完读回核对
+- **重装 APK 会把它收走**, 所以装机脚本在装完那一次 shell 里连着给 (`cmd notification allow_listener`,
+  失败才退回写名单), 而判据里多了"listener listed"一条
+- **"通知栏是空的"与"读不到通知栏"长得一模一样**: 没有授权时 `activeNotifications` 也是空的。所以
+  `LwNotificationListener.active()` 回 **null** 表示没连上, 而 `lw_notifications` 那时说的是"读不到"并
+  把怎么开说清楚 (它去读一遍名单, 按"不在名单里 / 系统没绑上 / 系统说没有授权"分三种说) —— 这一条是
+  三态纪律里最容易违反的一处
+- **`StatusBarNotification.getRanking()` 不是公开 API**: 重要度与渠道要从 `NotificationListenerService
+  .currentRanking` 那个 `RankingMap` 里点名取 (`getRanking(key, Ranking())`), 取不到就报"没说"而不是
+  某个默认值
+- **常驻通知不是"清不掉"**: `isOngoing` 的那些 (音乐、通话、下载) 是应用自己的, 工具如实说"留着没动",
+  这不是失败。清完还要**再读一次**确认真的没了 —— 清一条是"请系统去做"
+- **横幅那件事 (D4 已定: 只做渠道 + 全屏 intent, 不自绘悬浮窗)**: 渠道的**重要度在创建之后应用改不动**
+  (那是用户在管的设置), 所以 1.0.3 新建了 `lw-tools-high` (IMPORTANCE_HIGH, 实测 `mImportance=4`) 并
+  **删掉旧的 `lw-tools`** (实测删掉了); 而 `USE_FULL_SCREEN_INTENT` 从 Android 14 起对非闹钟/通话类
+  **默认不给**, 判据是 `canUseFullScreenIntent()`, 所以 `lw_notify` 的答案会说自己到底会不会弹成横幅
+  (两个分支都实测过: appop deny → "asked for but this app may not use full-screen intents", 恢复
+  之后 → "comes up as a banner")
+- **模拟器上 `cmd notification post` 投不出通知**: 它打印 `posting: Notification(...)` 而通知栏里一条都
+  没有 (系统那份 `NotificationRecord` 列表里查不到), 所以验 `lw_notifications` 时别拿它造数据 ——
+  用栏里本来就有的别人的通知, 或者 `lw_notify` 自己发的那条 (它 id 固定, 一次只有一条可清的)
+
+## 事件订阅
+
+链路: 系统把事件送进 `LwAccessibility.onAccessibilityEvent` (**app 进程里**) → 一条有界队列 →
+`LwEvents` 的订阅 (游标 + 三个过滤条件) → 工具 `lw_events_subscribe` / `lw_events_wait`。**这一批改的
+是模型的读法**: 按一下之后与其反复 `lw_ui`, 不如先说清"我在等什么", 再等它发生
+
+- **掩码就是 `<xml>` 里那四个** (`typeWindowStateChanged|typeWindowContentChanged|typeViewFocused|`
+  `typeViewScrolled`), **不用 `typeAllMask`**: 那四个涵盖了"换窗口/内容变/聚焦/滚动", 而全掩码会把每一条
+  View 事件都灌进来。`notificationTimeout="100"` 是同一件事的另一半 —— 系统自己就把事件压到每秒十条上下
+- **一条订阅是一根游标, 不是一份拷贝**: `Watch` 只记"读到哪了"与三个过滤条件, 事件本身留在队列里。
+  所以订阅再多也不涨内存, 而"我订阅之前刚发生了什么"仍然读得到 (订阅那一步回看队列尾部几条)
+- **队列是有界的, 而且这件事看得见**: 上限 200 条, **同一类事件 400ms 内连着来就合并成一行** (带 `xN`
+  计数, 滚动因此是一行而不是几百行), 满了丢最旧的并累加一个丢弃计数。`lw_events_subscribe` 的答案里
+  会印"缓冲里现在有几条 / 上限多少 / 这个会话丢过几条" —— 一个数字涨到上限就不再涨, 那才是"不会无限涨"
+  的证据, 而不是一句注释
+- **事件上没有 displayId**: `AccessibilityEvent` 只有 `windowId` (display 那个字段不存在, 用 `javap` 查过),
+  所以屏是拿 windowId 去 `windowsOnAllDisplays()` 里**反查**出来的, 结果缓存一秒 (读窗口表要过 binder,
+  而事件一秒能来十几条)。查不到就是 **-1**, 不猜 0 —— 0 是别人手里那台手机
+- **`event.eventTime` 是 uptime 那一套**, 而别处用的是墙钟: 两者相减永远是负数, 于是每一行都印 `+0ms`。
+  所以偏移一律拿 `SystemClock.uptimeMillis()` 当基准, 而且基准取**念出来的第一条**而不是"这次调用开始的
+  时刻" —— 订阅与 wait 之间发生的事也要被念出来, 那些在调用之前
+- **等是轮询队列 (150ms 一次), 不是等服务回调**: 队列读的是内存, 而 `notificationTimeout` 已经把事件
+  压到十条每秒, 让服务反向通知反而要引入一套线程协议。**游标在答完之后才前移**, 而且念不下的那些
+  (超过 `limit`) 也一起前移 —— 否则下一次 wait 会把它们再念一遍
+- **`Heard` 声明在文件顶层**: companion 里嵌套的类, 外面要写成 `LwAccessibility.Companion.Heard` 才引用
+  得到, 而这个文件的惯例 (与 `UiNode` / `UiTree` / `UiTap` 一样) 就是顶层放数据类
+- 一次性的 wait (不带 `id`) 会建一个临时订阅, 答完就丢; 订阅自己也会过期 (`lifeMs`, 默认十分钟), 所以
+  忘了它的订阅不会留下永不消失的状态
 
 ## 端侧 OCR
 
@@ -251,7 +329,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 ## 破坏性操作的确认
 
-`forceStop` / `clearData` / `uninstall` / `install` 这四条**不由模型说了算**: 应用会在屏幕上弹一个 `OverlayDialog`, 点了「确定」才执行, **100 秒没人点就回一句"没人确认", 什么都不做** (`ui/DestructiveConfirm`, `LwSystemCommand.destructive`)
+`forceStop` / `clearData` / `uninstall` / `install` / `disable` 这五条**不由模型说了算**: 应用会在屏幕上弹一个 `OverlayDialog`, 点了「确定」才执行, **100 秒没人点就回一句"没人确认", 什么都不做** (`ui/DestructiveConfirm`, `LwSystemCommand.destructive`)。`disable` 是 1.0.3 加进来的第五条 —— 它比停应用更粘, 被停用的应用从桌面上消失
 
 两个实现上的要点:
 
@@ -352,6 +430,8 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
 
 ## 构建与验证
 
+**发版前必须干净构建, 而且构建完要验一遍 APK 里没有"无归属区间"** (2026-10-05 实测的教训): 增量构建会在 APK 里留**连续空洞** —— 1.0.3 那个 363.8 MiB 的包里夹着 **96.5 MiB** 死字节 (位置在 `classes7.dex` 末尾与 `assets/ocr/det.onnx` 开头之间, 大段零字节夹零星 `PK\x03\x04`), 而同一份源码干净构建只有 **275.6 MiB** (最大无归属区间 4 KB)。验法: `python tools/apk-bytes.py app/build/outputs/apk/debug/app-debug.apk` —— 它逐条走本地头, 把没人认领的区间按大小列出来, 最大的那条应当只有几 KB (对齐与数据描述符)。同一份脚本配 `python tools/host-tree-size.py <host.zip>` 看 host 树的成分 (按包名分组排大小)
+
 **提交时直接跳过签名, 不要为这个去解锁 key**: 全局 git config 开了 `commit.gpgsign` / `tag.gpgsign` 且 `gpg.format=ssh`, 用的 key 带 passphrase, 而开发机上没有 ssh-agent, 所以非交互提交必然失败; 本仓库已经在本地 config 里关掉了 (`git config commit.gpgsign false` / `tag.gpgsign false`), **新克隆要再跑一次, 或者单次用 `git commit --no-gpg-sign`**
 
 ### 常用命令
@@ -398,6 +478,28 @@ adb logcat -d -s DshHost -s DshWebView
 **adb 上出现第二个设备时, 每条命令都要指名设备**: 不带 `-s` 会以 `more than one device/emulator` 失败, 包括 `tools/lw-bridge.ps1` 这种内部调 adb 的脚本; 省事的办法是当前 shell 里 `$env:ANDROID_SERIAL='192.168.1.103:5555'`, 子进程会继承
 
 **每次 `adb install -r` 都会把我们踢出 `enabled_accessibility_services`**: 装完要么在设置页拨一下那个开关, 要么 `settings put secure enabled_accessibility_services <原值>:<我们的组件>` —— **同样要读出来改**, 设备上还有别人的服务
+
+**装机之后别再强停**: `am start -S` 会把系统那个无障碍绑定实例摘掉, 而**条目还留着** —— 现象是"设置里明明开着、服务却没绑上" (`dumpsys activity services <pkg>` 里那条 `LwAccessibility` ServiceRecord 不见了), 于是读屏与事件订阅静默失效。所以装完要用**不带 `-S`** 的 `am start`, 而 `tools/lw-install.ps1` 判过"绑定成功"之后就别再动它。恢复要走"摘掉 → 停 800ms → 放回"那套 (设置页那个开关自己会做), 而**这只在重装打开的写入窗口里写得动** —— 2026-10-04 在 vivo 上实测: 同一次 shell 里 `pm install` 之后立刻写探针也读到 `null`, 也就是窗口没接住时连"装 + 写回"连着一口气做都不行; 而 `tools/lw-install.ps1` **只在条目缺失时才写**, 遇到"条目在而实例没了"它什么都不做, 得自己走那套摘/放
+
+### 推送与发布 (这台开发机上 github.com 被挡着)
+
+**这条网络上 `github.com:443` 不通, 而 `api.github.com` 与 `uploads.github.com` 通** —— 所以 `git push`
+会以 `Failed to connect to github.com port 443` 失败, 而 `gh api` 与 `gh release create` 一切正常
+(2026-10-04 实测: 五个 github.com 的 IP 全部超时, 换 HTTP/1.1 一样, 没有 IPv6, 本机也没有代理端口)。
+三条路:
+
+1. **SSH 走 443 是通的** (`ssh://git@ssh.github.com:443/yuloong07-star/DSH-LW.git`), 但本机那把
+   `id_rsa` 属于**另一个账号** (`Yuloong07`), 对 `yuloong07-star/DSH-LW` 没有写权限; 而 GitHub 的 SSH
+   **不允许端口转发** (`-L` / `-D` 一起来就关), 所以拿它当隧道也不行
+2. **用 API 重放提交** (这次用的就是这条): `tools/lw-api-push.ps1` 上传 blob → 按 `base_tree` 建 tree →
+   建 commit → **最后才移动 ref**, 而且**每一个对象都与本地算出的 SHA 逐个比对**, 全对才动 ref
+   (前几轮只创建没人引用的对象, 不动 ref 就影响不到仓库)。实测那 24 个提交**全部逐字节一致** ——
+   等于一次正常 push, 连带注解的 tag 对象重放出来的 SHA 都相同
+3. 让有代理的环境推, 推完回这台机器 `gh release create`
+
+要记住的两条: `-input` 送的 JSON **不能带 BOM** (`[Text.Encoding]::UTF8` 会写 BOM, GitHub 直接回
+`Problems parsing JSON` 400), 以及提交对象的正文末尾那个换行是**对象里本来就有的**, 送错一个字节
+SHA 就变 —— 所以脚本先按原样送, 不一致再去掉一个换行重试
 
 ### adb 安装失败时怎么装 (termux / root 兜底)
 

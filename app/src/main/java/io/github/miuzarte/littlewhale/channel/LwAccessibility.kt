@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.graphics.Rect
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -69,6 +70,49 @@ data class UiTyping(
 )
 
 /**
+ * 一次滚动做了什么
+ *
+ * @property outcome `scrolled`, `refused` (控件拒绝了动作, 多半已经到顶或到底), `none` (这一屏没有可滚动的
+ *   东西), `unavailable`
+ * @property scrolled 真正滚了几屏
+ * @property node 滚的是哪一个控件
+ * @property error 没滚成的原因, 滚成了是 null
+ */
+data class UiScroll(
+    val outcome: String,
+    val scrolled: Int,
+    val node: UiNode?,
+    val error: String?,
+)
+/**
+ * 一件事发生过的痕迹, 收成一行
+ *
+ * `windowId` 是事件自带的, 而**事件上没有 displayId** —— 那个只能拿 windowId 去窗口表里反查, 所以这里
+ * 两个都留着: 记的时候顺手反查一次 (有缓存), 反查不到就是 -1, 而不是猜一个 0
+ *
+ * @property sequence 单调递增的序号, 订阅就是拿它当游标的
+ * @property kind 四个词之一: `window` / `content` / `focus` / `scroll`
+ * @property displayId 这块窗口在哪块屏上, -1 表示没查出来 (窗口可能已经关了)
+ * @property text 事件带的文字 (窗口标题、被聚焦字段的文本或描述), 截断过
+ * @property at `SystemClock.uptimeMillis` 那一套的时刻, 与 `System.currentTimeMillis` 不同源
+ */
+data class Heard(
+    val sequence: Long,
+    val kind: String,
+    var displayId: Int,
+    val windowId: Int,
+    val packageName: String,
+    val className: String,
+    val text: String,
+    val at: Long,
+    val fullScreen: Boolean,
+    val scrollDeltaY: Int,
+) {
+    /** 这一行代表几条 (同一类事件连着来时合并, 所以是可变的) */
+    var count: Int = 1
+}
+
+/**
  * What the device says is on a screen, read through an accessibility service
  *
  * This is the one part of the channel that runs in the app's own process: the service is declared
@@ -99,8 +143,9 @@ class LwAccessibility : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val type = event?.eventType ?: return
-        // Only at debug level: this fires constantly and nothing here consumes it yet
-        Log.d(TAG, "event ${AccessibilityEvent.eventTypeToString(type)} ${event.packageName}")
+        // 事件不再只写日志: 它进那条有界队列, 由 `lw_events_wait` 取走 (批次 6)。掩码里就那四个类型
+        // (见 res/xml/lw_accessibility.xml), 别的系统也不会送过来
+        record(event, type)
     }
 
     override fun onInterrupt() = Unit
@@ -128,6 +173,8 @@ class LwAccessibility : AccessibilityService() {
 
         /** How many candidates an ambiguous name is worth listing */
         private const val MAX_CANDIDATES = 12
+        /** 一次调用最多连着滚几屏, 免得一个笔误把长列表拖到底 */
+        private const val MAX_SCROLL_TIMES = 10
 
         /** The system owns the service's lifetime, so this is the app's only handle on it */
         @Volatile
@@ -135,6 +182,182 @@ class LwAccessibility : AccessibilityService() {
 
         /** Whether the device has the service on, which is the first thing a caller has to be told */
         val running: Boolean get() = instance != null
+
+        /**
+         * 一件事发生过的痕迹, 收成一行
+         *
+         * 类型声明在文件顶层 (与 `UiNode` 那些一样), 因为 companion 里嵌套的类外面要写成
+         * `LwAccessibility.Companion.Heard` 才引用得到
+         */
+
+        /** 队列上限: 一次风暴之后模型要的是"最近发生了什么", 不是全部 */
+        private const val MAX_HEARD = 200
+
+        /** 同一类事件在这个窗口里连着来就合并成一行 (滚动时的 content / scroll 尤其密) */
+        private const val COALESCE_MS = 400L
+
+        /** 一行里留多少文字 */
+        private const val MAX_HEARD_TEXT = 80
+
+        /** windowId -> displayId 的缓存多久重读一次 (读窗口表要过 binder, 不能每个事件都读) */
+        private const val WINDOW_CACHE_MS = 1_000L
+
+        /** 查不到时的重试间隔: 比上面那一秒短得多, 因为查不到的往往正是刚出现的窗口 */
+        private const val WINDOW_MISS_MS = 200L
+
+        private val buffer = ArrayDeque<Heard>()
+        private val bufferLock = Any()
+        private var sequence = 0L
+        private var dropped = 0L
+        private val windowDisplays = HashMap<Int, Int>()
+        private var windowsReadAt = 0L
+        private var windowsMissedAt = 0L
+
+        /** 事件类型收成四个词; 掩码外的类型不记 */
+        private fun kindOf(type: Int): String? = when (type) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> "window"
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> "content"
+            AccessibilityEvent.TYPE_VIEW_FOCUSED -> "focus"
+            AccessibilityEvent.TYPE_VIEW_SCROLLED -> "scroll"
+            else -> null
+        }
+
+        /** 收一条事件 */
+        private fun record(event: AccessibilityEvent, type: Int) {
+            val kind = kindOf(type) ?: return
+            val windowId = event.windowId
+            val displayId = displayOf(windowId)
+            val text = (event.text?.firstOrNull() ?: event.contentDescription)
+                ?.toString()
+                ?.take(MAX_HEARD_TEXT)
+                .orEmpty()
+            val packageName = event.packageName?.toString().orEmpty()
+            val className = event.className?.toString().orEmpty()
+            val at = event.eventTime
+            synchronized(bufferLock) {
+                sequence++
+                val last = buffer.lastOrNull()
+                val sameAsLast = last != null &&
+                    last.kind == kind &&
+                    last.windowId == windowId &&
+                    last.packageName == packageName &&
+                    last.className == className &&
+                    at - last.at < COALESCE_MS
+                if (sameAsLast) {
+                    last!!.count++
+                } else {
+                    buffer.addLast(
+                        Heard(
+                            sequence = sequence,
+                            kind = kind,
+                            displayId = displayId,
+                            windowId = windowId,
+                            packageName = packageName,
+                            className = className,
+                            text = text,
+                            at = at,
+                            fullScreen = event.isFullScreen,
+                            scrollDeltaY = try {
+                                event.scrollDeltaY
+                            } catch (error: Throwable) {
+                                0
+                            },
+                        ),
+                    )
+                    while (buffer.size > MAX_HEARD) {
+                        buffer.removeFirst()
+                        dropped++
+                    }
+                }
+            }
+        }
+
+        /**
+         * 这个窗口在哪块屏上
+         *
+         * 事件本身不带 displayId, 所以拿 windowId 去 `windowsOnAllDisplays` 里反查, 结果缓存一秒 —— 读
+         * 窗口表要过 binder, 而事件一秒能来十几条
+         *
+         * **查不到时不走那一秒**: 缺的往往正是**刚刚出现的那个窗口**, 而"某个应用起来了"那一条事件
+         * 恰恰是最要紧的一条 (实测: 启动时那几条全报 display unknown)。所以没命中就用一个短得多的
+         * 间隔重试, 只是防着"每来一条都读一次窗口表"
+         *
+         * 反查不到就是 -1: 窗口可能已经关了, 那时"不知道"比猜一个 0 (那是别人的手机) 安全
+         */
+        private fun displayOf(windowId: Int): Int {
+            synchronized(bufferLock) { windowDisplays[windowId]?.let { return it } }
+            val now = SystemClock.uptimeMillis()
+            val due = now - windowsReadAt > WINDOW_CACHE_MS || now - windowsMissedAt > WINDOW_MISS_MS
+            if (!due) return -1
+            val windows = try {
+                instance?.windowsOnAllDisplays
+            } catch (error: Throwable) {
+                null
+            }
+            if (windows == null) {
+                windowsMissedAt = now
+                return -1
+            }
+            val fresh = HashMap<Int, Int>()
+            for (index in 0 until windows.size()) {
+                val display = windows.keyAt(index)
+                for (window in windows.valueAt(index)) fresh[window.id] = display
+            }
+            synchronized(bufferLock) {
+                windowDisplays.clear()
+                windowDisplays.putAll(fresh)
+            }
+            windowsReadAt = now
+            windowsMissedAt = now
+            return synchronized(bufferLock) { windowDisplays[windowId] } ?: -1
+        }
+
+        /**
+         * [since] 之后的事件, 最早的在前面
+         *
+         * 三个过滤都是"给了才筛" (null = 不过滤), 这样"等任何一块屏上的任何变化"与"只等那块屏的滚动"
+         * 是同一条路
+         *
+         * @param since 游标, 一般是 [latest] 或者上一次读到的序号
+         * @param displayId 只要这块屏上的, null 表示不限
+         * @param kinds 只要这几种 (四个词), null 表示不限
+         * @param packageName 只要这个应用发的, null 表示不限
+         */
+        fun heard(
+            since: Long,
+            displayId: Int? = null,
+            kinds: Set<String>? = null,
+            packageName: String? = null,
+        ): List<Heard> = synchronized(bufferLock) {
+            buffer.filter { event ->
+                event.sequence > since &&
+                    (displayId == null || event.displayId == displayId) &&
+                    (kinds == null || event.kind in kinds) &&
+                    (packageName == null || event.packageName == packageName)
+            }
+        }.map { event ->
+            // 记的时候没反查出屏的, 读的时候再试一次: 那一刻窗口表里可能还没有它 (刚起来), 而现在有了
+            if (event.displayId < 0) {
+                val fresh = displayOf(event.windowId)
+                if (fresh >= 0) event.displayId = fresh
+            }
+            event
+        }
+
+        /** 现在的游标: 拿它当"从现在开始看"的起点 */
+        val latest: Long get() = synchronized(bufferLock) { sequence }
+
+        /** 到现在为止因为队列满丢掉了几条 */
+        val lost: Long get() = synchronized(bufferLock) { dropped }
+
+        /**
+         * 队列里现在有几条, 以及它最多能装几条
+         *
+         * 两个都露出来是为了让"有界"这件事**看得见**: 一个数字一直涨到上限就不再涨, 而那之后
+         * [lost] 开始走 —— 这两件事合起来才是"队列不会无限涨"的证据, 而不是一句注释
+         */
+        val buffered: Int get() = synchronized(bufferLock) { buffer.size }
+        val capacity: Int get() = MAX_HEARD
 
         /**
          * Everything one screen contains that is worth saying
@@ -222,6 +445,82 @@ class LwAccessibility : AccessibilityService() {
             return UiTap("clicked", listOf(hit.ui), if (target === hit.node) "self" else "ancestor", bounds, null)
         }
 
+        /**
+         * 滚一屏可滚动的内容, 走无障碍自己的滚动动作
+         *
+         * 平台把"再往下看一屏"交给了控件自己 (`ACTION_SCROLL_FORWARD`), 所以列表、表单、滚动容器都不必
+         * 先知道手指该从哪儿划到哪儿 —— 比注入的拖动既准又稳, 也不受"注入的 MOVE 到不了某些屏"那条限制
+         *
+         * @param forward 往后看一屏 (内容往上走); false 是往前回一屏
+         * @param name 从哪儿滚: 给了名字就用那个控件所在的可滚动容器, 不给就用这一屏上最大的那块可滚动区域
+         * @param times 连着滚几屏, 上限 [MAX_SCROLL_TIMES]
+         */
+        fun scroll(displayId: Int, forward: Boolean, name: String?, times: Int): UiScroll {
+            if (instance == null) return UiScroll("unavailable", 0, null, NOT_ENABLED)
+            val window = windowOn(displayId)
+                ?: return UiScroll("none", 0, null, "no window is on display $displayId")
+            val root = window.root
+                ?: return UiScroll("none", 0, null, "display $displayId has no readable window content")
+            try {
+                root.refresh()
+            } catch (error: Throwable) {
+                Log.d(TAG, "could not refresh the tree", error)
+            }
+            val gathered = gather(root)
+            val wanted = name?.takeIf { it.isNotBlank() }
+            var chosen: Pair<AccessibilityNodeInfo, UiNode>? = null
+            if (wanted == null) {
+                chosen = gathered.list
+                    .filter { it.ui.scrollable }
+                    .maxByOrNull { areaOf(it.ui.bounds) }
+                    ?.let { it.node to it.ui }
+            } else {
+                for (found in match(gathered, wanted)) {
+                    val node = scrollTarget(found.node)
+                    if (node != null) {
+                        chosen = node to found.ui
+                        break
+                    }
+                }
+            }
+            val target = chosen
+                ?: return UiScroll(
+                    "none",
+                    0,
+                    null,
+                    if (wanted == null) {
+                        "nothing on display $displayId scrolls"
+                    } else {
+                        "nothing scrollable around the named control on display $displayId"
+                    },
+                )
+            val action = if (forward) {
+                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            } else {
+                AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            }
+            var done = 0
+            for (step in 1..times.coerceIn(1, MAX_SCROLL_TIMES)) {
+                val took = try {
+                    target.first.performAction(action)
+                } catch (error: Throwable) {
+                    Log.w(TAG, "could not scroll", error)
+                    false
+                }
+                if (!took) break
+                done++
+            }
+            return UiScroll(
+                outcome = if (done > 0) "scrolled" else "refused",
+                scrolled = done,
+                node = target.second,
+                error = if (done > 0) {
+                    null
+                } else {
+                    "the scrollable control refused the scroll action, which is what reaching its end looks like"
+                },
+            )
+        }
         /**
          * Put text into the field one screen is showing
          *
@@ -315,6 +614,49 @@ class LwAccessibility : AccessibilityService() {
             node.text?.toString() ?: fallback
         } catch (error: Throwable) {
             fallback
+        }
+
+        /**
+         * 这块屏上现在有没有窗口
+         *
+         * `lw_launch` 之后用它自查, 因为 `am start` 报成功不等于窗口落在了这一块屏上: 应用已经在跑
+         * 的时候, 系统把 intent 交给的是那个正在跑的实例, 而它的窗口可能在别处 —— 于是"启动了"与
+         * "这块屏上一片空白"同时成立, 而这一层以前要模型自己想到
+         */
+        fun hasWindow(displayId: Int): Boolean = windowOn(displayId) != null
+
+        /**
+         * 这块屏上现在有没有能打字的字段
+         *
+         * "先按一下那个点、再打字"那条路要用它: 按下去常常是**打开一个新页面** (设置里的搜索框就是),
+         * 而那个页面的字段要等它画出来才在树里。不等这一下就会退回按键 —— 按键落进空气里, 而答案
+         * 只会说"打了几个键"
+         */
+        fun hasEditable(displayId: Int): Boolean {
+            val window = windowOn(displayId) ?: return false
+            val root = window.root ?: return false
+            return try {
+                gather(root).list.any { it.ui.editable }
+            } catch (error: Throwable) {
+                Log.d(TAG, "could not look for an editable field on display $displayId", error)
+                false
+            }
+        }
+
+        /**
+         * 这块屏上现在画着的是哪个应用
+         *
+         * `lw_take_photo` 用它分辨"相机真的开了"与"这次启动被系统丢掉了": 后者不抛异常、不报错,
+         * 屏上还是原来那个界面, 而调用方会以为相机正开着等人按快门 —— 同一类静默失败在这个仓库里
+         * 已经踩过两次 (熄屏的截图、被丢掉的 secure settings 写入)
+         *
+         * @return 包名。null 有两种意思 (服务没开, 或者这块屏上没有应用窗口), 用 [running] 分开
+         */
+        fun packageOn(displayId: Int): String? = try {
+            windowOn(displayId)?.root?.packageName?.toString()
+        } catch (error: Throwable) {
+            Log.d(TAG, "could not read the package on display $displayId", error)
+            null
         }
 
         /** The window a caller means, preferring the one an app is actually showing there */
@@ -523,6 +865,24 @@ class LwAccessibility : AccessibilityService() {
             return null
         }
 
+        /** 一块矩形的面积, 用来在一屏上认出最大的那块可滚动区域 */
+        private fun areaOf(rect: Rect): Int = rect.width().coerceAtLeast(0) * rect.height().coerceAtLeast(0)
+
+        /** The node itself when it scrolls, else the closest ancestor that does */
+        private fun scrollTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+            var current: AccessibilityNodeInfo? = node
+            var steps = 0
+            while (current != null && steps < MAX_CLICKABLE_STEPS) {
+                if (current.isScrollable) return current
+                current = try {
+                    current.parent
+                } catch (error: Throwable) {
+                    null
+                }
+                steps++
+            }
+            return null
+        }
         /** The nodes a name reaches, through successively looser readings of that name */
         private fun match(gathered: Gathered, name: String): List<Found> {
             val list = gathered.list

@@ -3,10 +3,19 @@
      needs: the window list (flagRetrieveInteractiveWindows, since a window the service cannot
      retrieve is not in it at all), stable view ids for the ones that have them, and the views
      apps mark as not important - those are often exactly the clickable rows -->
+
+<!-- isAccessibilityTool 是 Android 17 的门票, 不是一句形容词: 用户在高级保护模式 (AAPM) 里
+     打开那套更严的策略之后, 系统的 AccessibilityService 访问只留给带这个标志的服务, 已经拿到
+     权限的会被自动撤销, 而且在模式开着期间手动授也授不上。平台读的就是这一个布尔值 ——
+     应用侧没有别的办法证明自己, 所以这一行是"读屏还能不能用"的地基
+     代价要说在明处: 它同时是一句"本应用是无障碍工具"的声明, 而这个应用其实是 agent 工具。
+     侧载分发不会有人来问, 上 Google Play 会被审核盯上 -->
+
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewFocused|typeViewScrolled"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
     android:canRetrieveWindowContent="true"
     android:description="@string/a11y_description"
+    android:isAccessibilityTool="true"
     android:notificationTimeout="100" />

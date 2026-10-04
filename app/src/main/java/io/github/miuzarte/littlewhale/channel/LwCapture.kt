@@ -21,9 +21,32 @@ internal class LwCapture {
     /** The compositor's ids, by the name the screen was created with */
     private val known = mutableMapOf<String, String>()
 
-    /** Capture one of our screens into a file, answering whether the device wrote one */
-    fun capture(name: String, path: String): Boolean {
-        val target = known[name] ?: resolve(name) ?: return false
+    /**
+     * Capture one of our screens into a file
+     *
+     * @returns an empty string once a picture is there, otherwise why there is none. 两种"没有图"
+     *   必须分得开: 屏已经不在合成器的名单里 (那块屏没了), 与屏在而它这一帧还没画出来 (应用还没
+     *   铺上去) —— 处置完全不同, 而以前的答案只有一句"没有画面", 只能靠人猜
+     */
+    fun capture(name: String, path: String): String {
+        val first = shot(name, path)
+        if (first.isEmpty()) return ""
+        // 换面之后 (收起预览 / 切后台 / resize) 合成器的名单要过一会儿才更新: 那一小段里它报的
+        // 还是旧 id, 而 screencap 只认新的, 于是"换面后的第一次拍"必然以 Display Id ... is not
+        // valid 收场 —— 这不是"屏没了", 隔一下重解析就好。模型只会拍一次, 所以这条重试得做在
+        // 这里, 不然它会据此以为那块屏丢了, 而不是"再拍一张"
+        repeat(RETRIES) {
+            Thread.sleep(RETRY_DELAY_MS)
+            known.remove(name)
+            val again = shot(name, path)
+            if (again.isEmpty()) return ""
+        }
+        return first
+    }
+
+    /** One attempt: resolve the compositor id now, shoot, and say what came of it */
+    private fun shot(name: String, path: String): String {
+        val target = known[name] ?: resolve(name) ?: return gone(name)
         return written(run(SCREENCAP, "-d", target, "-p", fresh(path)), path, "display $target") {
             // The screen may have been rebuilt under a new id, so the next call looks again
             known.remove(name)
@@ -35,8 +58,10 @@ internal class LwCapture {
      *
      * The default display is the one display whose compositor id is not worth looking up: `-d`
      * names a mode the phone happens to be in, while saying nothing is the phone as it is now
+     *
+     * @returns an empty string once a picture is there, otherwise why there is none
      */
-    fun capturePrimary(path: String): Boolean =
+    fun capturePrimary(path: String): String =
         written(run(SCREENCAP, "-p", fresh(path)), path, "the phone's own screen")
 
     /** Forget every id, which is what a screen going away makes necessary */
@@ -56,17 +81,39 @@ internal class LwCapture {
         return path
     }
 
-    /** Say whether a capture left a picture behind, and clean up when it did not */
-    private fun written(outcome: String, path: String, what: String, forget: () -> Unit = {}): Boolean {
+    /**
+     * Say why there is no picture, and clean up when there is one
+     *
+     * @returns an empty string once the file has bytes in it, otherwise the sentence to hand back
+     */
+    private fun written(outcome: String, path: String, what: String, forget: () -> Unit = {}): String {
         val size = File(path).length()
         if (size <= 0L) {
             Log.w(TAG, "the device wrote no picture for $what: $outcome")
             forget()
-            return false
+            val said = outcome.trim().lines().firstOrNull { it.isNotBlank() }.orEmpty()
+            return "the screen is there but the device wrote no picture of it: nothing has drawn on it" +
+                " yet, so launch an app on that screen and take the picture again" +
+                (if (said.isEmpty()) "" else " (screencap said: $said)")
         }
         Log.i(TAG, "captured $what into $path, $size bytes")
-        return true
+        return ""
     }
+
+    /**
+     * 合成器名单里没有这个屏名
+     *
+     * 这**不等于"这块屏没了"**: 刚建出来、还没有 surface 附着的屏也不在那个名单里 (实测模拟器上
+     * 就是这样: `createVirtualDisplay` 报成功, 而 `dumpsys SurfaceFlinger --display-id` 只有手机
+     * 自己那块屏)。两块屏的处置完全不同, 所以这句要把两种可能都说出来, 并给出下一步
+     *
+     * 真正"这块屏已经不在我们表里"的那种情形在更上一层就拦下了 (`missingScreenReason`), 走不到这里
+     */
+    private fun gone(name: String): String =
+        "the compositor has no display named \"$name\": either that screen is gone, or nothing has" +
+            " been drawn on it yet - a screen with no surface attached is not in that list. Check" +
+            " lw_screen for the screens that are left; if this one is still there, launch an app on" +
+            " it and take the picture again"
 
     /** Read one screen's compositor id out of the list the compositor prints, by name */
     private fun resolve(name: String): String? {
@@ -105,6 +152,16 @@ internal class LwCapture {
 
         const val TOOLBOX = "/system/bin/dumpsys"
         const val SCREENCAP = "/system/bin/screencap"
+
+        /**
+         * 换面之后重试的次数与间隔
+         *
+         * 实测模拟器上换面那一刻到合成器名单更新之间有几秒: 收起小窗后 3.4 s 拍还在报旧 id 不合法,
+         * 隔十几秒再拍就好了。所以给的预算比那宽一点 (6 × 500 ms = 3 s), 而没拍成时交回去的仍是
+         * 第一趟那句话 (含 screencap 的原话), 不会因为重试把原因说模糊
+         */
+        const val RETRIES = 6
+        const val RETRY_DELAY_MS = 500L
 
         /** `Display 11529215049018179454 (Virtual display): displayName="LittleWhale 1"` */
         val PHYSICAL_ID = Regex("""Display\s+(\d+)""")

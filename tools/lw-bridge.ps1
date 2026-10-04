@@ -12,7 +12,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$adb = 'B:\Software\AndroidSDK\platform-tools\adb.exe'
+$adb = if ($env:LW_ADB) { $env:LW_ADB } else { 'B:\Software\AndroidSDK\platform-tools\adb.exe' }
 $device = Join-Path (Split-Path -Parent $PSCommandPath) 'lw-device'
 
 # The endpoint and the token exist only in the host's environment, and the app's data directory is

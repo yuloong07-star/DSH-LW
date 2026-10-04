@@ -45,6 +45,7 @@ Write-Host "device $Serial is up" -ForegroundColor Green
 
 # 装 : 带 installer 身份, 允许测试包, 覆盖安装
 $component = "$Package/$Package.channel.LwAccessibility"
+$listener = "$Package/$Package.channel.LwNotificationListener"
 $wrote = $false
 if (-not $SkipInstall) {
     # **先 push 再本地装**: 351 MB 的流式安装把重装打开的那段写入窗口整个吃掉了 (实测: 装完探针就报
@@ -65,6 +66,8 @@ if (-not $SkipInstall) {
     $before = (& $adb -s $Serial shell "dumpsys package $pkg | grep lastUpdateTime" 2>&1 | Out-String).Trim()
     $stamp = [int][double]::Parse((Get-Date -UFormat %s))
 
+    # 两条授权都在这一个 shell 里写完: 无障碍与通知使用权都是 `Settings.Secure` 里的一条名单, 都
+    # **读出来改** (设备上还有别人的服务/监听), 而且都只在重装之后那段窗口里写得动
     $script = @"
 pm install -r -i com.android.packageinstaller -t $remote 2>&1 | tail -3
 cur=`$(settings get secure enabled_accessibility_services)
@@ -75,10 +78,23 @@ case "`$cur" in
      settings put secure enabled_accessibility_services "`$next"
      echo "ACCESSIBILITY_WRITTEN" ;;
 esac
+ncur=`$(settings get secure enabled_notification_listeners)
+case "`$ncur" in
+  *LwNotificationListener*) echo "LISTENER_ALREADY_LISTED" ;;
+  *) cmd notification allow_listener $listener >/dev/null 2>&1
+     if settings get secure enabled_notification_listeners | grep -q LwNotificationListener; then
+       echo "LISTENER_ALLOWED"
+     else
+       if [ -z "`$ncur" ] || [ "`$ncur" = "null" ]; then nnext="$listener"; else nnext="`$ncur:$listener"; fi
+       settings put secure enabled_notification_listeners "`$nnext"
+       echo "LISTENER_WRITTEN"
+     fi ;;
+esac
 settings put secure lw_write_probe install-$stamp
 echo "PROBE=`$(settings get secure lw_write_probe)"
 settings delete secure lw_write_probe >/dev/null 2>&1
 settings get secure enabled_accessibility_services
+settings get secure enabled_notification_listeners
 rm -f $remote
 "@
     Write-Host "installing on the device, then writing the entry back in the same breath" -ForegroundColor Cyan
@@ -134,6 +150,13 @@ $listed = Adb shell "settings get secure enabled_accessibility_services"
 $isListed = ($listed -split ':' | Where-Object { $_ -eq $component }).Count -gt 0
 Write-Host "  component listed: $(if ($isListed) { 'yes' } else { 'no' })" -ForegroundColor $(if ($isListed) { 'Green' } else { 'Red' })
 
+# 通知使用权与无障碍走同一条路 (但**接口不同**): 它由 `cmd notification allow_listener` 给, 而那条
+# 命令与设置页上"允许"按钮走的是同一条路 —— 直写 `enabled_notification_listeners` 在 Android 14 上
+# 实测**不够**: 值写进去了、设备也留着, 而系统不看它, 服务不会被绑上
+$listeners = Adb shell "settings get secure enabled_notification_listeners"
+$listenerListed = ($listeners -split ':' | Where-Object { $_ -eq $listener }).Count -gt 0
+Write-Host "  listener listed: $(if ($listenerListed) { 'yes' } else { 'no' })" -ForegroundColor $(if ($listenerListed) { 'Green' } else { 'Red' })
+
 $services = Adb shell "dumpsys activity services $Package"
 $bound = $services -match 'LwAccessibility'
 if ($bound) {
@@ -141,12 +164,19 @@ if ($bound) {
 } else {
     Write-Host "  service bound: not confirmed (no LwAccessibility record in dumpsys activity services)" -ForegroundColor Yellow
 }
+$listenerBound = $services -match 'LwNotificationListener'
+if ($listenerBound) {
+    Write-Host "  listener bound: yes (there is an LwNotificationListener record)" -ForegroundColor Green
+} else {
+    Write-Host "  listener bound: not confirmed" -ForegroundColor Yellow
+}
 
-# 什么时候算过: 组件在列表里、而且系统真的绑着。写入通路不通时这两条都不可能成立, 所以要分开说
-$ok = $isListed -and $bound
+# 什么时候算过: 组件在列表里、而且系统真的绑着。写入通路不通时这两条都不可能成立, 所以要分开说。
+# 通知使用权一起算进来: 它是 lw_notifications 的前提, 而"这条没给上"正是装完就该知道的事
+$ok = $isListed -and $bound -and $listenerListed
 Write-Host ""
 if ($ok) {
-    Write-Host "acceptance: the service is listed and bound" -ForegroundColor Green
+    Write-Host "acceptance: accessibility is listed and bound, notification access is listed" -ForegroundColor Green
     Write-Host "  重启手机之后再确认一次: adb -s $Serial shell dumpsys activity services $Package"
 } else {
     Write-Host "acceptance: not done yet" -ForegroundColor Red
@@ -154,11 +184,11 @@ if ($ok) {
         Write-Host "  这台设备现在不接受写入 (探针没留住), 也就是重装打开的那段窗口已经关了。" -ForegroundColor Red
         Write-Host "  再跑一次脚本 (不要带 -SkipInstall):" -ForegroundColor Red
         Write-Host "    pwsh -File $PSCommandPath -Serial $Serial"
-    } elseif (-not $isListed) {
-        Write-Host "  写入过了但组件不在列表里: 系统或别的应用把它摘了。看一眼那道 op:" -ForegroundColor Red
+    } elseif (-not $isListed -or -not $listenerListed) {
+        Write-Host "  写入过了但组件不在名单里: 系统或别的应用把它摘了。看一眼那道 op:" -ForegroundColor Red
         Write-Host "    adb -s $Serial shell appops get $Package ACCESS_RESTRICTED_SETTINGS"
     } else {
-        Write-Host "  组件在列表里但系统没绑上: 用应用内那个开关 (它会先摘掉、等一下、再放回," -ForegroundColor Red
+        Write-Host "  组件在名单里但系统没绑上: 用应用内那个开关 (它会先摘掉、等一下、再放回," -ForegroundColor Red
         Write-Host "  那一下是让系统重新评估), 或者重启手机。" -ForegroundColor Red
     }
 }
@@ -207,8 +237,17 @@ if ($Perms) {
 }
 
 Write-Host ""
+Write-Host "装完别再用 am start -S 强停" -ForegroundColor Yellow
+Write-Host "  强停会把系统那个无障碍绑定实例摘掉, 而**条目还留着** —— 现象是"设置里写着开着、服务却没绑上": "
+Write-Host "  上面那条 service bound 判据随后就会变成 0, 读屏与事件订阅静默失效。拉动应用请用不带 -S 的:"
+Write-Host "    adb -s $Serial shell am start -n $Package/.MainActivity"
+Write-Host "  真被强停了: 恢复要走"摘掉 -> 停 800ms -> 放回"那套 (设置页那个开关自己会做), 而它只在重装打开的"
+Write-Host "  写入窗口里写得动 —— 本脚本也只在**条目缺失**时才写, 遇到"条目在而实例没了"它什么都不做"
+
+Write-Host ""
 Write-Host "剩下这些只能人去系统页里点 (脚本给不了):" -ForegroundColor Cyan
-Write-Host "  - 通知使用权 / 录屏 (以后要用到时再说)"
+Write-Host "  - 全屏通知 (横幅): 设置 -> 应用 -> DSH-LW -> 特殊应用权限里那一条, lw_notify 的 banner 靠它"
+Write-Host "  - 录屏授权 (以后要用到时再说)"
 Write-Host "  - 桌面图标与通知栏图标现在是 DSH 自己的那只鲸鱼 (见 tools/make-icons.py)"
 
 # 退出码: 只看**这一次要它做的事**成没成, 免得 `-Perms` 因为无障碍那一条而报失败

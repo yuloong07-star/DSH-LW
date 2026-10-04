@@ -12,7 +12,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -45,6 +45,24 @@ const BUILD_OUTPUTS = [
  * what supplies the `lib/types/{index,invariant,startup}.js` default every package inherits
  */
 const ROOT_BUILD_STATE = ['tsconfig.host.tsbuildinfo', 'tsconfig.client.tsbuildinfo']
+
+/**
+ * The image backend the host tree carries, and why it is the WebAssembly build
+ *
+ * The attachment store asks sharp two questions about every image that comes in: is this really an
+ * image, and how big is it. sharp's ordinary route is closed on this device - its platform packages
+ * wrap libvips, which is built against glibc, and `--omit=optional` above drops them regardless.
+ * `@img/sharp-wasm32` needs no native binding of any kind: it is one WebAssembly module, and sharp
+ * picks it on its own once `@img/sharp-linux-arm64` is not installed
+ *
+ * Measured with no native binding present at all (a scratch `--omit=optional` install): a JPEG it
+ * encoded itself came back as `format jpeg, 64x48, 3 channels` and decoded to pixels, PNG did not
+ * regress. Before this the tree carried a stand-in that answered only from the PNG header, so every
+ * JPEG, WebP and GIF the user picked was refused with INVALID_IMAGE
+ *
+ * @see image-backend/README.md for what the stand-in was and what replaced it
+ */
+const IMAGE_BACKEND = { sharp: '0.35.5', '@img/sharp-wasm32': '0.35.5' }
 
 /** Run one command in the checkout, inheriting stdio so build progress stays visible */
 function run(command, args, cwd) {
@@ -166,13 +184,39 @@ writeFileSync(join(out, 'package.json'), `${JSON.stringify({
   name: 'littlewhale-host',
   version: '0.0.0',
   private: true,
-  dependencies: Object.fromEntries([...packed].map(([name, entry]) => [name, entry.url])),
+  dependencies: {
+    ...Object.fromEntries([...packed].map(([name, entry]) => [name, entry.url])),
+    ...IMAGE_BACKEND,
+  },
 }, null, 2)}\n`)
 
 // Optional dependencies stay out for the same reason the release job omits them: the Landlock
 // platform packages need one native build per architecture, and a consumer that cannot install
 // them has to start anyway
 run('npm', ['install', '--no-audit', '--no-fund', '--package-lock=false', '--omit=optional'], out)
+
+// 裁掉这台设备上永远用不到的构建期 / 浏览器自动化包 (2026-10-05, 1.2.0 的瘦身那一步)
+//
+// 依据是"运行时真正挂了什么": profile 只挂 `dsh-base` + `dsh-web-app` 两个 bundle, 把它们的
+// package.json 依赖闭包算出来 (`tools/host-reach.py`), 树里有 **206 个包不在那份闭包里**, 解压后
+// 145 MiB。但**不可达不等于能删**: `@img/sharp-wasm32` 与 `dsh-web-mobile` 都是运行时按名字找的,
+// 删了会静默坏掉。所以这里只裁"安卓上根本没有对应物"的那一类 —— 浏览器自动化 (设备上没有
+// playwright 要的浏览器二进制)、端到端测试与打包工具链 (vitest / vite / testing-library)。
+// 裁完必须跑一遍真机/模拟器冒烟: host 起得来、GUI 渲染、工具数 51、读屏 / 通知 / OCR / 朗读
+const deadWeight = [
+  'playwright', 'playwright-core', '@puppeteer/browsers',
+  'chrome-devtools-mcp', '@browserbasehq/stagehand', '@browserbasehq/sdk',
+  'vitest', 'vite',
+  '@testing-library/dom', '@testing-library/react', 'react-dom', 'react',
+]
+let pruned = 0
+for (const name of deadWeight) {
+  const path = join(out, 'node_modules', ...name.split('/'))
+  if (!existsSync(path)) continue
+  rmSync(path, { recursive: true, force: true })
+  pruned += 1
+}
+console.log(`pack-host: pruned ${String(pruned)} package(s) this device cannot run`)
 
 // The mobile web-ui plugin is fetched into a scratch directory and copied in, rather than declared
 // as a dependency of the tree. Declaring it would drag npm's peer resolution over the whole install:
@@ -193,6 +237,25 @@ cpSync(join(webuiStage, 'node_modules', webui), join(out, 'node_modules', webui)
 rmSync(webuiStage, { recursive: true, force: true })
 console.log(`pack-host: installed the ${webui} plugin from the registry`)
 
+// 第三方插件与它自己声明的依赖对不对得上, 只有真 import 一次才知道
+//
+// 漏一个依赖时, npm 不会说话 —— 包照样装进来, 而它在**加载时**才抛, 于是设备上的表现是"这个功能
+// 整块不见了", 而不是一句安装错误。手机上中过一次同类的: 打包时漏了 `rrule`, 定时任务全停
+// (2026-10-04 的真机记录)。这里 import 一次它的入口: 模块求值期就把这种问题暴露出来的地方
+const webuiManifest = JSON.parse(
+  readFileSync(join(out, 'node_modules', webui, 'package.json'), 'utf8'),
+)
+const webuiEntry = typeof webuiManifest.main === 'string' ? webuiManifest.main : 'index.js'
+try {
+  await import(pathToFileURL(join(out, 'node_modules', webui, webuiEntry)).href)
+} catch (error) {
+  throw new Error(
+    `${webui} cannot be imported after installation (${error?.message ?? error}): it is missing a`
+    + ' dependency it actually imports. Declare it in the host tree\'s dependencies, or drop the plugin',
+  )
+}
+console.log(`pack-host: ${webui} imports cleanly`)
+
 // LittleWhale's own host plugin is copied in rather than packed: it is a few hundred lines of
 // plain ESM with no build step, and it has to sit under node_modules so that its import of
 // @deepseek-ai/dsh-tools resolves to the same copy the host itself uses
@@ -201,14 +264,18 @@ const installed = join(out, 'node_modules', 'littlewhale-channel')
 cpSync(plugin, installed, { recursive: true })
 console.log(`pack-host: installed the LittleWhale plugin from ${plugin}`)
 
-// sharp has no binding this device can load - libvips is built for glibc, and --omit=optional
-// dropped even the platform package - so the tree gets a stand-in that answers the one consumer's
-// two questions from the PNG header instead. Its own file says what it does and does not do
-const imageBackend = fileURLToPath(new URL('../image-backend/sharp', import.meta.url))
-const sharpened = join(out, 'node_modules', 'sharp')
-rmSync(sharpened, { recursive: true, force: true })
-cpSync(imageBackend, sharpened, { recursive: true })
-console.log(`pack-host: installed the image backend from ${imageBackend}`)
+// 真把这个包 import 一次, 数一数注册出来几个工具
+//
+// `defineTool` 在模块求值的时候就编译一遍参数 schema, 而插件的 TOOLS 是模块级的常量数组: 一张不
+// 合规的 schema 抛在 import 上, 整包一起死, 表现是"会话里一个 lw_ 工具都没有"。装完之后立刻验,
+// 比装上手机再发现便宜得多。这里不用上面那个 run(): 它带 shell, 而参数里的路径可能带空格
+execFileSync(process.execPath, [
+  fileURLToPath(new URL('./check-host-plugin.mjs', import.meta.url)),
+  join(installed, 'index.mjs'),
+], { cwd: out, stdio: 'inherit' })
+
+// sharp 随树装进来 (见 IMAGE_BACKEND), 这里不再覆盖任何东西 —— 以前那一步是把一个只认 PNG 的
+// 替身盖在 sharp 上, 代价是相册里的照片一律进不来
 
 const { files, bytes } = measure(join(out, 'node_modules'))
 console.log(`pack-host: ${String(packed.size)} tarball(s), ${String(files)} file(s), ${(bytes / 1024 / 1024).toFixed(1)} MB in ${out}`)

@@ -69,6 +69,14 @@ object LwServiceProtocol {
     /** Turn this app's accessibility service on or off, which is a secure setting to write */
     const val A11Y_SET = IBinder.FIRST_CALL_TRANSACTION + 12
 
+    /**
+     * 把本应用的通知监听放进 (或拿出) 设备的已授权名单
+     *
+     * 与 [A11Y_SET] 是同一件事的另一个名字: 通知使用权也是 `Settings.Secure` 里的一条, 应用自己
+     * 写不动, 而重装 APK 会把它收走
+     */
+    const val NOTIFICATION_LISTEN = IBinder.FIRST_CALL_TRANSACTION + 24
+
     /** Start an activity on one of the virtual screens, which only a privileged uid may ask for */
     const val LAUNCH = IBinder.FIRST_CALL_TRANSACTION + 13
 
@@ -518,14 +526,17 @@ class LwServiceProxy(private val remote: IBinder) {
      *
      * The file is written by the privileged process, so the caller has to be able to read what
      * that uid leaves behind - which holds for the app's own directories and nothing else
+     *
+     * @returns an empty string once a picture is there, otherwise why there is none: 那句话要能分开
+     *   "屏已经不在"与"屏在而这一帧没画出来", 两件事的处置完全不同, 所以这里回的是理由而不是布尔
      */
-    fun screenshot(displayId: Int, path: String): Boolean = transact(
+    fun screenshot(displayId: Int, path: String): String = transact(
         code = LwServiceProtocol.SCREENSHOT,
         write = {
             writeInt(displayId)
             writeString(path)
         },
-        read = { readInt() == 1 },
+        read = { readString().orEmpty() },
     )
 
     /**
@@ -537,6 +548,17 @@ class LwServiceProxy(private val remote: IBinder) {
      */
     fun setAccessibility(enabled: Boolean): Boolean = transact(
         code = LwServiceProtocol.A11Y_SET,
+        write = { writeInt(if (enabled) 1 else 0) },
+        read = { readInt() == 1 },
+    )
+
+    /**
+     * 把本应用的通知监听放进 (或拿出) 设备的已授权名单
+     *
+     * 与 [setAccessibility] 同一个理由: 这是一条 `Settings.Secure`, 而只有特权进程能写
+     */
+    fun setNotificationListener(enabled: Boolean): Boolean = transact(
+        code = LwServiceProtocol.NOTIFICATION_LISTEN,
         write = { writeInt(if (enabled) 1 else 0) },
         read = { readInt() == 1 },
     )

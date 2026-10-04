@@ -1,5 +1,6 @@
 package io.github.miuzarte.littlewhale.tool
 
+import io.github.miuzarte.littlewhale.channel.KeyCodes
 import io.github.miuzarte.littlewhale.channel.LwServiceProtocol
 import io.github.miuzarte.littlewhale.channel.PrivilegedChannel
 import io.github.miuzarte.littlewhale.ui.DestructiveConfirm
@@ -18,10 +19,18 @@ import kotlinx.serialization.json.JsonObject
 internal object LwSystemCommand {
 
     /** 认得"要人点一下"的那几个 */
-    private val destructive = setOf("uninstall", "clearData", "forceStop", "install")
+    private val destructive = setOf("uninstall", "clearData", "forceStop", "install", "disable")
 
-    /** 一次调用送过去的参数上限, 与特权那边的表对齐 */
+    /** 一次调用送过去的参数上限, 与特权那边的表对齐 (通用 intent 那条更宽, 由那张表自己说) */
     private const val MAX_ARGS = 4
+
+    /** 组合键最多几个键: 三个修饰键加一个主键, 再长已经不是快捷键了 */
+    private const val MAX_COMBO_KEYS = 4
+
+    /** 一个包名 / 一个组件名 / 一个动作长什么样。这一层就是参数拼法的那道校验 */
+    private val PACKAGE = Regex("""[\w.]+""")
+    private val COMPONENT = Regex("""[\w.]+/[\w.$]+""")
+    private val ACTION = Regex("""[\w.]+""")
 
     /**
      * 一件事做完没有
@@ -62,6 +71,7 @@ internal object LwSystemCommand {
             "clearData" -> "clear all data of $target"
             "forceStop" -> "force stop $target"
             "install" -> "install $target"
+            "disable" -> "disable $target, which takes it off the launcher until it is enabled again"
             else -> "$operation $target"
         }
         if (!DestructiveConfirm.ask(what, "target: $target")) {
@@ -78,14 +88,125 @@ internal object LwSystemCommand {
         )
     }
 
-    /** 这一批完整的入口: 破坏性那四条先挂起等人点, 开关那几条直接就做 */
+    /**
+     * 这一批完整的入口: 破坏性的那几条先挂起等人点, 开关那几条直接就做
+     *
+     * **`disable` 也在等人点的那一边**: 它比停应用更粘 —— 停掉的东西下次启动就回来了, 而被停用的应用
+     * 从桌面上消失, 要有人记得回设置里打开
+     */
     suspend fun dispatch(request: JsonObject): JsonObject = when (val op = request.string("op")) {
-        "forceStop", "clearData", "uninstall", "install" -> destructive(op, request)
+        "forceStop", "clearData", "uninstall", "install", "disable" -> destructive(op, request)
         "airplane", "data", "wifi", "bluetooth" -> text(toggle(request, op))
+        "enable", "setHome", "openUrl", "intent" -> appControl(op, request)
+        "keyCombo" -> keyCombo(request)
         else -> throw IllegalArgumentException(
-            "op has to be one of forceStop, clearData, uninstall, install, airplane, data, wifi," +
-                " bluetooth, not \"$op\"",
+            "op has to be one of forceStop, clearData, uninstall, install, disable, enable," +
+                " setHome, openUrl, intent, keyCombo, airplane, data, wifi, bluetooth," +
+                " not \"$op\"",
         )
+    }
+
+    /**
+     * 1.0.3 那几条应用控制
+     *
+     * 参数在**这一侧**拼好再送过去 (白名单那一侧只认操作名与几个参数, 拼法不归调用方管), 所以这里的
+     * 校验就是那道边界: 一个不像包名的字符串、一个不像组件的字符串都在这里被拒成一句人话, 而不是
+     * 交给 `am` / `pm` 去猜
+     */
+    private fun appControl(op: String, request: JsonObject): JsonObject {
+        val userId = request.int("user", 0)
+        // **intent 那条不读 package**: 它的组件是可选的, 而 `string()` 在缺字段时会直接抛 —— 一个
+        // "必须给包名" 的要求会把不带组件的 intent 整条堵死 (第一版就是这么写的)
+        val target = if (op == "intent") "" else request.string("package").trim()
+        val arguments = when (op) {
+            "enable" -> listOf(require(target, PACKAGE, "a package name"))
+            "setHome" -> listOf(require(target, COMPONENT, "a component, as package/class"))
+            "openUrl" -> {
+                require(target.startsWith("http://") || target.startsWith("https://")) {
+                    "openUrl takes an http or https address, not \"$target\""
+                }
+                // `-d <url>` 之后跟目标屏: 不带 userId, 否则 `--user` 会插进 `-d` 与它的值中间
+                listOf("-d", target, "--display", request.int("displayId", 0).toString())
+            }
+
+            else -> intentArguments(request)
+        }
+        // openUrl 的 --user 位置已经被 -d 占了, 所以那一条按主用户跑
+        val result = run(op, arguments, if (op == "openUrl") 0 else userId)
+        val said = result.output.ifBlank { "the privileged side said nothing" }
+        val what = when (op) {
+            "enable" -> "enabled $target"
+            "setHome" -> "made $target the home app"
+            "openUrl" -> "opened $target"
+            else -> "started " + (
+                request.string("component", "").trim().ifEmpty { request.string("action", "").trim() }
+                    .ifEmpty { "the intent" }
+                )
+        }
+        return text(
+            "$what: $said" + if (result.code == 0) "" else " (exit code ${result.code})",
+        )
+    }
+
+    /**
+     * 通用 intent 的参数: 动作 / 数据 / 组件 / 目标屏
+     *
+     * 每一样都占两个位置 (`-a <action>`), 所以这一条在特权那张表里有一个更宽的上限。**至少要有动作或
+     * 组件**: 只给一块屏等于让 `am start` 去起一个空 intent, 那不是调用方想要的
+     */
+    private fun intentArguments(request: JsonObject): List<String> {
+        val arguments = mutableListOf<String>()
+        val action = request.string("action", "").trim()
+        if (action.isNotEmpty()) {
+            arguments += listOf("-a", require(action, ACTION, "an action, as android.intent.action.X"))
+        }
+        val data = request.string("data", "").trim()
+        if (data.isNotEmpty()) arguments += listOf("-d", data)
+        val component = request.string("component", "").trim()
+        if (component.isNotEmpty()) {
+            arguments += listOf("-n", require(component, COMPONENT, "a component, as package/class"))
+        }
+        require(arguments.isNotEmpty()) {
+            "an intent needs an action or a component: on its own, a display is not something to start"
+        }
+        arguments += listOf("--display", request.int("displayId", 0).toString())
+        return arguments
+    }
+
+    /**
+     * 组合键: `input keycombination KEYCODE_CTRL_LEFT KEYCODE_A`
+     *
+     * 键**传名字不传编号**的规矩在这里一样: 名字不认识可以拒, 而编号不认识就是另一个键
+     */
+    private fun keyCombo(request: JsonObject): JsonObject {
+        val asked = request.strings("keys").map { it.trim() }.filter { it.isNotEmpty() }
+        require(asked.size >= 2) {
+            "a combination is at least two keys, and \"${asked.joinToString("\" \"")}\" is" +
+                " ${asked.size}: send them in the order they should be held, modifiers first"
+        }
+        val codes = asked.take(MAX_COMBO_KEYS).map { name ->
+            KeyCodes.resolve(name) ?: throw IllegalArgumentException(
+                "Android has no key called \"$name\". Some of the ones it has: " +
+                    KeyCodes.COMMON.joinToString(", "),
+            )
+        }
+        // `input` 认 KEYCODE_ 开头的名字, 也认裸编号; 表里有名字的给名字, 没有的给编号
+        val keys = codes.map { code ->
+            val name = KeyCodes.nameOf(code)
+            if (name.toIntOrNull() == null) "KEYCODE_$name" else name
+        }
+        val result = run("keyCombo", keys)
+        return text(
+            "held ${keys.joinToString(" + ")}: " +
+                result.output.ifBlank { "the privileged side said nothing" } +
+                if (result.code == 0) "" else " (exit code ${result.code})",
+        )
+    }
+
+    /** 一个参数长得对才让它过去 */
+    private fun require(value: String, pattern: Regex, what: String): String {
+        require(pattern.matches(value)) { "\"$value\" is not $what" }
+        return value
     }
 
     /**

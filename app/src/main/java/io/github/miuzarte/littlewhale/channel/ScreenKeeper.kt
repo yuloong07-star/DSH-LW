@@ -1,6 +1,7 @@
 package io.github.miuzarte.littlewhale.channel
 
 import android.graphics.PixelFormat
+import android.hardware.HardwareBuffer
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
@@ -38,7 +39,17 @@ internal class ScreenKeeper(val width: Int, val height: Int) {
     val surface: Surface
 
     init {
-        reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, MAX_IMAGES)
+        // usage 位不是可有可无: 交给 VirtualDisplay 的面必须能被合成器当渲染目标用, 而 4 参数的
+        // newInstance 拿不到那两个位 —— 那样 setSurface 不报错, 可 SurfaceFlinger 当这块屏没有有效
+        // 输出, `screencap -d` 会说这个 display id 不合法。实测: 保活面设进去了 (特权侧日志里
+        // "display 11 surface=true"), 但截图仍报 "Display Id ... is not valid"
+        reader = ImageReader.newInstance(
+            width,
+            height,
+            PixelFormat.RGBA_8888,
+            MAX_IMAGES,
+            HardwareBuffer.USAGE_GPU_COLOR_OUTPUT or HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE,
+        )
         surface = reader.surface
         thread = HandlerThread("lw-keeper-${width}x$height").apply { start() }
         reader.setOnImageAvailableListener({ source ->

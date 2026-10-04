@@ -1,3 +1,7 @@
+import java.io.File
+import java.net.URI
+import java.security.MessageDigest
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -25,35 +29,41 @@ val sherpaAar = layout.buildDirectory.file("sherpa-onnx/sherpa-onnx-static-link-
 val sherpaAarLocal = rootProject.file("app/libs/sherpa-onnx.aar")
 val sherpaAarSha256 = "b22c3fc1b6a45666d28892bb2f7694beeb77a8362d7ebd77c1a5431ec9435471"
 
-fun sha256Of(file: java.io.File): String {
-    val digest = java.security.MessageDigest.getInstance("SHA-256")
-    file.inputStream().use { stream ->
-        val buffer = ByteArray(1 shl 16)
-        while (true) {
-            val read = stream.read(buffer)
-            if (read <= 0) break
-            digest.update(buffer, 0, read)
-        }
-    }
-    return digest.digest().joinToString("") { "%02x".format(it) }
-}
-
+// 短名要 import 才用得了: 脚本里 `java` 会被解析成 Gradle 那个 `java` 扩展, 所以 `java.security.*`
+// 与 `java.net.*` 在这里是"在扩展上找成员", 编译期直接报 Unresolved reference
+// 配置缓存的安全写法: 动作里**不许**碰脚本级的东西 (上面那个 `sha256Of` 是脚本类的成员函数,
+// 而 `logger` 是脚本属性) —— 引用了就等于把整个脚本对象塞进任务, 配置缓存会以
+// "cannot serialize Gradle script object references" 拒绝, 构建在 :app:compileDebugKotlin
+// **成功之后**才失败 (看着像编译错, 其实不是)。所以取哈希与打印都在动作内部就地写
 val fetchSherpaOnnxAar = tasks.register("fetchSherpaOnnxAar") {
     group = "littlewhale"
     description = "Fetch the sherpa-onnx AAR the app links for on-device speech recognition"
     val target = sherpaAar.get().asFile
+    val expected = sherpaAarSha256
+    val source = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaVersion/" +
+        "sherpa-onnx-static-link-onnxruntime-$sherpaVersion.aar"
     outputs.file(target)
     doLast {
-        if (target.isFile && sha256Of(target) == sherpaAarSha256) return@doLast
+        fun digestOf(file: File): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { stream ->
+                val buffer = ByteArray(1 shl 16)
+                while (true) {
+                    val read = stream.read(buffer)
+                    if (read <= 0) break
+                    digest.update(buffer, 0, read)
+                }
+            }
+            return digest.digest().joinToString("") { "%02x".format(it) }
+        }
+        if (target.isFile && digestOf(target) == expected) return@doLast
         target.parentFile.mkdirs()
-        val url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaVersion/" +
-            "sherpa-onnx-static-link-onnxruntime-$sherpaVersion.aar"
-        logger.lifecycle("fetching $url")
-        java.net.URI(url).toURL().openStream().use { input ->
+        println("fetching $source")
+        URI(source).toURL().openStream().use { input ->
             target.outputStream().use { output -> input.copyTo(output) }
         }
-        val actual = sha256Of(target)
-        if (actual != sherpaAarSha256) {
+        val actual = digestOf(target)
+        if (actual != expected) {
             target.delete()
             throw GradleException("the sherpa-onnx AAR is not the pinned one: sha256 $actual")
         }
@@ -130,8 +140,9 @@ android {
         // decision: the accessibility tree path needs API 30, and nothing here has been run below 33.
         minSdk = 33
         targetSdk = 37
-        // 2.0.0: 虚拟屏在后台可用(保活面)、语音输入与输出、浮窗面板 A、唤醒词
-        versionCode = 4
+        // 2.0.0: 1.3.0 的正文 (虚拟屏工具与无障碍 / OCR / 事件订阅那一批) 加上虚拟屏保活面、语音输入与
+        // 输出、浮窗面板 A、唤醒词; 版本号从 1.3.0 的 5 往上走, 不回退到草稿分支那个 4
+        versionCode = 6
         versionName = "2.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -145,6 +156,20 @@ android {
     }
 
     buildTypes {
+        // 1.2.0: 发的就是 debug 包 (同一个 debug keystore, 才能覆盖安装、会话与记忆不丢), 而 R8 与
+        // 资源裁剪对哪个 build type 都适用 —— 所以把优化开在 debug 上, 不必改发 release 包。
+        // 关掉优化时 dex 是 69.6 MiB (十一个 classes*.dex), 那是这一版最大的一笔
+        debug {
+            optimization {
+                enable = true
+            }
+            // 默认只有 release 才吃 proguard-rules.pro, 而这一版**发的是 debug 包**, 所以显式挂上。
+            // 那份规则里最要紧的一条是特权进程的入口类名 (见文件里的注释)
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+        }
         release {
             optimization {
                 enable = false

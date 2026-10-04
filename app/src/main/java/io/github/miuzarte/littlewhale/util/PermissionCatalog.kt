@@ -84,7 +84,8 @@ object PermissionCatalog {
         ),
         Capability(
             name = "相机",
-            why = "拍照那条留下的口子, 现在没有功能用它, 但声明与授权位都在",
+            why = "lw_take_photo 让系统相机去拍一张。应用自己也得握着这一条: 声明了相机权限却没有它的" +
+                "应用, 系统会直接拒掉它的拍照 intent, 与谁真的按快门无关",
             permissions = listOf(Manifest.permission.CAMERA),
         ),
         Capability(

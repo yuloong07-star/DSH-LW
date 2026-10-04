@@ -1,9 +1,16 @@
 package io.github.miuzarte.littlewhale.channel
 
 import android.graphics.Rect
+import android.os.SystemClock
 import android.util.Log
+import io.github.miuzarte.littlewhale.tool.LwEvents
+import io.github.miuzarte.littlewhale.tool.LwFiles
+import io.github.miuzarte.littlewhale.tool.LwKeepAwake
+import io.github.miuzarte.littlewhale.tool.LwMedia
+import io.github.miuzarte.littlewhale.tool.LwNotifications
 import io.github.miuzarte.littlewhale.tool.LwNotify
 import io.github.miuzarte.littlewhale.tool.LwOverlay
+import io.github.miuzarte.littlewhale.tool.LwPhoto
 import io.github.miuzarte.littlewhale.tool.LwPower
 import io.github.miuzarte.littlewhale.tool.LwSpeech
 import io.github.miuzarte.littlewhale.tool.LwSpeak
@@ -202,16 +209,21 @@ object PrivilegedBridge {
             ChannelReport.status(PrivilegedChannel.state())
         }
 
-        // 探针: 通道自己 + 无障碍那六件事实。无障碍放在这里而不是另开一个方法, 是因为模型问"通道
-        // 现在什么样"的时候, "无障碍到底开没开"几乎总是它真正想知道的那一半
+        // 探针: 通道自己 + 无障碍那六件事实 + 通知使用权那几件。无障碍放在这里而不是另开一个方法,
+        // 是因为模型问"通道现在什么样"的时候, "无障碍到底开没开"几乎总是它真正想知道的那一半;
+        // 通知使用权是 1.0.3 加的另一半, 同一个理由 (它也是一道要人去系统设置里给的授权)
         "probe" -> ChannelReport.probe(PrivilegedChannel.probe()).let { report ->
             val state = appContext { runCatching { LwPermission(it).inspect() }.getOrNull() }
-            if (state == null) {
+            val notices = appContext {
+                runCatching { LwPermission(it).notificationListeners() }.getOrNull()
+            }
+            if (state == null && notices == null) {
                 report
             } else {
                 buildJsonObject {
                     report.forEach { (name, element) -> put(name, element) }
-                    putJsonObject("accessibility") { accessibilityJson(state) }
+                    state?.let { putJsonObject("accessibility") { accessibilityJson(it) } }
+                    notices?.let { putJsonObject("notifications") { notificationJson(it) } }
                 }
             }
         }
@@ -271,6 +283,35 @@ object PrivilegedBridge {
             }
         }
 
+        // 滚一屏: 走无障碍自己的滚动动作, 不注入触摸。列表比一屏长的时候, 按名字点不到还没铺出来的行,
+        // 而注入的拖动在这台设备的虚拟屏上到不了应用 —— 这一条正好补上那两处
+        "scroll" -> {
+            val screen = namedScreen(request)
+            VirtualScreen.requireAcceptsControl(screen)
+            VirtualScreen.requireUserNotDriving(screen)
+            val backward = request["direction"]?.jsonPrimitive?.contentOrNull == "backward"
+            val name = request["text"]?.jsonPrimitive?.contentOrNull
+            val times = (request["times"]?.jsonPrimitive?.intOrNull ?: 1).coerceIn(1, MAX_SCROLL_TIMES)
+            val hit = LwAccessibility.scroll(screen.displayId, !backward, name, times)
+            val node = hit.node
+            val sentence = if (hit.scrolled > 0) {
+                "scrolled displayId ${screen.displayId} " + (if (backward) "backward" else "forward") +
+                    " " + hit.scrolled + " screenful(s) through " +
+                    (node?.className ?: "the scrollable control") +
+                    ": read the screen again, the rows have moved"
+            } else {
+                hit.error ?: "nothing was scrolled"
+            }
+            buildJsonObject {
+                put("outcome", hit.outcome)
+                put("scrolled", hit.scrolled)
+                put("direction", if (backward) "backward" else "forward")
+                put("displayId", screen.displayId)
+                put("error", hit.error.orEmpty())
+                put("text", sentence)
+                if (node != null) put("node", nodeJson(node))
+            }
+        }
         // A screen is made here rather than in the app's UI, so a tool says what it wants: a name
         // to be known by, and a size when this device's own is not the right shape
         "create" -> {
@@ -322,7 +363,16 @@ object PrivilegedBridge {
                     }
                 },
             )
-            put("error", VirtualScreen.lastError ?: "")
+            // 这里**不叫 error**: `VirtualScreen.lastError` 是这一套东西上一次出错留下的那句话, 而不是
+            // 这一次的结论 —— 通道刚连上那会儿它还在, 于是答案里一边是"没有屏"一边是"需要 root 或
+            // Shizuku"。所以通道状态单独给一条实时的, 谁要用那句旧话, 先看这一条
+            put("lastError", VirtualScreen.lastError ?: "")
+            putJsonObject("channel") {
+                val state = PrivilegedChannel.state()
+                put("connected", state.connected)
+                put("backend", state.backend ?: "")
+                put("error", state.error ?: "")
+            }
         }
 
         // Give one screen back, by id and only by id
@@ -400,6 +450,19 @@ object PrivilegedBridge {
                 )
             }
             val replace = request["replace"]?.jsonPrimitive?.booleanOrNull == true
+            // 1.0.3: 落在指定的那一点上。**先按一下再打字**, 因为"往哪个字段里写"这件事只有按下去才算
+            // 数: 无障碍那条路写的是**有焦点的**那个字段, 而调用方常常知道的是坐标
+            val atX = request["x"]?.jsonPrimitive?.floatOrNull
+            val atY = request["y"]?.jsonPrimitive?.floatOrNull
+            if (atX != null || atY != null) {
+                require(atX != null && atY != null) {
+                    "putting the text at a point needs both x and y: giving one of them is not a point"
+                }
+                VirtualScreen.tap(screen, atX, atY)
+                // 按下去之后那块界面可能还没画出来 (常常是打开了一个新页面), 而字段不在树里的时候
+                // `type` 会退回按键 —— 按键落进空气里, 答案却只说"打了几个键"。所以给它一小段时间
+                waitForField(screen.displayId)
+            }
             val field = LwAccessibility.type(screen.displayId, text, replace)
             when (field.outcome) {
                 "typed" -> typingJson(screen, "field", text.length, field.text, field.password, field.field)
@@ -588,6 +651,31 @@ object PrivilegedBridge {
                 put("user", userId)
                 put("code", code)
                 put("started", code == 0 && output.contains(STARTED_MARK))
+                // 起完自查一次窗口: 见 waitForWindow 上那段。**无障碍没开时不下这个结论** —— 那时
+                // 窗口列表根本读不到, "没有窗口"与"读不到窗口"是两件事, 而前者会让模型白白去重建屏
+                val window = if (LwAccessibility.running) waitForWindow(screen.displayId) else null
+                put("windowOnDisplay", window)
+                when (window) {
+                    false -> put(
+                        "windowNote",
+                        "the launch was accepted but displayId ${screen.displayId} still has no" +
+                            " window on it. An app that is already running keeps its window where it" +
+                            " already is - $packageName is most likely up on the phone's own screen or" +
+                            " on another screen of ours. Either name that screen instead, or make a" +
+                            " fresh one (lw_screen_create) and launch again: a second launch on the" +
+                            " same screen does not move the running window onto it.",
+                    )
+
+                    null -> put(
+                        "windowNote",
+                        "the launch was accepted, and this answer cannot say whether anything is on" +
+                            " displayId ${screen.displayId}: that check reads the accessibility" +
+                            " window list, and the accessibility service is off. Read the screen" +
+                            " back with lw_ui once it is on.",
+                    )
+
+                    true -> Unit
+                }
                 put("output", output.trim())
             }
         }
@@ -600,19 +688,79 @@ object PrivilegedBridge {
             // 要在 host 那边重编码, 而设备上没有编码器
             val maxPixels = request["maxPixels"]?.jsonPrimitive?.intOrNull ?: ScreenshotBudget.pixels
             val maxBytes = request["maxBytes"]?.jsonPrimitive?.intOrNull ?: ScreenshotBudget.bytes
-            val shot = VirtualScreen.screenshot(screen, maxPixels, maxBytes)
+            val region = region(request)
+            // 连拍: 相隔一小段再拍一张。**不是"每帧一张"** —— 一次截图在本机要两三百毫秒, 而 `intervalMs`
+            // 说的是**墙钟上两张之间隔多久** (从这一张开始到下一张开始), 不是"拍完之后再歇多久": 后者
+            // 会让真实间隔随设备忙闲漂移, 而答案里报的是量到的真实间隔, 所以这个数做不到时会被说出来
+            val count = (request["count"]?.jsonPrimitive?.intOrNull ?: 1).coerceIn(1, MAX_SERIES)
+            val intervalMs = (request["intervalMs"]?.jsonPrimitive?.intOrNull?.toLong()
+                ?: DEFAULT_SERIES_GAP_MS).coerceIn(MIN_SERIES_GAP_MS, MAX_SERIES_GAP_MS)
+            val wantedSheet = request["sheet"]?.jsonPrimitive?.booleanOrNull ?: false
+            val taken = ArrayList<VirtualScreen.Shot>(count)
+            // 每一张是在第几毫秒拍的 (相对第一张), 因为"两张隔了多久"是这件事的全部意义
+            val offsets = ArrayList<Long>(count)
+            val base = SystemClock.uptimeMillis()
+            repeat(count) { index ->
+                val started = SystemClock.uptimeMillis()
+                val shot = VirtualScreen.screenshot(
+                    screen = screen,
+                    maxPixels = maxPixels,
+                    maxBytes = maxBytes,
+                    region = region,
+                    suffix = if (count > 1) "-${index + 1}" else "",
+                )
+                if (shot != null) {
+                    taken.add(shot)
+                    offsets.add(started - base)
+                }
+                if (index < count - 1) {
+                    val wait = intervalMs - (SystemClock.uptimeMillis() - started)
+                    if (wait > 0) Thread.sleep(wait)
+                }
+            }
+            val sheet = if (wantedSheet && taken.size > 1) {
+                VirtualScreen.contactSheet(
+                    frames = taken.map { it.fitted.file },
+                    name = "screen-${screen.displayId}-sheet",
+                    maxPixels = maxPixels,
+                    maxBytes = maxBytes,
+                )
+            } else {
+                null
+            }
+            // 要了网格而没有网格, 理由必须说出来 (与"屏上没有东西"长得不一样)
+            val sheetError = when {
+                !wantedSheet -> ""
+                taken.size < 2 -> "a grid needs at least two pictures and only ${taken.size} came back"
+                sheet == null -> VirtualScreen.lastError ?: "no reason reported"
+                else -> ""
+            }
+            val shots = buildJsonArray { taken.forEach { add(shotJson(it, region)) } }
+            val first = taken.firstOrNull()
             buildJsonObject {
                 put("displayId", screen.displayId)
                 put("label", screen.label)
                 put("width", screen.width)
                 put("height", screen.height)
-                put("path", shot?.file?.absolutePath ?: "")
-                put("bytes", shot?.file?.length() ?: 0L)
-                put("picture", buildJsonObject {
-                    put("width", shot?.width ?: 0)
-                    put("height", shot?.height ?: 0)
-                    put("scale", shot?.scale ?: 0f)
-                })
+                // 单张时这几个字段是老样子; 连拍时它们说的是**第一张**, 而全部几张在 `shots` 里
+                put("path", first?.fitted?.file?.absolutePath ?: "")
+                put("bytes", first?.fitted?.file?.length() ?: 0L)
+                put("fullPath", first?.full?.absolutePath ?: "")
+                put("picture", first?.let { shotJson(it, region)["picture"] } ?: buildJsonObject { put("scale", 0f) })
+                put("count", taken.size)
+                put("intervalMs", intervalMs)
+                // 量到的跨度: 与 (count-1) * intervalMs 差得多, 就是这台设备拍不了那么快
+                put("spanMs", (offsets.lastOrNull() ?: 0L) - (offsets.firstOrNull() ?: 0L))
+                put("offsets", buildJsonArray { offsets.forEach { add(it) } })
+                put("shots", shots)
+                if (sheet != null) {
+                    put("sheet", buildJsonObject {
+                        shotJson(sheet.shot, null).forEach { (key, value) -> put(key, value) }
+                        put("columns", sheet.columns)
+                        put("rows", sheet.rows)
+                    })
+                }
+                put("sheetError", sheetError)
                 put("error", VirtualScreen.lastError ?: "")
             }
         }
@@ -779,7 +927,8 @@ object PrivilegedBridge {
 
         // 下面这一批是 1.0.2 加的: 通知、震动、剪贴板、分享、下载在 app 进程里自己做, 不需要特权;
         // 设备与系统信息同理 (读的多); 这几条回的都是 {"text": ...}, 由插件念给模型
-        "notify" -> appContext { LwNotify.notify(it, request) }        "vibrate" -> appContext { LwNotify.vibrate(it, request) }
+        "notify" -> appContext { LwNotify.notify(it, request) }
+        "vibrate" -> appContext { LwNotify.vibrate(it, request) }
         "clipboard" -> appContext { LwNotify.clipboard(it, request) }
         "share" -> appContext { LwNotify.share(it, request) }
         "openFile" -> appContext { LwNotify.openFile(it, request) }
@@ -795,6 +944,17 @@ object PrivilegedBridge {
         "location" -> appContext { LwSystem.location(it, request) }
         "system" -> appContext { LwSystem.system(it, request) }
         "permissions" -> appContext { text(PermissionCatalog.report(it)) }
+        // 1.0.3: 让设备别睡 —— app 进程里一个 PARTIAL_WAKE_LOCK 就够, 不必过特权
+        "keepAwake" -> LwKeepAwake.dispatch(request)
+        // 1.0.3 批次 4: 工作区里那几个文件与手机那一侧的读数、让媒体库看见、拍一张照
+        "files" -> appContext { LwFiles.dispatch(it, request) }
+        "mediaScan" -> appContext { LwMedia.dispatch(it, request) }
+        "takePhoto" -> appContext { LwPhoto.dispatch(it, request) }
+        // 通知栏那一侧: 读的是系统绑在本进程里的监听服务, 与无障碍同一条路
+        "notifications" -> appContext { LwNotifications.dispatch(it, request) }
+        // 1.0.3 批次 6: 事件订阅 —— 让模型"等到一件事发生", 而不是反复读屏
+        "eventsSubscribe" -> LwEvents.subscribe(request)
+        "eventsWait" -> LwEvents.wait(request)
         "power" -> appContext { LwPower.dispatch(it, request) }
         "speech" -> appContext { LwSpeech.dispatch(it, request) }
         "speak" -> appContext { LwSpeak.dispatch(it, request) }
@@ -921,6 +1081,74 @@ object PrivilegedBridge {
     }
 
     /**
+     * 等这块屏上出现窗口, 给 `lw_launch` 用来自查
+     *
+     * `am start -W` 等到 activity 起来就返回, 而窗口进无障碍那份窗口列表要再晚一点, 所以这里是问几次
+     * 而不是问一次就下结论 —— 否则一个慢一点的启动会被说成"什么都没有"
+     */
+    private fun waitForWindow(displayId: Int): Boolean {
+        val deadline = System.currentTimeMillis() + WINDOW_SETTLE_MS
+        while (true) {
+            if (LwAccessibility.hasWindow(displayId)) return true
+            if (System.currentTimeMillis() >= deadline) return false
+            Thread.sleep(WINDOW_POLL_MS)
+        }
+    }
+
+    /**
+     * 等这块屏上出现能打字的字段, 给"先按一下再打字"那条路用
+     *
+     * 按下去常常是打开一个新页面, 而那个页面的字段要等它画出来才在无障碍树里。等不到也不报错: 交给
+     * `type` 自己走它的退路 (按键), 而答案里那句 `via` 会说清走的是哪一条
+     */
+    private fun waitForField(displayId: Int) {
+        val deadline = System.currentTimeMillis() + FIELD_SETTLE_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (LwAccessibility.hasEditable(displayId)) return
+            Thread.sleep(WINDOW_POLL_MS)
+        }
+    }
+
+    /**
+     * 一次截图落到答案里的那几个字段
+     *
+     * **两份路径都由应用这一侧给** (见 [VirtualScreen.Shot]): 上面照着文件名去猜缩放那份叫什么, 已经
+     * 猜错过一次 —— `.model` 那个后缀加两遍就得到一个从来没有过的文件
+     */
+    private fun shotJson(shot: VirtualScreen.Shot, region: Rect?): JsonObject = buildJsonObject {
+        put("path", shot.fitted.file.absolutePath)
+        put("bytes", shot.fitted.file.length())
+        put("fullPath", shot.full.absolutePath)
+        put("picture", buildJsonObject {
+            put("width", shot.fitted.width)
+            put("height", shot.fitted.height)
+            put("scale", shot.fitted.scale)
+            // 只要了屏幕的一块时, 图上的点先按 scale 放大、再加上这个偏移, 才是屏幕上的点
+            put("left", region?.left ?: 0)
+            put("top", region?.top ?: 0)
+        })
+    }
+
+    /**
+     * 截图只要屏幕的一块时, 那一块在哪
+     *
+     * 四个数**都给**才算数: 只给一部分是调用方弄错了, 而不是"默认整屏"—— 那种默认会让它以为自己在看
+     * 一块, 实际拿到的是整屏
+     */
+    private fun region(request: JsonObject): Rect? {
+        val x = request["x"]?.jsonPrimitive?.intOrNull
+        val y = request["y"]?.jsonPrimitive?.intOrNull
+        val width = request["width"]?.jsonPrimitive?.intOrNull
+        val height = request["height"]?.jsonPrimitive?.intOrNull
+        if (x == null && y == null && width == null && height == null) return null
+        require(x != null && y != null && width != null && height != null) {
+            "a region needs all four of x, y, width and height: giving some of them is not a region"
+        }
+        require(width > 0 && height > 0) { "a region needs a positive width and height" }
+        return Rect(x, y, x + width, y + height)
+    }
+
+    /**
      * The key one request names
      *
      * A name and a number are both accepted, because a caller may have either: the name is the
@@ -952,7 +1180,7 @@ object PrivilegedBridge {
         )
     }
 
-    /** 无障碍那六件事实, 给 `probe` 用 */
+    /** 无障碍那几件事实, 给 `probe` 用 */
     private fun JsonObjectBuilder.accessibilityJson(state: AccessibilityState) {
         put("component", state.component)
         put("listed", state.componentListed)
@@ -961,7 +1189,27 @@ object PrivilegedBridge {
         put("running", state.running)
         put("installer", state.installer)
         put("restrictedSettings", state.restrictedSettings)
+        // 三态的理由一句话说不完, 所以两个键都给: 一个给布尔, 一个给"是哪一种"
         put("writesAccepted", state.writeChannelOpen)
+        put("writeChannel", state.writeChannel.name.lowercase())
+        // 三态: true/false 是设备答的, null 是这台设备根本没有那个类 (API 37 以下)
+        put("advancedProtection", state.advancedProtection)
+        put("healthy", state.healthy)
+        put("reason", state.reason())
+    }
+
+    /**
+     * 通知使用权那几件事实
+     *
+     * 三态照旧: `granted` / `banners` 是设备答的, null 是"这台设备问不到" (横幅那条要 API 34)
+     */
+    private fun JsonObjectBuilder.notificationJson(state: NotificationState) {
+        put("component", state.component)
+        put("listed", state.componentListed)
+        put("otherListeners", state.otherListeners)
+        put("running", state.running)
+        put("granted", state.granted)
+        put("banners", state.banners)
         put("healthy", state.healthy)
         put("reason", state.reason())
     }
@@ -1115,6 +1363,8 @@ object PrivilegedBridge {
     /** 整棵树落文件的节点上限, 以及回给模型的预览行数 */
     private const val MAX_DUMP_NODES = 4_000
     private const val DUMP_PREVIEW_LINES = 40
+    /** 一次调用最多连着滚几屏, 与无障碍那侧的钳制对齐 */
+    private const val MAX_SCROLL_TIMES = 10
 
     /** More text than this in one call is a caller that has lost track, and one parcel to prove it */
     private const val MAX_TYPED_CHARS = 4_096
@@ -1126,6 +1376,21 @@ object PrivilegedBridge {
     private const val DEFAULT_LAUNCH_MS = 20_000L
     private const val MIN_LAUNCH_MS = 1_000L
     private const val MAX_LAUNCH_MS = 60_000L
+
+    /** 起完之后窗口落进无障碍那份列表要给多久, 以及多久问一次 */
+    private const val WINDOW_SETTLE_MS = 1_500L
+    private const val WINDOW_POLL_MS = 150L
+
+    /** 连拍最多几张: 12 张够看一段过程, 而再多就已经是一段视频, 模型一次也读不了那么多图 */
+    private const val MAX_SERIES = 12
+
+    /** 连拍两张之间默认隔多久, 以及它的上下限: 一次截图本身要两三百毫秒, 所以 50ms 是"贴着拍" */
+    private const val DEFAULT_SERIES_GAP_MS = 120L
+    private const val MIN_SERIES_GAP_MS = 50L
+    private const val MAX_SERIES_GAP_MS = 5_000L
+
+    /** 按下一点之后等那个字段出现等多久 (一个页面画出来的时间) */
+    private const val FIELD_SETTLE_MS = 1_500L
 
     /** More apps than this in one answer is a listing nobody reads, so it is cut and said so */
     private const val MAX_APPS = 400

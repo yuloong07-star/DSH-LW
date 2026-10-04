@@ -108,6 +108,22 @@ const DISPLAY_ID = {
 }
 
 /**
+ * 屏参数的另一版: 可以省略, 省了就是"每一块屏"
+ *
+ * 与 [DISPLAY_ID] 的区别是刻意的: 那一版把 displayId 定成必填, 因为**动手**必须点名是哪一块屏
+ * (选中的屏是用户随时能改的); 而事件订阅只是**看**, 省略就等于全看, 那才是它的默认用法
+ *
+ * **声明必须在 `TOOLS` 数组之前**: `const` 不提升, 放到下面就是模块求值期抛错, 而那张表是模块级的
+ * —— 整包 UNSUPPORTED_SCHEMA, 会话里一个 `lw_*` 工具都不剩 (自检会报 "Cannot access ... before
+ * initialization")
+ */
+const WATCHED_DISPLAY = {
+  type: 'integer',
+  description: "Only this screen's changes; leave it out to watch every screen, which is the usual "
+    + 'thing here because watching is reading rather than acting',
+}
+
+/**
  * What one acting call is for, said by the caller in its own words
  *
  * Every call that changes something on a screen carries one, the way an agent framework asks for a
@@ -528,7 +544,9 @@ const TOOLS = [
       + 'field at all (a game, a canvas), the text goes in as key presses, which only produces what '
       + 'a keyboard has - letters, digits, punctuation - and lands wherever focus is. The answer '
       + 'says which of the two happened and what the field reads afterwards, so read it rather than '
-      + 'assuming. Typing does not submit anything: press the app\'s own button, or ENTER with '
+      + 'assuming. Give x and y to put the text into the field **at that point** - the tool presses '
+      + 'it first, which is what decides where the text lands on a screen with more than one field. '
+      + 'Typing does not submit anything: press the app\'s own button, or ENTER with '
       + 'lw_key, if it needs that. On the phone\'s own screen it is refused while the user\'s finger '
       + 'is on it, like every other acting call.',
     parameters: {
@@ -542,6 +560,8 @@ const TOOLS = [
         type: 'boolean',
         description: 'Overwrite what the field already says, instead of adding to it at the cursor',
       },
+      x: { type: 'integer', description: 'Press this point first, then type into the field there' },
+      y: { type: 'integer', description: 'Press this point first, then type into the field there' },
       note: NOTE,
     },
     output: {
@@ -657,8 +677,38 @@ const TOOLS = [
       + 'Take this when you want to see the screen as a person would, or when neither of those two '
       + 'answers. When a scaled picture is what you have, the answer says what to multiply '
       + 'coordinates measured on it by to get coordinates for lw_tap and lw_swipe. The file is '
-      + 'overwritten by the next capture of the same screen.',
-    parameters: { displayId: DISPLAY_ID },
+      + 'overwritten by the next capture of the same screen, unless you ask for more than one at a'
+      + ' time.',
+    parameters: {
+      displayId: DISPLAY_ID,
+      // 只要屏幕的一块: 文字太小看不清时, 把那一块按它自己的像素交给模型, 比整屏缩一遍有用
+      x: { type: 'integer', description: 'Left edge of the part to capture, for a partial picture' },
+      y: { type: 'integer', description: 'Top edge of the part to capture, for a partial picture' },
+      width: { type: 'integer', description: 'Width of the part to capture, with x, y and height' },
+      height: { type: 'integer', description: 'Height of the part to capture, with x, y and width' },
+      count: {
+        type: 'integer',
+        description: 'How many pictures in a row, 1 to 12, for something that is moving. Each one'
+          + ' is a separate file; leave it out for a single picture. Twelve pictures are twelve'
+          + ' images in the conversation, so ask for the grid too unless you need to read each one',
+      },
+      intervalMs: {
+        type: 'integer',
+        description: 'How far apart those pictures are, in milliseconds, 50 to 5000 (120 by'
+          + ' default). It is wall-clock time from one capture to the next, and one capture takes'
+          + ' a couple of hundred milliseconds here, so anything faster is impossible: the answer'
+          + ' says when each picture was actually taken rather than what was asked for',
+      },
+      sheet: {
+        type: 'boolean',
+        description: 'Also lay the pictures out as ONE picture - a grid in the order they were'
+          + ' taken. Reading one grid costs a twelfth of reading twelve pictures, so this is how to'
+          + ' see where the screen went between them. It is not for reading small text or for'
+          + ' measuring positions: every cell is a small copy, and the separate files are still'
+          + ' there when a cell is not enough',
+      },
+      note: NOTE,
+    },
     output: {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
@@ -675,11 +725,15 @@ const TOOLS = [
 
   simpleTool(
     'lw_notify',
-    'Post a notification on the phone, optionally vibrating. Use it to tell the person holding the'
-    + ' device something they should see outside this app - a job finished, a decision is waiting.'
-    + ' The same notification id is reused, so a second call replaces the first rather than stacking;'
-    + ' tapping it brings DSH-LW to the front. Needs the notification permission, and says so if it'
-    + ' is missing.',
+    'Post a notification on the phone, optionally vibrating or coming up as a banner. Use it to tell'
+    + ' the person holding the device something they should see outside this app - a job finished, a'
+    + ' decision is waiting. The same notification id is reused, so a second call replaces the first'
+    + ' rather than stacking; tapping it brings DSH-LW to the front. Needs the notification'
+    + ' permission, and says so if it is missing. **banner is a permission of its own**: since'
+    + ' Android 14 a full-screen intent has to be granted by hand, so the answer says whether the'
+    + ' banner will actually appear rather than assuming it. The channel is read back too - it is'
+    + ' created at high importance, but only the user can change that afterwards, and a channel the'
+    + ' user has turned down does not banner.',
     'notify',
     {
       title: { type: 'string', required: true, description: 'The notification title, one short line' },
@@ -688,6 +742,42 @@ const TOOLS = [
         type: 'integer',
         description: 'Vibrate for this many milliseconds as well (up to 3000). Needs the vibration'
           + ' permission, which the device grants on its own at install',
+      },
+      banner: {
+        type: 'boolean',
+        description: 'Also give it a full-screen intent, so it comes up over whatever is on the'
+          + ' screen (and over the lock screen). For something worth interrupting a person for;'
+          + ' whether it is allowed is a separate switch the user owns',
+      },
+    },
+  ),
+
+  simpleTool(
+    'lw_notifications',
+    'Read the notification shade, and dismiss what is in it. This is how the agent finds out what'
+    + ' the phone has been telling its owner: a message that arrived, a download that finished, a'
+    + ' two-factor code. op=list gives one line per notification, newest first, each starting with'
+    + ' the key that op=cancel takes - it names the app, the importance, whether it can be cleared'
+    + ' at all, and the title and text. cancelling takes one key, or a package to clear everything'
+    + ' that app posted. **Needs 通知使用权**, which no app can request at runtime: the answer says'
+    + ' so, and the switch for it is in DSH-LW\'s own Settings -> 通知. Ongoing notifications (a'
+    + ' music player, a call) are left alone and reported as such rather than as a failure.',
+    'notifications',
+    {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'list what is in the shade, or cancel',
+        enum: ['list', 'cancel'],
+      },
+      key: {
+        type: 'string',
+        description: 'For op=cancel: the key of one notification, exactly as op=list printed it',
+      },
+      package: {
+        type: 'string',
+        description: 'For op=cancel: clear every clearable notification from this app instead of'
+          + ' naming one key',
       },
     },
   ),
@@ -919,24 +1009,138 @@ const TOOLS = [
 
   simpleTool(
     'lw_app_control',
-    'Force stop, clear the data of, uninstall or install an app. Every one of these asks for a tap'
-    + ' on the phone first: the app puts a confirmation on screen and nothing happens unless someone'
-    + ' taps it, so a call from an unattended run comes back saying nobody confirmed. Use it when the'
+    'Force stop, clear the data of, uninstall, install, disable or enable an app, or make one the'
+    + ' home app. **forceStop, clearData, uninstall, install and disable each ask for a tap on the'
+    + ' phone first**: the app puts a confirmation on screen and nothing happens unless someone taps'
+    + ' it, so a call from an unattended run comes back saying nobody confirmed. disable is in that'
+    + ' group because it is stickier than a force stop - the app leaves the launcher and only comes'
+    + ' back if someone enables it again. enable and setHome act straight away. Use these when the'
     + ' user asked for exactly that change; it is not how a stuck app is normally dealt with.',
     'syscmd',
     {
       op: {
         type: 'string',
         required: true,
-        description: 'forceStop, clearData, uninstall or install',
-        enum: ['forceStop', 'clearData', 'uninstall', 'install'],
+        description: 'forceStop, clearData, uninstall, install, disable, enable or setHome',
+        enum: ['forceStop', 'clearData', 'uninstall', 'install', 'disable', 'enable', 'setHome'],
       },
       package: {
         type: 'string',
         required: true,
-        description: 'The package to act on, or the APK path for install',
+        description: 'The package to act on, or the APK path for install; for setHome, the component'
+          + ' as package/class',
       },
       user: { type: 'integer', description: 'The Android user, for a cloned app. Default 0' },
+    },
+  ),
+
+  // 1.0.3: 打开一个链接, 或者起一个具体的 intent
+  //
+  // 这两条与 lw_launch 是同一件事的两个层次: lw_launch 认应用名, 而这里认动作与地址。**只有 am 的
+  // start 那一个动词进得了白名单**, 所以它能做的仍然只是"起一个 activity", 不是一条命令
+  defineTool({
+    name: 'lw_intent',
+    description:
+      'Open a link, or start an activity by its action or component, on one screen. Use openUrl for'
+      + ' a plain http/https address - a browser, a shop page, a map link. Use action or component'
+      + ' when the user named something more specific: a mail composer (android.intent.action.SENDTO'
+      + ' with a mailto: address), a settings page of another app, a specific class. The screen is'
+      + ' named the same way every other acting tool names one, and the activity lands on it.'
+      + ' Nothing here is a shell: the one command this reaches is `am start`, with an action, a'
+      + ' piece of data, a component and a display.',
+    parameters: {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'openUrl for an http(s) address, intent for anything else',
+        enum: ['openUrl', 'intent'],
+      },
+      url: { type: 'string', description: 'The http or https address, for openUrl' },
+      action: {
+        type: 'string',
+        description: 'An intent action such as android.intent.action.SENDTO, for intent',
+      },
+      data: {
+        type: 'string',
+        description: 'What the action is about - a mailto: address, a content:// uri, for intent',
+      },
+      component: {
+        type: 'string',
+        description: 'A class to start, as package/class, for intent',
+      },
+      displayId: DISPLAY_ID,
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      const op = args?.op === 'openUrl' ? 'openUrl' : 'intent'
+      const target = op === 'openUrl' ? args?.url : args?.component || args?.action
+      if (typeof target !== 'string' || target.length === 0) {
+        return op === 'openUrl'
+          ? 'openUrl needs a url: give the http or https address to open'
+          : 'intent needs an action or a component: on its own, a display is not something to start'
+      }
+      return answerOf(await call('syscmd', {
+        op,
+        // openUrl 把地址放在 package 上 (那一侧的 `-d` 就是它), intent 认的是 action / data / component
+        package: op === 'openUrl' ? args?.url : undefined,
+        component: op === 'intent' ? args?.component : undefined,
+        action: args?.action,
+        data: args?.data,
+        displayId: args?.displayId,
+        note: args?.note,
+      }))
+    },
+  }),
+
+  // 键与打字的补充: 一次按住几个键 (Ctrl+A 那种), 以及把文本放进指定的字段
+  defineTool({
+    name: 'lw_key_combo',
+    description:
+      'Hold two or more keys down together and let go - Ctrl+A, Shift+Tab, Alt+Tab, Ctrl+Shift+T.'
+      + ' Use it for the shortcuts a single key cannot express: select all, the app switcher, a new'
+      + ' tab. Send the keys in the order they should be held, modifiers first. Names are the'
+      + ' Android ones without the KEYCODE_ prefix (CTRL_LEFT, SHIFT_LEFT, ALT_LEFT, A, TAB, ...),'
+      + ' and a name Android does not have is refused instead of being pressed as some other key.',
+    parameters: {
+      keys: {
+        type: 'array',
+        required: true,
+        description: 'The keys to hold, modifiers first, at least two, at most four',
+        items: { type: 'string' },
+      },
+      note: NOTE,
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      const keys = Array.isArray(args?.keys) ? args.keys : []
+      return answerOf(await call('syscmd', { op: 'keyCombo', keys, note: args?.note }))
+    },
+  }),
+
+  // 让设备别睡
+  simpleTool(
+    'lw_keep_awake',
+    'Hold a wake lock so the device does not sleep while something takes a while: a long download,'
+    + ' a batch of screenshots, a step that must not be interrupted. **The screen may still go off**'
+    + ' - this keeps the CPU awake, not the display - and a screen that has gone off hands back its'
+    + ' last frame without saying so, which is why lw_screenshot and lw_ocr report the screen state'
+    + ' too. **It does not let go on its own**: nothing here times out, so call it again with off'
+    + ' when the work is done, or the device stays awake until something else stops it. Ask with op'
+    + ' status to see whether it is held and for how long.',
+    'keepAwake',
+    {
+      op: {
+        type: 'string',
+        description: 'on to hold it, off to let go, status to ask. Default on',
+        enum: ['on', 'off', 'status'],
+      },
+      note: NOTE,
     },
   ),
 
@@ -984,11 +1188,15 @@ const TOOLS = [
           + ' screen\'s own pixels',
         items: {
           type: 'object',
+          // 对象节点必须自己声明开闭: dsh 的作者侧 schema 把 additionalProperties 定成必填, 少一个
+          // 就是模块求值期抛错, 整包 UNSUPPORTED_SCHEMA, 会话里一个 lw_ 工具都不剩
+          additionalProperties: false,
           properties: {
             points: {
               type: 'array',
               items: {
                 type: 'object',
+                additionalProperties: false,
                 properties: { x: { type: 'number' }, y: { type: 'number' } },
               },
             },
@@ -1012,6 +1220,178 @@ const TOOLS = [
       durationMs: { type: 'integer', description: 'How long the pinch takes. Default 300' },
     },
   ),
+  simpleTool(
+    'lw_scroll',
+    'Scroll a screen by a screenful, through the scrollable control\'s own accessibility action'
+    + ' rather than an injected drag. Use it wherever a list or a form is longer than the screen:'
+    + ' a control that has not been laid out yet cannot be pressed by name, and on this device an'
+    + ' injected drag does not move a list at all. It scrolls the largest scrollable control on the'
+    + ' screen, or the container around the control that a name points at. Read the screen again'
+    + ' afterwards - every row has moved, and the rectangles with them.',
+    'scroll',
+    {
+      displayId: DISPLAY_ID,
+      direction: {
+        type: 'string',
+        description: 'forward reads on (the content moves up), backward goes back. Default forward',
+        enum: ['forward', 'backward'],
+      },
+      text: {
+        type: 'string',
+        description: 'Name of a control whose scrollable container should be scrolled, as lw_ui'
+          + ' reported it. Leave it out to scroll the largest scrollable control on the screen',
+      },
+      times: { type: 'integer', description: 'How many screenfuls, 1 to 10. Default 1' },
+    },
+  ),
+
+  // ---- 1.0.3 批次 4: 工作区里的文件、媒体库、拍照 ----
+  //
+  // 这三条与 1.0.2 那一批同形 (app 进程里用 Context 做, 走桥只为把结果按同一套协议送回来), 但
+  // `lw_files` 的说明要多说一句它**不**是什么: 这个会话自己就带着 read / write / glob, 而工作区
+  // 就是那套工具的家, 所以模型不该为了"在工作区里读写一个文件"来这里
+
+  simpleTool(
+    'lw_files',
+    'Look at the work area the way the phone does: list a directory, read a text file, write one.'
+    + ' Reach for this when the question is about what the *device* makes of a file - whether the'
+    + ' media library lists it (that is what the gallery, the music player and a file manager read),'
+    + ' what type the system calls it, how big a picture is - or when a file has to be written and'
+    + ' the phone has to see it in the same step. Writing scans the file afterwards, so a picture'
+    + ' lands in the gallery without a second call. **Paths are resolved against the work area**'
+    + ' (a relative one starts there, and anything outside it is refused), which is the one anchor'
+    + ' that does not drift with the session\'s own directory. This is not a replacement for this'
+    + ' session\'s own read / write / glob tools: those work anywhere the session is allowed to, and'
+    + ' they are the ones to use inside the work area for anything else.',
+    'files',
+    {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'list a directory, read a text file, or write one',
+        enum: ['list', 'read', 'write'],
+      },
+      path: {
+        type: 'string',
+        description: 'The file or directory, relative to the work area or absolute inside it.'
+          + ' Required for read and write; list defaults to the work area itself',
+      },
+      text: {
+        type: 'string',
+        description: 'What to write, required when op is write. Text only - a binary file has to'
+          + ' be built by something else',
+      },
+    },
+  ),
+
+  simpleTool(
+    'lw_media_scan',
+    'Ask the Android media library to index a file or a directory, and answer with what it made'
+    + ' of each file. Use it after something wrote a picture, a video or a piece of audio that the'
+    + ' gallery still cannot see: a file that lands in shared storage is not in the library until'
+    + ' something scans it, and that is the difference between "the file is there" and "the person'
+    + ' can find it". A relative path starts at the work area and an absolute one is taken as it is,'
+    + ' so a file inside the work area works either way and one outside it (Downloads, for instance)'
+    + ' has to be named in full - this only asks the system to index it and hands back the library\'s'
+    + ' own answer, so it discloses no content. A file the scanner does not add (a `.nomedia`'
+    + ' directory, a type it does not index) is reported as exactly that rather than as a failure.',
+    'mediaScan',
+    { path: { type: 'string', required: true, description: 'The file or directory to index' } },
+  ),
+
+  simpleTool(
+    'lw_take_photo',
+    'Take a photo with the device\'s own camera app, and leave it in the work area. This is for'
+    + ' "show me what is in front of the phone" or "photograph this": it opens the system camera on'
+    + ' the phone\'s own screen and waits (up to waitMs) for a picture to be written. **A person has'
+    + ' to press the shutter** - the shutter is on the phone\'s screen, not on a virtual screen of'
+    + ' ours, so this only works with someone holding the device. It answers whether the camera'
+    + ' really came up, and whether a photo landed; when nothing did, the empty file it made is'
+    + ' removed rather than left behind. Read the result back with read_image to see it, or hand it'
+    + ' to the person with lw_open_file.',
+    'takePhoto',
+    {
+      waitMs: {
+        type: 'integer',
+        description: 'How long to wait for the photo, in milliseconds. Default 20000, at most'
+          + ' 120000 - a person has to take it in that time',
+      },
+      note: NOTE,
+    },
+  ),
+
+  // ---- 1.0.3 批次 6: 事件订阅 ----
+  //
+  // 这一批要改的是模型的**读法**: 按一下之后不要马上反复 lw_ui, 而是先说清"我在等什么", 再等它发生。
+  // 事件由系统送进服务那条有界队列 (掩码里就四个类型), 这两条工具读的就是那根游标
+
+  simpleTool(
+    'lw_events_subscribe',
+    'Start watching a screen for changes, so a later call can be told what happened instead of'
+    + ' asking again and again. Use it right after an action that makes something change: the'
+    + ' answer lists what had just happened in the same scope (so you are not blind to the moments'
+    + ' before you started) and hands back an id. Then lw_events_wait with that id collects what'
+    + ' happens next. **This is how to stop polling**: lw_ui reads a snapshot and costs a round'
+    + ' trip, while a subscription costs nothing until something actually changes. A subscription'
+    + ' lives for lifeMs (ten minutes by default) and then forgets itself; op=stop ends one early,'
+    + ' op=list shows the live ones. The four kinds are window (a different window or activity came'
+    + ' up), content (the inside of a window changed), focus (a field was focused) and scroll.',
+    'eventsSubscribe',
+    {
+      op: {
+        type: 'string',
+        description: 'start watching (the default), stop one, or list the live ones',
+        enum: ['start', 'stop', 'list'],
+      },
+      id: { type: 'string', description: 'For op=stop: the id the subscription was given' },
+      displayId: WATCHED_DISPLAY,
+      kind: {
+        type: 'string',
+        description: 'Only this kind of change; leave it out for all four',
+        enum: ['window', 'content', 'focus', 'scroll'],
+      },
+      package: { type: 'string', description: 'Only changes from this app, by package name' },
+      lifeMs: {
+        type: 'integer',
+        description: 'How long the subscription lives, in milliseconds. Default 600000 (ten'
+          + ' minutes), at most 1800000',
+      },
+    },
+  ),
+
+  simpleTool(
+    'lw_events_wait',
+    'Wait until something changes on a screen, then answer with what happened. Give it the id of a'
+    + ' subscription from lw_events_subscribe to carry on from where that one got to, or pass the'
+    + ' filters instead and it watches just for this one call. It answers with the changes in order,'
+    + ' with how long after the wait started each one landed, and says so plainly when nothing'
+    + ' changed in that time - which is itself a useful answer, and cheaper than reading the screen'
+    + ' twice. Events arrive throttled by the system (about ten a second) and identical ones in a'
+    + ' row are collapsed into one line with a count, so a scroll shows up as a line rather than as'
+    + ' hundreds.',
+    'eventsWait',
+    {
+      displayId: WATCHED_DISPLAY,
+      id: {
+        type: 'string',
+        description: 'The subscription to carry on from; leave it out to watch just for this call'
+          + ' using the filters below',
+      },
+      kind: {
+        type: 'string',
+        description: 'Only this kind of change; leave it out for all four',
+        enum: ['window', 'content', 'focus', 'scroll'],
+      },
+      package: { type: 'string', description: 'Only changes from this app, by package name' },
+      timeoutMs: {
+        type: 'integer',
+        description: 'How long to wait before answering that nothing happened. Default 15000, at'
+          + ' most 90000',
+      },
+      limit: { type: 'integer', description: 'At most this many events to print. Default 20' },
+    },
+  ),
+
   defineTool({
     name: 'lw_speech',
     description:
@@ -1413,7 +1793,9 @@ function answerOf(result) {
   return JSON.stringify(result)
 }
 
-/** The `hold` parameter of an acting tool, said once and shared by both of them */
+/**
+ * The `hold` parameter of an acting tool, said once and shared by both of them
+ */
 function holdParameter(tail) {
   const names = Object.entries(HOLD_NAMES).map(([name, ms]) => `${name} (${ms}ms)`).join(', ')
   return {
@@ -1551,6 +1933,15 @@ function formatScreens(result) {
     }
   }
   lines.push(brakeLine(result.touch))
+  // 通道不通才说那句话: `lastError` 是**上一次**出错留下的, 通道已经连上时它还在, 念出来就是一句
+  // 已经不成立的话 (2026-10-04 在模拟器上就是这么误导的)
+  const channel = result.channel ?? {}
+  if (channel.connected !== true) {
+    lines.push(
+      'the screen side is not connected right now: '
+      + `${channel.error || result.lastError || 'no reason reported'}`,
+    )
+  }
   return withJson(lines, result)
 }
 
@@ -1645,25 +2036,111 @@ function formatGesture(verb, result, note) {
   return said(withJson([`the device did not report the gesture as delivered`], result), note)
 }
 
+/** 这张图是哪一块, 以及图上的点怎么换算回屏幕上的点 */
+function pictureNote(picture) {
+  const left = picture.left ?? 0
+  const top = picture.top ?? 0
+  const scale = picture.scale ?? 1
+  const partial = left !== 0 || top !== 0
+  const where = partial ? `the part of the screen at ${left},${top}` : 'the whole screen'
+  let how
+  if (scale > 1 && partial) {
+    how = `multiply a coordinate on the picture by ${scale.toFixed(2)}, then add ${left},${top}`
+  } else if (scale > 1) {
+    how = `multiply a coordinate on the picture by ${scale.toFixed(2)} to get the screen coordinate`
+  } else if (partial) {
+    how = `add ${left},${top} to a coordinate on the picture to get the screen coordinate`
+  } else {
+    how = 'coordinates on it are screen coordinates already'
+  }
+  return { where, how }
+}
+
 /** Where the picture went, and how to read coordinates off it */
 function formatScreenshot(result) {
   if (!result.path) {
+    // 没有图的原因现在分两种, 而它们要做的下一步不一样: 屏没了 (再建一块) 与屏在而还没画出来
+    // (在它上面起个应用再拍) —— 理由由设备那一侧写, 这里原样念
     return `no picture was written: ${result.error || 'no reason reported'}`
+  }
+  const shots = Array.isArray(result.shots) ? result.shots : []
+  if (shots.length > 1) {
+    const span = ((result.spanMs ?? 0) / 1000).toFixed(1)
+    // 要说的是"量到的间隔", 不是"要的间隔": 一次截图本身要两三百毫秒, 所以比它小的那个数做不到。
+    // 判据拿**真实跨度**与**要的跨度**比, 而且要的是"没有比要的更长" —— 反着写永远成立 (设备慢下来
+    // 只会让跨度更大, 那正是"做不到"的样子)
+    const asked = result.intervalMs ?? 0
+    const kept = (result.spanMs ?? 0) <= asked * (shots.length - 1) * 1.1
+    const first = pictureNote(shots[0].picture ?? {})
+    const lines = [
+      `took ${shots.length} pictures of displayId ${result.displayId} "${result.label}", one every`
+      + ` ${asked} ms as far as this device keeps up - ${span} s from the first to the last.`
+      + ` Each is ${first.where}, and on each one ${first.how}: separate files, nothing`
+      + ' overwritten, so read them in order - the screen moved between them, which is the whole'
+      + ' point of taking more than one.',
+    ]
+    if (!kept) {
+      lines.push(
+        'They are further apart than that in practice, because one capture takes a couple of'
+        + ' hundred milliseconds here: the times below are what happened, not what was asked for.',
+      )
+    }
+    shots.forEach((shot, index) => {
+      const note = pictureNote(shot.picture ?? {})
+      const at = ((result.offsets?.[index] ?? 0) / 1000).toFixed(1)
+      // 一张自己那一句只在它与第一张不同时才写: 同一块屏同一个预算, 重复十二遍是纯噪音
+      const own = note.how === first.how ? '' : `, on it ${note.how}`
+      lines.push(
+        `  ${index + 1}. at +${at}s ${shot.path} - ${(shot.bytes / 1024).toFixed(1)} KB${own}`,
+      )
+    })
+    if (result.sheet?.path) {
+      const twin = result.sheet.fullPath && result.sheet.fullPath !== result.sheet.path
+        ? `; its full-size version is ${result.sheet.fullPath}`
+        : ''
+      lines.push(
+        `All ${shots.length} are also laid out in one picture, ${result.sheet.path}`
+        + ` (${result.sheet.columns}x${result.sheet.rows} cells, in the order they were taken,`
+        + ` ${(result.sheet.bytes / 1024).toFixed(1)} KB${twin}). Read that for where the screen`
+        + ' went; open a numbered file above when you need to read what is written on it.',
+      )
+    }
+    if (result.sheetError) lines.push(`no grid was made: ${result.sheetError}`)
+    const twin = shots[0].fullPath
+    if (twin) {
+      lines.push(
+        `Each one also left its full-size twin beside it (the first is ${twin}) - the two belong`
+        + ' together, so deleting a picture means deleting both.',
+      )
+    }
+    return withJson(lines, result)
   }
   const kilobytes = (result.bytes / 1024).toFixed(1)
   const picture = result.picture ?? {}
-  const size = picture.scale > 1
-    ? `${picture.width}x${picture.height} px, so multiply coordinates measured on the picture by`
-      + ` ${picture.scale.toFixed(2)} to get screen coordinates`
-    : 'the same size as the screen'
-  return withJson(
-    [
-      `displayId ${result.displayId} "${result.label}" captured to ${result.path}`
-      + ` (screen ${result.width}x${result.height}, picture ${size}; ${kilobytes} KB, overwritten`
-      + ' by the next capture of this screen)',
-    ],
-    result,
-  )
+  const note = pictureNote(picture)
+  const scaled = (picture.scale ?? 1) > 1
+  const size = scaled
+    ? `${picture.width}x${picture.height} px, so ${note.how}`
+    : `the same size as the screen (${note.where})`
+  // 一次截图落两个文件: 全尺寸那份给人看, 缩过的那份给模型。哪一份叫什么由设备那一侧说 (它给
+  // fullPath), 这里不猜文件名 —— `.model` 那个后缀猜错过一次。**只要了一块时另外说**: 那时
+  // 全尺寸那份是整屏, 不是这张图的"孪生兄弟", 把它说成一对会让人以为删一张就够
+  const partial = (picture.left ?? 0) !== 0 || (picture.top ?? 0) !== 0
+  const other = result.fullPath && result.fullPath !== result.path ? result.fullPath : ''
+  const pair = other
+    ? partial
+      ? `; the whole screen it was cut from is ${other}, so that file is a different picture`
+      : `; its full-size twin is ${other} - the two belong together, so deleting the screenshot`
+        + ' means deleting both'
+    : ''
+  const lines = [
+    `displayId ${result.displayId} "${result.label}" captured to ${result.path}`
+    + ` (screen ${result.width}x${result.height}, picture ${size}; ${kilobytes} KB, overwritten`
+    + ` by the next capture of this screen${pair})`,
+  ]
+  // 要了网格而只拍了一张 (或只拍了这一张): 理由必须念出来, 否则答案里少了一件它问过的事
+  if (result.sheetError) lines.push(`no grid was made: ${result.sheetError}`)
+  return withJson(lines, result)
 }
 
 /** What a screen says about itself, which is the answer that saves measuring anything */
@@ -1747,7 +2224,15 @@ function formatLaunched(result, note) {
     ]
   const output = (result.output ?? '').trim()
   if (output) lines.push(output)
-  lines.push('Call lw_ui to see what the screen says now.')
+  // 起完的自查: `am start` 报成功不等于窗口落在这块屏上, 而"没有窗口"这件事以前只有模型自己去发现
+  // (windowOnDisplay 为 null 表示这次查不了: 无障碍没开, 窗口列表读不到)
+  if (result.windowOnDisplay === false || result.windowOnDisplay === null) {
+    lines.push(result.windowNote
+      || `displayId ${result.displayId} has no window on it after the launch`)
+    lines.push('Read the screen back with lw_ui before acting on it.')
+  } else {
+    lines.push('Call lw_ui to see what the screen says now.')
+  }
   return said(lines.join('\n'), note)
 }
 

@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
@@ -35,6 +36,7 @@ import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.channel.AccessibilitySetting
 import io.github.miuzarte.littlewhale.channel.ChannelSetting
 import io.github.miuzarte.littlewhale.channel.LwOcr
+import io.github.miuzarte.littlewhale.channel.NotificationSetting
 import io.github.miuzarte.littlewhale.channel.RemoteBackend
 import io.github.miuzarte.littlewhale.channel.RouteState
 import io.github.miuzarte.littlewhale.channel.ScreenshotBudget
@@ -245,6 +247,13 @@ fun SettingsScreen() {
                 SectionSmallTitle(stringResource(R.string.settings_section_accessibility))
                 Card {
                     AccessibilityItems()
+                }
+            }
+
+            item {
+                SectionSmallTitle(stringResource(R.string.settings_section_notifications))
+                Card {
+                    NotificationItems()
                 }
             }
 
@@ -474,6 +483,70 @@ private fun AccessibilityItems() {
 /** 系统那页, 万一特权通道写不进去还有一个能手动开的地方 */
 private fun accessibilitySettingsIntent(): Intent =
     Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+/**
+ * 通知栏的读数: 与无障碍那一段同一个形状
+ *
+ * 这一段还兼着一件事: **横幅 (全屏通知) 的授权也是在这一页说明的**。从 Android 14 起它不是装完就有
+ * 的 —— 非闹钟/通话类的应用要人去「特殊应用权限」里手动开 —— 所以那件事的状态跟着这一段一起显示,
+ * 而 `lw_notify` 也会自己说一遍它现在到底会不会弹成横幅
+ */
+@Composable
+private fun NotificationItems() {
+    val context = LocalContext.current
+    val working = NotificationSetting.working
+    LaunchedEffect(Unit) { NotificationSetting.refresh() }
+    SwitchPreference(
+        title = stringResource(R.string.settings_notifications),
+        summary = stringResource(R.string.settings_notifications_summary),
+        checked = NotificationSetting.enabled,
+        enabled = !working,
+        onCheckedChange = { NotificationSetting.set(it) },
+    )
+    ArrowPreference(
+        title = stringResource(R.string.settings_notifications_manual),
+        onClick = {
+            val packageUri = Uri.fromParts("package", context.packageName, null)
+            // 那一页在个别 ROM 上没有接收者 (`startActivity` 会抛, 而这是一个点击换来的崩溃), 所以
+            // 与横幅那条一样退到应用详情页
+            val opened = runCatching {
+                context.startActivity(
+                    Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }.isSuccess
+            if (!opened) {
+                context.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+        },
+    )
+    // 横幅是另一道授权, 而且系统把它藏在「特殊应用权限」里, 从这一页直接跳过去省得找
+    ArrowPreference(
+        title = stringResource(R.string.settings_notifications_banner),
+        onClick = {
+            val packageUri = Uri.fromParts("package", context.packageName, null)
+            val opened = runCatching {
+                context.startActivity(
+                    Intent(FULL_SCREEN_INTENT_SETTINGS, packageUri)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }.isSuccess
+            // 那一页要 API 34 才有, 低版本或没有它的 ROM 退到应用详情页 (权限开关都在上面)
+            if (!opened) {
+                context.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+        },
+    )
+}
+
+/** 全屏通知 (横幅) 那一页, API 34 起才有 */
+private const val FULL_SCREEN_INTENT_SETTINGS = "android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT"
 
 /**
  * 一屏画面交给模型之前要过的两条预算: 先按**像素**缩到一个尺寸, 再按**字节**缩到装得下

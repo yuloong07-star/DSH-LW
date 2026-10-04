@@ -145,18 +145,28 @@ class LwPrivilegedService(private val context: Context?) : Binder() {
                 val path = data.readString().orEmpty()
                 // The phone's own screen is the one display with no name of ours to look up, and
                 // naming no display at all is how `screencap` is asked for it
-                val written = if (displayId == LwServiceProtocol.MAIN_DISPLAY) {
+                val problem = if (displayId == LwServiceProtocol.MAIN_DISPLAY) {
                     capture.capturePrimary(path)
                 } else {
                     val name = display.nameOf(displayId)
-                    name != null && capture.capture(name, path)
+                    if (name == null) {
+                        "displayId $displayId is not one of this app's screens any more: it was" +
+                            " closed, so create another one (lw_screen_create) and launch the app on it"
+                    } else {
+                        capture.capture(name, path)
+                    }
                 }
-                writeInt(if (written) 1 else 0)
+                writeString(problem)
             }
 
             LwServiceProtocol.A11Y_SET -> answering(data, reply) {
                 val enabled = data.readInt() == 1
                 writeInt(if (permission.setAccessibility(enabled)) 1 else 0)
+            }
+
+            LwServiceProtocol.NOTIFICATION_LISTEN -> answering(data, reply) {
+                val enabled = data.readInt() == 1
+                writeInt(if (permission.setNotificationListener(enabled)) 1 else 0)
             }
 
             LwServiceProtocol.LAUNCH -> answering(data, reply) {

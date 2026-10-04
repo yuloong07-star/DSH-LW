@@ -34,8 +34,17 @@ import java.io.File
  */
 internal object LwNotify {
 
-    /** 给模型看的通知走这条通道, 与 host 那条常驻的通道分开: host 那条是低重要度的背景音 */
-    private const val CHANNEL_ID = "lw-tools"
+    /**
+     * 给模型看的通知走这条通道, 与 host 那条常驻的通道分开: host 那条是低重要度的背景音
+     *
+     * **1.0.3 把 id 换了**: 渠道的**重要度在创建之后应用就改不动了** (那是用户在管的设置), 所以
+     * "让它能弹成横幅"只能靠新建一个 `IMPORTANCE_HIGH` 的渠道, 而旧的 `lw-tools` 顺手删掉 ——
+     * 留着就是一个永远不高的重要度, 而模型会以为它发的通知能弹出来
+     */
+    private const val CHANNEL_ID = "lw-tools-high"
+
+    /** 1.0.2 那条渠道, 只为了删掉它 */
+    private const val LEGACY_CHANNEL_ID = "lw-tools"
 
     /** 一条工具通知的固定 id: 重复调用是更新同一条, 不是堆一屏 */
     private const val NOTIFICATION_ID = 2
@@ -49,11 +58,12 @@ internal object LwNotify {
         permissions = listOf(Manifest.permission.VIBRATE),
     )
 
-    /** 发一条通知, 可以顺手震一下; 点它把已经在跑的那个界面拿到最前面, 不另开一个 */
+    /** 发一条通知, 可以顺手震一下, 也可以让它弹成横幅; 点它把已经在跑的那个界面拿到最前面, 不另开一个 */
     fun notify(context: Context, request: JsonObject): JsonObject {
         val title = request.string("title")
         val body = request.string("text")
         val vibrateMs = request.int("vibrateMs", 0).coerceIn(0, MAX_VIBRATE_MS)
+        val banner = request.bool("banner", false)
         if (vibrateMs > 0) {
             PermissionGate.refusal(context, vibrate)?.let { throw IllegalStateException(it) }
         }
@@ -85,6 +95,7 @@ internal object LwNotify {
             .setAutoCancel(true)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setVibrate(if (vibrateMs > 0) longArrayOf(0, vibrateMs.toLong()) else null)
+        if (banner) builder.setFullScreenIntent(open, true)
         try {
             manager.notify(NOTIFICATION_ID, builder.build())
         } catch (error: SecurityException) {
@@ -95,9 +106,63 @@ internal object LwNotify {
             )
         }
         return text(
-            "posted a notification titled ${quote(title)}${if (vibrateMs > 0) " with a ${vibrateMs}ms vibration" else ""}" +
-                "; the same id is reused by the next call, so this one is replaced rather than stacked",
+            "posted a notification titled ${quote(title)}" +
+                (if (vibrateMs > 0) " with a ${vibrateMs}ms vibration" else "") +
+                "; the same id is reused by the next call, so this one is replaced rather than" +
+                " stacked. " + channelLine(manager) + bannerLine(manager, banner),
         )
+    }
+
+    /**
+     * 这条渠道现在是什么重要度
+     *
+     * **读回来的才算数**: 渠道的重要性创建之后应用改不动, 而用户随时能在系统设置里调低它 —— 说"发了
+     * 一条高重要度的通知"而实际上它被调成静默, 就是这一层最容易犯的假成功
+     */
+    private fun channelLine(manager: NotificationManager): String {
+        val channel = manager.getNotificationChannel(CHANNEL_ID)
+            ?: return "The channel this goes on no longer exists, so nothing will show: the system" +
+                " kept a channel of that id that this app cannot see"
+        val name = when (channel.importance) {
+            NotificationManager.IMPORTANCE_HIGH, NotificationManager.IMPORTANCE_MAX -> "high"
+            NotificationManager.IMPORTANCE_DEFAULT -> "default"
+            NotificationManager.IMPORTANCE_LOW -> "low (silent, no banner)"
+            NotificationManager.IMPORTANCE_MIN -> "min (silent)"
+            NotificationManager.IMPORTANCE_NONE -> "none (blocked by the user)"
+            else -> "unknown"
+        }
+        return "Its channel ($CHANNEL_ID) is set to $name importance" +
+            (if (channel.importance < NotificationManager.IMPORTANCE_HIGH) {
+                ", and only the user can raise that: 设置 -> 应用 -> DSH-LW -> 通知 -> 工具通知"
+            } else {
+                ""
+            }) + "."
+    }
+
+    /**
+     * 横幅那件事到底成不成
+     *
+     * Android 14 起 `USE_FULL_SCREEN_INTENT` 对非闹钟/通话类的应用**默认不给**, 而声明了也不一定给 ——
+     * 系统自己有一个开关 (`canUseFullScreenIntent`), 那才是判据
+     */
+    private fun bannerLine(manager: NotificationManager, asked: Boolean): String {
+        val allowed = try {
+            manager.canUseFullScreenIntent()
+        } catch (error: Throwable) {
+            null
+        }
+        return when {
+            !asked -> " It was posted as an ordinary notification: pass banner to have it come up" +
+                " over the lock screen."
+            allowed == true -> " It was also given a full-screen intent, so it comes up as a" +
+                " banner over whatever is on the screen."
+            allowed == false -> " The banner was asked for but this app may not use full-screen" +
+                " intents: since Android 14 that is a switch of its own (设置 -> 应用 -> DSH-LW ->" +
+                " 特殊应用权限 -> 全屏通知), so what was posted is an ordinary high-importance" +
+                " notification until someone turns it on."
+            else -> " Whether this device lets the app use a full-screen intent cannot be asked" +
+                " here, so the banner may or may not appear."
+        }
     }
 
     /** 通知通道只在要震动时开震动, 别的不动 (用户的通道设置不该被反复洗掉) */
@@ -105,12 +170,15 @@ internal object LwNotify {
         val channel = NotificationChannel(
             CHANNEL_ID,
             context.getString(R.string.notification_channel_tools),
-            NotificationManager.IMPORTANCE_DEFAULT,
+            // 高重要度: 这是"能弹成横幅"的前提, 而它**只在创建时定得下来** —— 渠道的重要性从此归用户管
+            NotificationManager.IMPORTANCE_HIGH,
         ).apply {
             description = context.getString(R.string.notification_channel_tools_description)
             if (wantsVibration) enableVibration(true)
         }
         manager.createNotificationChannel(channel)
+        // 旧的 `lw-tools` 删掉: 留着它只会有第二个永远不高的重要度, 而模型发的通知会落在新的这条上
+        manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
     }
 
     /** 震一下 */
