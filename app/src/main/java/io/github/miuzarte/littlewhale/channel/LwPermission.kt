@@ -85,7 +85,8 @@ data class AccessibilityState(
     }
 
     private val AT: String
-        get() = " (" + java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(readAt) + ")"
+        get() = " (读取 " +
+            java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(readAt) + ")"
 }
 
 internal class LwPermission(private val context: Context?) {

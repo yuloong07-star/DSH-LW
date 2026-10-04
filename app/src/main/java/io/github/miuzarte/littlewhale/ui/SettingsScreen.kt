@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +28,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.channel.AccessibilitySetting
 import io.github.miuzarte.littlewhale.channel.ChannelSetting
@@ -71,6 +75,7 @@ import top.yukonga.miuix.kmp.menu.OverlayIconDropdownMenu
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
+import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
 import top.yukonga.miuix.kmp.theme.ThemeColorSpec
 import top.yukonga.miuix.kmp.theme.ThemePaletteStyle
 
@@ -377,9 +382,33 @@ private fun PermissionsItems() {
     val runtime = PermissionCatalog.runtime
     val special = PermissionCatalog.special
 
+    // 从系统设置页回来时把每一条重读一遍
+    //
+    // 这一步是给"安装未知应用"那类权限用的: 它的开关在系统那一页上 (设置 → 安装未知应用),
+    // **应用这边读的是 canRequestPackageInstalls() 的实时值**, 但只在重组时读 —— 用户去那一页把开关
+    // 打开再回来, 页面不重组, 于是显示的还是旧状态。ON_RESUME 正好是"从别处回来"的那一刻
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) revision++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // 这一段自己是纯文本, 不像设置项那样自带内边距, 所以**自己缩进**:
+    //   左 16dp 与设置项的标题对齐, 上 16dp 让第一行离开卡片的圆角 —— 圆角是按卡片边裁的, 文字贴着
+    //   左上角时前几个字会被那道弧切掉 (实测就是这样)
+    // 颜色用主题里的次要文本档, 不写死灰度: 它在浅色与深色下各自是对的那一支
     Text(
         text = stringResource(R.string.settings_permissions_summary),
-        modifier = Modifier.padding(bottom = UiSpacing.Medium),
+        color = colorScheme.onSurfaceVariantSummary,
+        modifier = Modifier.padding(
+            start = UiSpacing.Large,
+            end = UiSpacing.Large,
+            top = UiSpacing.Large,
+            bottom = UiSpacing.Medium,
+        ),
     )
     (runtime + special).forEach { capability ->
         // revision 变了就重算: 这是"授权之后状态要跟着变"的那一处
@@ -400,16 +429,11 @@ private fun PermissionsItems() {
             onClick = {
                 // 特殊访问只能开系统页; 能点名的才弹框。`ask` 返回 false 有两种情况 —— 特殊访问,
                 // 或者用户已经"拒绝且不再问", 两种都只能让它去设置页
-                val asked = activity != null && PermissionGate.ask(activity, capability)
-                // **三种结果都要有回音**: 弹框了、打开了某一页、或者两者都没有 (这台设备上那一条根本没有
-                // 可打开的入口)。第三种以前是静默的, 于是点上去像坏了一样
-                val opened = if (asked) true else PermissionGate.openSettings(context, capability)
-                if (!opened) {
-                    Toast.makeText(
-                        context,
-                        context.getString(R.string.settings_permission_no_entry),
-                        Toast.LENGTH_LONG,
-                    ).show()
+                //
+                // 三级回退在 `openSettings` 里: 它自己那页 → 应用详情页 → 都没有就返回 false。
+                // 最后那一种**不再弹提示**: 一句解释性文案换不来一次跳转, 而它已经删掉了
+                if (!(activity != null && PermissionGate.ask(activity, capability))) {
+                    PermissionGate.openSettings(context, capability)
                 }
                 // 系统框是异步的, 这一下是把"点了之后可能已经变了"重算一次; 真正的答案回来时
                 // PermissionRequests.pending 会变, 那时再重算一次
@@ -455,10 +479,10 @@ private fun AccessibilityItems() {
             onClick = { AccessibilitySetting.refreshState() },
         )
     }
-    // 这台机器上应用自己写不进 secure settings, 所以给一条能照抄的命令, 点一下就复制
+    // 复制命令那条: 说明文字删掉了 (原来那句"点一下复制命令"), 复制与 Toast 一个字没动
     ArrowPreference(
         title = stringResource(R.string.settings_accessibility_script),
-        summary = error ?: stringResource(R.string.settings_accessibility_script_summary),
+        summary = error ?: "",
         onClick = {
             val clipboard = context.getSystemService(ClipboardManager::class.java)
             clipboard?.setPrimaryClip(
@@ -474,10 +498,9 @@ private fun AccessibilityItems() {
             ).show()
         },
     )
-    // 那条兜底入口留着: 它在别的 ROM 上仍然是有效的, 只是在这台机器上不管用 (文案里写了)
+    // 跳转那条: 下面那行灰色小字删掉了 (它解释的是"这个页面为什么显示关闭"), 跳转与三级回退没动
     ArrowPreference(
         title = stringResource(R.string.settings_accessibility_manual),
-        summary = stringResource(R.string.settings_accessibility_manual_summary),
         onClick = {
             context.startActivity(accessibilitySettingsIntent())
         },
