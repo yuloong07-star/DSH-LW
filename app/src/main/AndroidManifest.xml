@@ -163,6 +163,17 @@
                 android:value="runs the dsh agent host and its Web GUI in the background" />
         </service>
 
+        <!-- 浮在别的应用上面的输入窗: 长跑的前台服务, 类型跟 DshHostService 同一套
+             (specialUse 是它自己的理由, microphone 是浮窗里那个 WebView 可能要录音) -->
+        <service
+            android:name=".overlay.OverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse|microphone">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="floats the dsh input window over other apps" />
+        </service>
+
         <!-- 工作区里的文件要交给别的应用: `lw_share` 与 `lw_open_file` 走 ACTION_SEND / ACTION_VIEW,
              而 Android 10 起 `file://` 一律被拒, 所以交给它们的是这个 provider 发出来的
              `content://`。根目录挂在 `/` 上: 工作区既可能在 /sdcard 也可能是应用自己的媒体目录,
@@ -246,6 +257,11 @@
              就在那儿** (Android 11 起别的包对它不可见), 于是"这台设备不能拍照"会是一句假话 -->
         <intent>
             <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+        <!-- 语音合成 (TTS) 引擎在 Android 11 起也是可见性问题: 不在这里声明一条, 系统引擎
+             对本应用就不可见, TextToSpeech 初始化拿不到默认引擎 -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
     </queries>
 

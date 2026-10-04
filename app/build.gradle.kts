@@ -14,6 +14,52 @@ val dshCheckout = rootProject.layout.projectDirectory.dir("third_party/deepseek-
 val hostTree = layout.buildDirectory.dir("host-tree")
 val hostAssets = layout.buildDirectory.dir("generated/host-assets")
 
+
+// 语音转写要的那套 sherpa-onnx 不在 Maven 上: 上游只把它发成 GitHub Release 里的 AAR, 所以这
+// 一个依赖由构建自己取。app/libs/sherpa-onnx.aar 放了本地文件就用那一份 (离线构建、或用自己
+// 编的版本), 否则按下面的版本与 sha256 下载到 build/ 里, 校验过才算数
+// 取 static-link-onnxruntime 那一版是有原因的: 本应用已经带了 onnxruntime-android-qnn (端侧
+// OCR 用), 普通版 AAR 会再带一份同名的 libonnxruntime.so, 打成 APK 时会撞名
+val sherpaVersion = "1.13.8"
+val sherpaAar = layout.buildDirectory.file("sherpa-onnx/sherpa-onnx-static-link-onnxruntime-$sherpaVersion.aar")
+val sherpaAarLocal = rootProject.file("app/libs/sherpa-onnx.aar")
+val sherpaAarSha256 = "b22c3fc1b6a45666d28892bb2f7694beeb77a8362d7ebd77c1a5431ec9435471"
+
+fun sha256Of(file: java.io.File): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { stream ->
+        val buffer = ByteArray(1 shl 16)
+        while (true) {
+            val read = stream.read(buffer)
+            if (read <= 0) break
+            digest.update(buffer, 0, read)
+        }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
+}
+
+val fetchSherpaOnnxAar = tasks.register("fetchSherpaOnnxAar") {
+    group = "littlewhale"
+    description = "Fetch the sherpa-onnx AAR the app links for on-device speech recognition"
+    val target = sherpaAar.get().asFile
+    outputs.file(target)
+    doLast {
+        if (target.isFile && sha256Of(target) == sherpaAarSha256) return@doLast
+        target.parentFile.mkdirs()
+        val url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaVersion/" +
+            "sherpa-onnx-static-link-onnxruntime-$sherpaVersion.aar"
+        logger.lifecycle("fetching $url")
+        java.net.URI(url).toURL().openStream().use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        }
+        val actual = sha256Of(target)
+        if (actual != sherpaAarSha256) {
+            target.delete()
+            throw GradleException("the sherpa-onnx AAR is not the pinned one: sha256 $actual")
+        }
+    }
+}
+
 /** The submodule files whose change must invalidate the packed tree */
 val dshSources = fileTree(dshCheckout.asFile) {
     include(
@@ -172,6 +218,12 @@ androidComponents {
     }
 }
 
+
+// 取 AAR 那一步要排在编译之前: 上面用的是普通文件依赖, 它自己带不上 builtBy 这条边, 所以
+// 这里把 preBuild 连过去。本地放了 app/libs/sherpa-onnx.aar 就不需要下载了
+if (!sherpaAarLocal.isFile) {
+    tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(fetchSherpaOnnxAar) }
+}
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.core.ktx)
@@ -203,6 +255,11 @@ dependencies {
     implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.26.0")
     implementation("com.qualcomm.qti:qnn-runtime:2.46.0")
 
+
+    // 语音转写: sherpa-onnx 的 Android AAR (见上面的 fetchSherpaOnnxAar)。它自带
+    // libsherpa-onnx-jni.so, 里面静态链接了 onnxruntime, 与 OCR 那套 onnxruntime-android
+    // 各走各的, 不是同一份
+    implementation(files(sherpaAarLocal.takeIf { it.isFile } ?: sherpaAar.get().asFile))
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
