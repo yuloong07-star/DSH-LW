@@ -267,6 +267,35 @@ object PrivilegedBridge {
             }
         }
 
+        // 滚一屏: 走无障碍自己的滚动动作, 不注入触摸。列表比一屏长的时候, 按名字点不到还没铺出来的行,
+        // 而注入的拖动在这台设备的虚拟屏上到不了应用 —— 这一条正好补上那两处
+        "scroll" -> {
+            val screen = namedScreen(request)
+            VirtualScreen.requireAcceptsControl(screen)
+            VirtualScreen.requireUserNotDriving(screen)
+            val backward = request["direction"]?.jsonPrimitive?.contentOrNull == "backward"
+            val name = request["text"]?.jsonPrimitive?.contentOrNull
+            val times = (request["times"]?.jsonPrimitive?.intOrNull ?: 1).coerceIn(1, MAX_SCROLL_TIMES)
+            val hit = LwAccessibility.scroll(screen.displayId, !backward, name, times)
+            val node = hit.node
+            val sentence = if (hit.scrolled > 0) {
+                "scrolled displayId ${screen.displayId} " + (if (backward) "backward" else "forward") +
+                    " " + hit.scrolled + " screenful(s) through " +
+                    (node?.className ?: "the scrollable control") +
+                    ": read the screen again, the rows have moved"
+            } else {
+                hit.error ?: "nothing was scrolled"
+            }
+            buildJsonObject {
+                put("outcome", hit.outcome)
+                put("scrolled", hit.scrolled)
+                put("direction", if (backward) "backward" else "forward")
+                put("displayId", screen.displayId)
+                put("error", hit.error.orEmpty())
+                put("text", sentence)
+                if (node != null) put("node", nodeJson(node))
+            }
+        }
         // A screen is made here rather than in the app's UI, so a tool says what it wants: a name
         // to be known by, and a size when this device's own is not the right shape
         "create" -> {
@@ -1107,6 +1136,8 @@ object PrivilegedBridge {
     /** 整棵树落文件的节点上限, 以及回给模型的预览行数 */
     private const val MAX_DUMP_NODES = 4_000
     private const val DUMP_PREVIEW_LINES = 40
+    /** 一次调用最多连着滚几屏, 与无障碍那侧的钳制对齐 */
+    private const val MAX_SCROLL_TIMES = 10
 
     /** More text than this in one call is a caller that has lost track, and one parcel to prove it */
     private const val MAX_TYPED_CHARS = 4_096
