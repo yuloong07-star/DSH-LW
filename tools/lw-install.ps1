@@ -51,13 +51,22 @@ if (-not $SkipInstall) {
     # "不接受写入"), 而 `pm install` 在设备上就地装只要几秒。所以 APK 先送到 /data/local/tmp, 之后
     # "装 + 写回"在同一次 adb shell 里连着一口气做完, 中间不插任何往返
     $remote = '/data/local/tmp/lw-install.apk'
+    # 路径要先解析出来再 push: 上一轮改这段时把这一句弄丢了, 于是 push 收到空路径、装了个寂寞
+    $full = (Resolve-Path $Apk).Path
     Write-Host "pushing $full" -ForegroundColor Cyan
-    & $adb -s $Serial push $full $remote | Out-Null
+    $pushed = (& $adb -s $Serial push $full $remote 2>&1 | Out-String).Trim()
+    if ($pushed -notmatch '1 file pushed') { throw "push failed: $pushed" }
 
     $component = "$Package/$Package.channel.LwAccessibility"
     $pkg = $Package
+    # 判"到底装上了没有"的基准: 设备现在记的 lastUpdateTime。装完它必须变新, 否则就是没装成功 ——
+    # `pm install` 失败时会把异常栈打到 stderr, 只匹配 "Failure" 会漏掉 (实测真机上一次就是漏了,
+    # 脚本还报了成功)
+    $before = (& $adb -s $Serial shell "dumpsys package $pkg | grep lastUpdateTime" 2>&1 | Out-String).Trim()
+    $stamp = [int][double]::Parse((Get-Date -UFormat %s))
+
     $script = @"
-pm install -r -i com.android.packageinstaller -t $remote
+pm install -r -i com.android.packageinstaller -t $remote 2>&1 | tail -3
 cur=`$(settings get secure enabled_accessibility_services)
 case "`$cur" in
   *LwAccessibility*) echo "ACCESSIBILITY_ALREADY_LISTED" ;;
@@ -66,20 +75,34 @@ case "`$cur" in
      settings put secure enabled_accessibility_services "`$next"
      echo "ACCESSIBILITY_WRITTEN" ;;
 esac
+settings put secure lw_write_probe install-$stamp
+echo "PROBE=`$(settings get secure lw_write_probe)"
+settings delete secure lw_write_probe >/dev/null 2>&1
 settings get secure enabled_accessibility_services
 rm -f $remote
 "@
     Write-Host "installing on the device, then writing the entry back in the same breath" -ForegroundColor Cyan
     $installed = ($script | & $adb -s $Serial shell "sh -s" 2>&1 | Out-String).Trim()
     Write-Host $installed
-    if ($installed -match 'Failure|INSTALL_FAILED') { throw "install failed: $installed" }
-    $after = ($installed -split "`n" | Where-Object { $_ -match 'LwAccessibility|LttService|com\.dsh' } | Select-Object -Last 1)
-    if ($after -match 'LwAccessibility') {
-        Write-Host "accessibility written back: $($after.Trim())" -ForegroundColor Green
-        $wrote = $true
-    } else {
+
+    # 判据一: 设备的 lastUpdateTime 变了
+    $after = (& $adb -s $Serial shell "dumpsys package $pkg | grep lastUpdateTime" 2>&1 | Out-String).Trim()
+    if ($after -eq $before -or $after -eq '') {
+        throw "the app was not installed: lastUpdateTime is still '$after' (the install output above says why)"
+    }
+    Write-Host "installed: $after" -ForegroundColor Green
+
+    # 判据二: 刚才写的那一条有没有被留下 (探针与无障碍写在同一次 shell 里, 所以窗口还是同一个)
+    $writesAccepted = $installed -match "PROBE=install-$stamp"
+    if ($installed -match 'ACCESSIBILITY_WRITTEN|ACCESSIBILITY_ALREADY_LISTED') {
+        $listed = $installed -match 'LwAccessibility'
+        if ($listed) {
+            Write-Host "accessibility written back" -ForegroundColor Green
+            $wrote = $true
+        }
+    }
+    if (-not $wrote -and -not $writesAccepted) {
         Write-Host "the device did not keep the accessibility write" -ForegroundColor Red
-        Write-Host "  it reads back as: $after" -ForegroundColor DarkGray
     }
 }
 
