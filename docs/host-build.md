@@ -94,7 +94,7 @@ Termux 编出来的 node 有一批**写死的 Termux 路径** (`libnode.so` 里 
 | :-- | :-- | :-- |
 | `koffi` | `subprocess-local` 的 `spawn-runner.ts → linux-execve.ts` 与 `sandbox-local → dsh-sandbox-windows-acl → ffi.ts` | 惰性化, 安卓走 Node 自己的 `child_process.spawn` |
 | `node-pty` | `subprocess-local/src/index.ts:15` (prebuild 只有 darwin / linux / win32) | 同上, 持久终端在安卓上暂不可用 |
-| `sharp` | `attachment-local` 的 `image.ts` / `normalization.ts` / `request-image.ts` | 树里换成了 `image-backend/sharp/` 的纯 JS 替身, 见「dsh 工具」 |
+| `sharp` | `attachment-local` 的 `image.ts` / `normalization.ts` / `request-image.ts` | 树里装的是官方 0.35.5 的 **wasm32** 构建 (`sharp` + `@img/sharp-wasm32`, 见 `image-backend/README.md`); 1.0.3 之前是一个只解 PNG 的纯 JS 替身, 那次换掉的经过在 `docs/step5-record.md` |
 | `node-addon-require-builtin` | `vendor/loader/src/internal.ts` 的 `requireInternal()` | **不用管**: `--expose-internals` 让它走 `require(id)` 分支 (不加就是整个进程退出) |
 | `node-addon-system/flock` | `session-persistence-jsonl/src/lease.ts:34` | 安卓上 `loadBinding()` 抛 `ERR_FLOCK_UNSUPPORTED_PLATFORM`, 按 dsh 给浏览器 worker 的做法降级成"无跨进程排他" |
 | `node-addon-system/landlock-run` | `sandbox-local/src/profiles.ts:7` | 惰性, `probe()` 直接 `unusable`, dsh 设计上就容忍 |

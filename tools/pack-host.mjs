@@ -46,6 +46,24 @@ const BUILD_OUTPUTS = [
  */
 const ROOT_BUILD_STATE = ['tsconfig.host.tsbuildinfo', 'tsconfig.client.tsbuildinfo']
 
+/**
+ * The image backend the host tree carries, and why it is the WebAssembly build
+ *
+ * The attachment store asks sharp two questions about every image that comes in: is this really an
+ * image, and how big is it. sharp's ordinary route is closed on this device - its platform packages
+ * wrap libvips, which is built against glibc, and `--omit=optional` above drops them regardless.
+ * `@img/sharp-wasm32` needs no native binding of any kind: it is one WebAssembly module, and sharp
+ * picks it on its own once `@img/sharp-linux-arm64` is not installed
+ *
+ * Measured with no native binding present at all (a scratch `--omit=optional` install): a JPEG it
+ * encoded itself came back as `format jpeg, 64x48, 3 channels` and decoded to pixels, PNG did not
+ * regress. Before this the tree carried a stand-in that answered only from the PNG header, so every
+ * JPEG, WebP and GIF the user picked was refused with INVALID_IMAGE
+ *
+ * @see image-backend/README.md for what the stand-in was and what replaced it
+ */
+const IMAGE_BACKEND = { sharp: '0.35.5', '@img/sharp-wasm32': '0.35.5' }
+
 /** Run one command in the checkout, inheriting stdio so build progress stays visible */
 function run(command, args, cwd) {
   execFileSync(command, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' })
@@ -166,7 +184,10 @@ writeFileSync(join(out, 'package.json'), `${JSON.stringify({
   name: 'littlewhale-host',
   version: '0.0.0',
   private: true,
-  dependencies: Object.fromEntries([...packed].map(([name, entry]) => [name, entry.url])),
+  dependencies: {
+    ...Object.fromEntries([...packed].map(([name, entry]) => [name, entry.url])),
+    ...IMAGE_BACKEND,
+  },
 }, null, 2)}\n`)
 
 // Optional dependencies stay out for the same reason the release job omits them: the Landlock
@@ -211,14 +232,8 @@ execFileSync(process.execPath, [
   join(installed, 'index.mjs'),
 ], { cwd: out, stdio: 'inherit' })
 
-// sharp has no binding this device can load - libvips is built for glibc, and --omit=optional
-// dropped even the platform package - so the tree gets a stand-in that answers the one consumer's
-// two questions from the PNG header instead. Its own file says what it does and does not do
-const imageBackend = fileURLToPath(new URL('../image-backend/sharp', import.meta.url))
-const sharpened = join(out, 'node_modules', 'sharp')
-rmSync(sharpened, { recursive: true, force: true })
-cpSync(imageBackend, sharpened, { recursive: true })
-console.log(`pack-host: installed the image backend from ${imageBackend}`)
+// sharp 随树装进来 (见 IMAGE_BACKEND), 这里不再覆盖任何东西 —— 以前那一步是把一个只认 PNG 的
+// 替身盖在 sharp 上, 代价是相册里的照片一律进不来
 
 const { files, bytes } = measure(join(out, 'node_modules'))
 console.log(`pack-host: ${String(packed.size)} tarball(s), ${String(files)} file(s), ${(bytes / 1024 / 1024).toFixed(1)} MB in ${out}`)
