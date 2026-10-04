@@ -56,10 +56,13 @@ const MAX_HOLD_MS = 10000
 /** How many controls one lw_ui lists before it says the rest are off screen */
 const MAX_UI_NODES = 200
 
+/** How many queued sentences lw_voice prints: the tail is what a person is asking about */
+const MAX_VOICE_LINES = 20
+
 export const name = 'littlewhale-channel'
 
 /** The tool registry has to exist before anything can be registered on it */
-export const inject = ['tools']
+export const inject = ['tools', 'agents', 'sessions']
 
 export function apply(ctx) {
   for (const tool of TOOLS) ctx.tools.register(tool)
@@ -77,6 +80,29 @@ export function apply(ctx) {
   // records that a decision was made and what it was
   ctx.on('approval/request', (_request, _next) => Promise.resolve('allowed-once'), { prepend: true })
 
+  // 语音链投进来的话: 一直看着应用写的那份队列, 有新句子就送进会话 (批次 2 的投递)
+  //
+  // `sessionController` 走 ctx.get 而不是 inject: 它是 web 那一套里的服务, 而这个插件在别的
+  // profile 里也装 (那些 profile 没有它)。inject 少了会让整个插件的 53 个工具跟着挂, 而这里
+  // 真正想表达的只是"这个能力在这套 profile 里可能没有"
+  //
+  // 这一行是**故意的**: 队列在哪个文件、这条链起没起来, 是排查"说了话没进会话"的第一个问题,
+  // 而它只靠日志才回答得了 (2026-10-05 就是在这里瞎猜了一轮)
+  console.log(`littlewhale-channel: voice inbox is ${voiceInboxPath() ?? 'unavailable (no DSH_HOME)'}`)
+  try {
+    startVoiceInbox(ctx, (line) => voiceDeliver(ctx, line))
+  } catch (error) {
+    warn(ctx, `the voice inbox was not started: ${error?.message ?? error}`)
+  }
+
+  // 一轮说完就把回答念出来 (批次 2.3): 挂在 `session/event` 的 `turn/end` 上, 只有正常结束的那一轮
+  // 才念 —— 理由写在 startReadAloud 上面
+  try {
+    startReadAloud(ctx)
+  } catch (error) {
+    warn(ctx, `reading replies aloud was not started: ${error?.message ?? error}`)
+  }
+
   // 语音输入是 dsh 里可选的一套 (voice-input bundle 带的那个客户端录音按钮): 服务在才注册
   // 本机的转写 provider, 不在就什么都不做 —— 一个可选能力不该让 lw_* 那堆工具跟着挂
   try {
@@ -86,8 +112,20 @@ export function apply(ctx) {
       })
     }
   } catch (error) {
-    ctx.logger?.warn?.(`the on-device speech provider was not registered: ${error.message}`)
+    warn(ctx, `the on-device speech provider was not registered: ${error.message}`)
   }
+}
+
+/**
+ * 报一句警告
+ *
+ * **两处都写**: 控制台那一行是保证看得见的 (主机日志里带 `DshHost`), 而 cordis 的 logger 是给
+ * profile 自己那一套用的。2026-10-05 踩的就是只写 logger: 投递链没起来, 而 `ctx.logger?.warn?.()`
+ * 把它吞得干干净净, 日志里一个字都没有, 只能在文件系统上一点点反推
+ */
+function warn(ctx, message) {
+  console.warn(`littlewhale-channel: ${message}`)
+  if (typeof ctx.logger?.warn === 'function') ctx.logger.warn(message)
 }
 
 /** The display a call is about, which is the id `lw_screen` reports and nothing else */
@@ -1520,6 +1558,82 @@ const TOOLS = [
     },
   }),
   defineTool({
+    name: 'lw_voice',
+    description:
+      'The always-listening voice chain on this phone: the app keeps one microphone open, cuts it '
+      + 'into sentences with a silero VAD (3 s of silence ends one, 15 s at most each) and '
+      + 'transcribes each sentence on-device, then drops it into a queue the host sends into the '
+      + 'conversation as a `voice`-sourced message (steering into a running turn when there is one, '
+      + 'creating a session when there is none). op=inbox reports that queue, where the reader has '
+      + 'got to and how the last few deliveries landed; op=clean shows what a piece of markdown '
+      + 'would sound like when read aloud (code blocks, tables and links are stripped); op=read '
+      + 'speaks a line right now through the same cleaning and the same engine the automatic reading '
+      + 'uses; op=say delivers a line by hand, exactly as if it had been spoken. The chain itself is '
+      + 'started and stopped with lw_wakeword, whose status reports it.',
+    parameters: {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'inbox, clean, read or say',
+      },
+      text: {
+        type: 'string',
+        description: 'The text op=clean, op=read and op=say work on',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      if (args.op === 'say') {
+        if (!args.text) throw new Error('op=say needs text=<the line to deliver>')
+        const outcome = await voiceDeliver(ctx, { seq: 0, text: args.text, source: 'voice', at: Date.now() })
+        return `delivered to ${String(voiceDelivery.sessionId)}: `
+          + (outcome.running ? 'steered into the running turn' : 'queued for the next turn')
+      }
+      if (args.op === 'clean' || args.op === 'read') {
+        if (!args.text) throw new Error(`op=${args.op} needs text=<what to say>`)
+        const spoken = readAloudText(args.text)
+        if (!spoken) {
+          return 'nothing in that text is worth reading aloud: it is all code, tables, links or'
+            + ' blank lines, so the cleaner left an empty line'
+        }
+        if (args.op === 'clean') return spoken
+        const answer = await call('speak', { op: 'speak', text: spoken })
+        return answer.spoken
+          ? `said ${answer.characters} characters (from ${args.text.length} of markdown)`
+          : `the engine did not report finishing: ${answer.detail}`
+      }
+      if (args.op === 'inbox') {
+        const state = await voiceInboxState()
+        if (!state.inbox) return 'the voice inbox has no place to live: DSH_HOME is not set'
+        const lines = state.queued.slice(-MAX_VOICE_LINES)
+        return withJson(
+          [
+            `inbox ${state.inbox}`,
+            `${state.queued.length} sentence(s) in the file, reader has delivered up to #`
+              + `${state.cursor === null ? 'nothing yet' : state.cursor}`,
+            `${voiceDelivery.lines} delivered`
+              + ` (${voiceDelivery.steered} steered, ${voiceDelivery.queued} queued)`
+              + `${voiceDelivery.sessionId ? `, last to ${voiceDelivery.sessionId}` : ''}`,
+            `${voiceReading.count} reply(ies) read aloud`
+              + `${voiceReading.error ? `, last problem: ${voiceReading.error}` : ''}`,
+            ...lines.map((line) => `  #${line.seq} ${line.text}`),
+          ],
+          {
+            inbox: state.inbox,
+            cursor: state.cursor,
+            queued: lines,
+            delivery: { ...voiceDelivery },
+            reading: { ...voiceReading },
+          },
+        )
+      }
+      throw new Error(`op has to be inbox, clean, read or say, not "${args.op}"`)
+    },
+  }),
+  defineTool({
     name: 'lw_overlay',
     description:
       'Float the dsh GUI over other apps as a system overlay window, which is what makes its input '
@@ -2773,6 +2887,377 @@ async function wakeWordDownload(file, target) {
     }
   }
   throw new Error(`could not download ${file.name}: ${failure?.message ?? failure}`)
+}
+
+/* ------------------------------------------------------------------ reading aloud */
+
+/**
+ * What of a reply is worth saying out loud
+ *
+ * A reply is markdown written for the eye. Read aloud, the parts that only make sense on a screen
+ * turn into noise: "```" and "|" and "](https://...)" are not words. So this strips exactly those
+ * and returns whatever prose is left, and the answer says so when nothing is left - a reply that is
+ * all code reads as an empty line, and "nothing worth reading" is a truer thing to say than silence
+ *
+ * The rules live here and only here (a decision D15 pinned): fenced code goes, inline code keeps its
+ * contents, images go, links keep their text, bare URLs go, table rows go, heading/list/quote
+ * markers go, emphasis markers go, rules go, then whitespace collapses
+ */
+function readAloudText(markdown) {
+  let text = String(markdown ?? '')
+  text = text.replace(/```[\s\S]*?```/g, ' ')
+  text = text.replace(/`([^`]*)`/g, '$1')
+  text = text.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+  text = text.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+  text = text.replace(/https?:\/\/\S+/g, ' ')
+  text = text.replace(/^[^\n]*\|[^\n]*$/gm, '')
+  text = text.replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+[.)])\s+/gm, '')
+  text = text.replace(/(\*\*|__)([\s\S]*?)\1/g, '$2')
+  text = text.replace(/(?<![A-Za-z0-9])(\*|_)(?=\S)([^*_\n]*?)(?<=\S)\1(?![A-Za-z0-9])/g, '$2')
+  text = text.replace(/^\s*([-*_]\s*){3,}$/gm, ' ')
+  text = text.replace(/^[ \t]+$/gm, '')
+  return text.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').replace(/^ | $/gm, '').trim()
+}
+
+/* ── 语音投递 ───────────────────────────────────────────────────────────────
+ * 应用那一侧把认出来的话追加进 `$DSH_HOME/voice/inbox.jsonl` (一行一句, 带自增 `seq`), 这一侧
+ * 读出来送进会话,
+ *
+ * 为什么是文件而不是让应用连过来: 现有的回环桥是"宿主问、应用答", 反过来的话要么让宿主开一个
+ * 监听口 (新的攻击面, 应用还得知道那个口在哪), 要么让应用去猜 dsh 的内部 HTTP 接口,文件这条路
+ * 三个好处一次拿到 —— 宿主重启不丢、应用先写宿主后起也投得出去、`$DSH_HOME` 是真文件系统所以
+ * 轮询的开销可以忽略,
+ *
+ * 去重靠 `seq` 不靠字节游标: 文件满了会从尾部留若干行重写, 那一刻游标会指到新文件之外, 只靠游标
+ * 就会重放,游标记的是**已投递的最大 seq**, 所以重写与截断都不会让一句话被说两遍,
+ */
+
+/** 投递队列的位置, 与应用那一侧同一个约定 */
+function voiceInboxPath() {
+  const home = process.env.DSH_HOME
+  return home ? join(home, 'voice', 'inbox.jsonl') : null
+}
+
+/** 轮询那个队列的间隔: 半秒对说话这件事足够快, 而它只是一次 stat */
+const VOICE_POLL_MS = 500
+
+function voiceCursorPath(inbox) {
+  return join(dirname(inbox), 'inbox.cursor')
+}
+
+/** 已投递到哪 (最大 seq) 与最近一次读到的文件指纹 */
+const voiceCursor = { path: null, seq: null, fingerprint: null }
+
+/** 尾部那行的 seq, 认不出来就是 0 */
+function voiceLastSeq(raw) {
+  const lines = String(raw).split('\n')
+  for (let at = lines.length - 1; at >= 0; at -= 1) {
+    const line = lines[at].trim()
+    if (!line) continue
+    try {
+      const seq = Number(JSON.parse(line)?.seq)
+      if (Number.isFinite(seq)) return seq
+    } catch {
+      // 末尾可能留着半行 (进程被杀), 那一行就是没有序号, 继续往回找
+    }
+  }
+  return 0
+}
+
+/**
+ * 读到哪了
+ *
+ * 游标文件不在时**从当前的尾部开始**, 不把装之前说的那些话一次性倒进会话 —— 一个刚装上的功能
+ * 不该拿一堆积压的句子打断主人
+ */
+async function voiceCursorLoad(inbox, raw) {
+  if (voiceCursor.path !== inbox || voiceCursor.seq === null) {
+    voiceCursor.path = inbox
+    const stored = await readFile(voiceCursorPath(inbox), 'utf8').catch(() => null)
+    const parsed = stored === null ? Number.NaN : Number.parseInt(stored.trim(), 10)
+    voiceCursor.seq = Number.isFinite(parsed) ? parsed : voiceLastSeq(raw)
+  }
+  return voiceCursor.seq
+}
+
+/** 投递成功之后才前移: 投失败的那一句留在下游, 下一次接着投, 不静默丢掉 */
+async function voiceCursorStore(inbox, seq) {
+  voiceCursor.seq = seq
+  await mkdir(dirname(inbox), { recursive: true })
+  await writeFile(voiceCursorPath(inbox), `${seq}\n`)
+}
+
+/**
+ * 文件没变就别解析: 500 ms 一次的轮询里绝大多数时候什么都没发生
+ *
+ * 但**"上次读出来却还没确认投出去"时不许跳过** —— 那正是投递失败之后要重试的那一刻, 而文件当然
+ * 没变。少了 `unread` 这一个条件, 一句投失败的话就会一直躺在文件里, 直到主人再说一句才被顺带带
+ * 出去 (实测出来的: tools/check-voice-inbox.mjs 第 3 条判据)
+ */
+async function voiceUnchanged(inbox) {
+  if (voiceCursor.unread) return false
+  const info = await stat(inbox).catch(() => null)
+  if (info === null) return true
+  const fingerprint = `${info.size}:${info.mtimeMs}`
+  if (voiceCursor.fingerprint === fingerprint) return true
+  voiceCursor.fingerprint = fingerprint
+  return false
+}
+
+/** 还没投递过的那几行, 按说的顺序 */
+async function voiceReadNew(inbox) {
+  if (await voiceUnchanged(inbox)) return []
+  const raw = await readFile(inbox, 'utf8').catch(() => null)
+  if (raw === null) return []
+  const since = await voiceCursorLoad(inbox, raw)
+  const fresh = []
+  for (const line of raw.split('\n')) {
+    const text = line.trim()
+    if (!text) continue
+    let record = null
+    try {
+      record = JSON.parse(text)
+    } catch {
+      continue
+    }
+    const seq = Number(record?.seq)
+    const said = typeof record?.text === 'string' ? record.text.trim() : ''
+    if (!Number.isFinite(seq) || seq <= since || !said) continue
+    fresh.push({ seq, text: said, source: record.source ?? 'voice', at: Number(record.at) || 0 })
+  }
+  // 留一条"还没确认投出去"的记号, 见 voiceUnchanged: 它让失败的那句话下一次还被读出来
+  voiceCursor.unread = fresh.length > 0
+  return fresh
+}
+
+/**
+ * 一直看着那个队列, 有新句子就送进会话
+ *
+ * 一句一句地送, 送成功才前移游标: 顺序就是主人说话的顺序, 而中途失败不会让后面的话插到前面去
+ */
+function startVoiceInbox(ctx, deliver) {
+  const inbox = voiceInboxPath()
+  if (!inbox) {
+    warn(ctx, 'the voice inbox has no place to live: DSH_HOME is not set')
+    return
+  }
+  let running = false
+  const tick = async () => {
+    if (running) return
+    running = true
+    try {
+      for (const line of await voiceReadNew(inbox)) {
+        console.log(`littlewhale-channel: voice line #${line.seq} picked up from the queue`)
+        await deliver(line)
+        await voiceCursorStore(inbox, line.seq)
+      }
+    } catch (error) {
+      warn(ctx, `the voice inbox could not be read: ${error?.message ?? error}`)
+    } finally {
+      running = false
+    }
+  }
+  // 定时器注册失败也必须把第一次读跑了: 一条"没起来"的警告比一个不吭声的死功能好得多, 而且
+  // 第一次读本身就能把"路径对不对、游标读到哪"这两件事说清楚
+  try {
+    ctx.effect(
+      () => {
+        const timer = setInterval(() => void tick(), VOICE_POLL_MS)
+        return () => clearInterval(timer)
+      },
+      'littlewhale-channel: voice inbox',
+    )
+  } catch (error) {
+    warn(ctx, `the voice inbox timer could not be registered: ${error?.message ?? error}`)
+  }
+  void tick()
+}
+
+/** 队列现在什么样, 给 lw_voice 用 */
+async function voiceInboxState() {
+  const inbox = voiceInboxPath()
+  if (!inbox) return { inbox: null, queued: [], cursor: null }
+  const raw = await readFile(inbox, 'utf8').catch(() => null)
+  const queued = []
+  if (raw !== null) {
+    for (const line of raw.split('\n')) {
+      const text = line.trim()
+      if (!text) continue
+      try {
+        const record = JSON.parse(text)
+        if (typeof record?.text === 'string' && record.text.trim()) {
+          queued.push({ seq: Number(record.seq), at: Number(record.at) || 0, text: record.text.trim() })
+        }
+      } catch {
+        // 半行, 不当它是队列里的一句
+      }
+    }
+  }
+  // 游标还没建立时报的是**读者这次会从哪开始** (即文件尾部), 不是"什么都没有": 第一次跑本来
+  // 就不会把历史倒进会话, 而"什么都不会投"与"都会投"这两句话在故障排查时是反的
+  const cursor = voiceCursor.path === inbox ? voiceCursor.seq : voiceLastSeq(raw ?? '')
+  return { inbox, queued, cursor }
+}
+
+/* ── 语音投递: 一句话怎么变成会话里的一条消息 ─────────────────────────────── */
+
+/** 投递的去向与结果, 给 lw_voice 看: 投了几条、投给谁、是插进去的还是排上的、最近一次为什么失败 */
+const voiceDelivery = { lines: 0, sessionId: null, steered: 0, queued: 0, last: null, error: null }
+
+/** `@deepseek-ai/dsh-llm` 的模块命名空间, 按需加载一次 */
+let messageFactory = null
+
+/**
+ * 造一条用户消息
+ *
+ * 为什么按需 import 而不是写在文件头上: 这个插件的**模块级依赖只有一个** (工具 schema 在模块求值
+ * 时就编译完了), 而多一个静态 import 就多一个"整包加载失败"的理由 —— `tools/check-host-plugin.mjs`
+ * 那种只准备了 `dsh-tools` 的环境会在 import 那一步就死, 53 个工具跟着一起没有,按需加载把"投递
+ * 这条路缺东西"与"所有工具都没有"分开: 拿不到工厂时投递如实报错, 工具照旧
+ *
+ * `source` 那个写法是这批里最容易写错的一处, 理由见 [voiceDeliver]
+ */
+async function createVoiceMessage(text) {
+  if (messageFactory === null) messageFactory = await import('@deepseek-ai/dsh-llm')
+  return messageFactory.createUserMessage({
+    content: [{ type: 'text', text }],
+    source: { kind: 'user', via: 'voice' },
+  })
+}
+
+/**
+ * 目标会话: 正在跑的那一轮优先, 否则最近动过的那个**根**会话
+ *
+ * 两个判据分工不同: `ctx.agents.list()` 是活着的 agent, 其中 `status === 'running'` 的那个就是
+ * 主人此刻正在进行的这一轮 —— 话说给它是"插进去"而不是"排到下一轮",没有正在跑的, 才去看会话
+ * 列表里最近动过的那个根会话 (子代理与 fork 出来的不算: 那不是主人在看的那个)
+ */
+async function voiceTargetSession(ctx, controller, signal) {
+  const busy = ctx.agents
+    .list()
+    .find((agent) => agent.status === 'running' && agent.meta?.origin !== 'subagent')
+  if (busy !== undefined) return { sessionId: busy.sessionId, running: true }
+  const listed = await controller.list({}, signal)
+  const roots = listed.items.filter((item) => item.origin !== 'subagent' && !item.parentSessionId)
+  if (roots.length === 0) return null
+  const newest = roots.reduce((newest, item) => (item.updatedAt > newest.updatedAt ? item : newest))
+  return { sessionId: newest.sessionId, running: newest.running }
+}
+
+/**
+ * 把一句话送进会话
+ *
+ * D6/D7 (主人 2026-10-05 定): **有正在跑的轮就 `steer` 插进去; 没有会话就新建一个再发**,
+ * 会话不活着也能投: `resolveAgent` 会把它恢复起来 (与 dsh 自己的 schedule 那条路同一个做法), 所以
+ * "应用在后台说了一句话"不会因为界面没开着而丢掉
+ *
+ * **来源标记怎么写是这批里最容易写错的一处** (批次 2.2)。两种写法都"有来源", 但只有一个是对的:
+ *
+ * - `{ kind: 'user', via: 'voice' }` —— 对了,`MessageSourceMap` 是合并扩展的, 各生产者声明自己
+ *   的键, 而 `user-rpc` 就是这么干的 (`{ kind: 'user', rpcId … }`, GUI 自己发的每一条都是它)
+ * - `{ kind: 'voice' }` —— 错了,会话界面按 `source.kind !== 'user'` 分流: 认不出的一律画成
+ *   **注入的上下文行**, 而不是主人自己的那个气泡; 会话标题、活动、steering 历史那一整套也都以
+ *   `kind === 'user'` 为准,所以新造一个 kind 等于把"主人说的话"降级成"系统塞进来的东西"
+ *
+ * 也就是说: kind 必须留 `user` (它决定这条消息是不是"主人说的"), `via: 'voice'` 才是那个标记
+ *
+ * **flush 之后才算投出去**: 游标只在投递成功之后前移, 中途崩了下次会重投, 而不是静默丢掉
+ */
+async function voiceDeliver(ctx, line) {
+  const controller = ctx.get('sessionController')
+  if (!controller) {
+    throw new Error('this profile has no session controller, so a spoken line has nowhere to go')
+  }
+  const signal = new AbortController().signal
+  const target = await voiceTargetSession(ctx, controller, signal)
+  const sessionId = target === null ? (await controller.create({})).sessionId : target.sessionId
+  const outcome = await ctx.agents.withoutInitiator(async () => {
+    const resolved = await controller.resolveAgent(sessionId)
+    if ('error' in resolved) throw resolved.error
+    const { agent } = resolved
+    const running = agent.status === 'running'
+    const message = await createVoiceMessage(line.text)
+    // 正在跑就插进当前轮 (D6), 否则排上并唤醒它
+    if (running) agent.steer(message)
+    else agent.followup(message)
+    const flushed = await ctx.sessions.flush(agent.session)
+    return { running, flushed }
+  })
+  voiceDelivery.lines += 1
+  voiceDelivery.sessionId = String(sessionId)
+  if (outcome.running) voiceDelivery.steered += 1
+  else voiceDelivery.queued += 1
+  voiceDelivery.last = { at: Date.now(), text: line.text, sessionId: String(sessionId), steered: outcome.running }
+  voiceDelivery.error = null
+  ctx.logger?.info?.(
+    `voice line #${line.seq} ${outcome.running ? 'steered into' : 'queued on'} ${String(sessionId)}`,
+  )
+  return outcome
+}
+
+/* ── 回答念出来 ───────────────────────────────────────────────────────────── */
+
+/** 最近一次朗读的去向, 给 lw_voice 看 */
+const voiceReading = { count: 0, last: null, error: null }
+
+/**
+ * 一轮说完才念 (批次 2.3)
+ *
+ * 触发点是 `session/event` 里的 `turn/end`, 而且**只有 `reason.kind === 'completed'` 才念**: 一个
+ * 轮次里每一步都有一条 `assistant/message` (中间还夹着工具调用), 而只有"这一轮正常结束"才说明
+ * 模型不再欠回复 —— 被打断的、出错的、撞上 max-tokens 的那一轮念出来是半句话, 那不叫念回答,
+ * 所以不按消息念, 也不在 `agent/turn-stopping` 里念 (那是 serial 钩子, 模型会等我们念完)
+ *
+ * 读的是这一轮最后那条助手消息的正文, 先过 [readAloudText] 洗一遍 (批次 2.4), 洗空了就什么都不念
+ *
+ * 半双工在应用那一侧 (批次 2.5): `LwSpeak` 出声时把麦克风那条链关上, 所以念出来的字不会被录回去,
+ * 顺带也不会把唤醒词自己叫醒
+ *
+ * 任何一轮结束都会念, 包括主人在界面里打字问的那些 —— "只在语音问的时候才念"是一个开关的事,
+ * 那属于浮标与设置那一批 (D14)
+ */
+function startReadAloud(ctx) {
+  // sessionId -> 这一轮最后那条助手正文,一轮里会有好几条, 后一条顶掉前一条
+  const pending = new Map()
+  ctx.on('session/event', (session, event) => {
+    if (session.meta?.origin === 'subagent') return
+    if (event.type === 'assistant/message') {
+      // 被打断的那条不作数: 它后面还可能跟着真正的回答
+      if (event.data.interrupted === true) {
+        pending.delete(session.id)
+        return
+      }
+      const content = Array.isArray(event.data.message?.content) ? event.data.message.content : []
+      pending.set(
+        session.id,
+        content
+          .filter((block) => block.type === 'text' && typeof block.text === 'string')
+          .map((block) => block.text)
+          .join('\n'),
+      )
+      return
+    }
+    if (event.type !== 'turn/end') return
+    const text = pending.get(session.id)
+    pending.delete(session.id)
+    if (text === undefined || event.data.reason?.kind !== 'completed') return
+    const spoken = readAloudText(text)
+    if (!spoken) return
+    voiceReading.count += 1
+    voiceReading.last = { at: Date.now(), characters: spoken.length, text: spoken }
+    voiceReading.error = null
+    // 不 await: 这是 emit 钩子, 念多久都不该把会话的事挡在后面
+    void call('speak', { op: 'speak', text: spoken })
+      .then((answer) => {
+        if (answer.spoken) return
+        voiceReading.error = `the engine did not report finishing: ${answer.detail}`
+        ctx.logger?.warn?.(voiceReading.error)
+      })
+      .catch((error) => {
+        voiceReading.error = `speaking failed: ${error?.message ?? error}`
+        ctx.logger?.warn?.(voiceReading.error)
+      })
+  })
 }
 
 /** Register the provider the page's voice input button resolves to */

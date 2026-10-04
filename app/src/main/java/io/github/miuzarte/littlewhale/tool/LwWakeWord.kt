@@ -6,6 +6,7 @@ import android.content.Intent
 import androidx.core.content.ContextCompat
 import io.github.miuzarte.littlewhale.util.Capability
 import io.github.miuzarte.littlewhale.util.PermissionGate
+import io.github.miuzarte.littlewhale.voice.VoiceInbox
 import io.github.miuzarte.littlewhale.voice.VoiceState
 import io.github.miuzarte.littlewhale.wake.WakeWordModel
 import io.github.miuzarte.littlewhale.wake.WakeWordService
@@ -103,6 +104,10 @@ internal object LwWakeWord {
             put("lastTruncated", VoiceState.lastTruncated)
             put("lastText", VoiceState.lastText ?: "")
             put("lastAt", VoiceState.lastAt)
+            put("delivered", VoiceState.delivered)
+            put("lastSeq", VoiceState.lastSeq)
+            put("speaking", VoiceState.speaking)
+            put("inbox", VoiceInbox.file(context).absolutePath)
             put(
                 "text",
                 table(
@@ -123,6 +128,9 @@ internal object LwWakeWord {
                         "segments cut" to "${VoiceState.segments} (recognised ${VoiceState.recognized},"
                             .plus(" pending ${VoiceState.pending}, dropped ${VoiceState.dropped})"),
                         "last text" to (VoiceState.lastText ?: "nothing yet"),
+                        "queued for the host" to "${VoiceState.delivered} line(s), last #${VoiceState.lastSeq}",
+                        "inbox" to VoiceInbox.file(context).absolutePath,
+                        "reading aloud" to VoiceState.speaking.toString(),
                         "last problem" to (WakeWordState.lastError ?: "none"),
                     ),
                 ),

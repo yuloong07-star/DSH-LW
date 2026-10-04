@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import io.github.miuzarte.littlewhale.voice.VoiceState
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -112,17 +113,27 @@ internal object LwSpeak {
         failure = null
         current = Utterance(lastId, latch)
         val interrupt = request.bool("interrupt", true)
-        pieces.forEachIndexed { index, piece ->
-            val id = "lw-speak-$spoken-$index"
-            val mode = if (interrupt && index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-            val result = tts.speak(piece, mode, null, id)
-            if (result != TextToSpeech.SUCCESS) {
-                current = null
-                unavailable("speaking", "the engine refused the utterance ($result)")
-            }
-        }
         val budget = (SPEAK_BUDGET_MS + text.length * SPEAK_BUDGET_PER_CHAR_MS).coerceAtMost(MAX_WAIT_MS)
-        val finished = latch.await(budget, TimeUnit.MILLISECONDS)
+        // 半双工: **先关麦克风再出声**, 反过来就有几十毫秒的喇叭内容被录进去,见 VoiceState.speaking
+        // 与采集那条链上的 halfDuplex 闸 —— 不采就不会把自己的声音录回去, 也叫不醒自己
+        //
+        // try 要包住整段: 喇叭排队失败时 `unavailable` 会抛, 那时标记也必须放回去, 不然麦克风就
+        // 一直关着, 下一次说话谁也听不见
+        VoiceState.speaking = true
+        val finished = try {
+            pieces.forEachIndexed { index, piece ->
+                val id = "lw-speak-$spoken-$index"
+                val mode = if (interrupt && index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                val result = tts.speak(piece, mode, null, id)
+                if (result != TextToSpeech.SUCCESS) {
+                    current = null
+                    unavailable("speaking", "the engine refused the utterance ($result)")
+                }
+            }
+            latch.await(budget, TimeUnit.MILLISECONDS)
+        } finally {
+            VoiceState.speaking = false
+        }
         val reported = failure
         current = null
         return buildJsonObject {
@@ -146,6 +157,8 @@ internal object LwSpeak {
         }
         val result = tts.stop()
         current = null
+        // 掐断了就不能让那道半双工的闸一直关着
+        VoiceState.speaking = false
         return buildJsonObject {
             put("stopped", result == TextToSpeech.SUCCESS)
             put("detail", "stop said $result")

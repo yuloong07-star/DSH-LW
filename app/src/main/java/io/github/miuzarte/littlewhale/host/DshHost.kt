@@ -27,6 +27,14 @@ object DshHost {
     /** Loopback port the GUI binds */
     const val PORT = 3080
 
+    /**
+     * dsh's own state directory inside the app sandbox, handed to it as `DSH_HOME`
+     *
+     * Anything the app and the host have to agree on a path for hangs off this one name, so it is
+     * spelled out here rather than in each of them (the voice inbox is the first such file)
+     */
+    const val HOME_DIR = "dsh-home"
+
     /** Host output lines kept for the status screen */
     private const val LOG_LINES = 300
 
@@ -151,7 +159,7 @@ object DshHost {
         val bash = File(libraryDir, "liblwbash.so")
         val ripgrep = File(libraryDir, "liblwrg.so")
         val entry = File(hostRoot(application), "node_modules/@deepseek-ai/dsh/lib/bin.js")
-        val home = File(application.filesDir, "dsh-home")
+        val home = File(application.filesDir, HOME_DIR)
         val temp = File(application.cacheDir, "tmp")
         home.mkdirs()
         temp.mkdirs()

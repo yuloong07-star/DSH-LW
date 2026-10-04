@@ -32,6 +32,7 @@ import io.github.miuzarte.littlewhale.overlay.OverlayService
 import io.github.miuzarte.littlewhale.tool.LwSpeech
 import io.github.miuzarte.littlewhale.voice.AudioCapture
 import io.github.miuzarte.littlewhale.voice.SpeechSegmenter
+import io.github.miuzarte.littlewhale.voice.VoiceInbox
 import io.github.miuzarte.littlewhale.voice.VoiceState
 import java.io.File
 import java.util.concurrent.ArrayBlockingQueue
@@ -82,7 +83,7 @@ internal object WakeWordState {
  *
  * **采集只有一路** ([AudioCapture]): 唤醒词与切段是同一段音频的两个消费者, 两个消费者都在采集
  * 线程上跑, 而切出来的整段话交给另一条线程去认 —— 在采集线程上认一段话会卡住采集几百毫秒, 那就
- * 是丢音频。这条链有三个独立的"成不成" (采集 / 切段 / 出字), 任何一个不成都不该把别的带走: 缺
+ * 是丢音频,这条链有三个独立的"成不成" (采集 / 切段 / 出字), 任何一个不成都不该把别的带走: 缺
  * silero 模型时唤醒词照样好用, 只是没有"说一句话进会话", 那时 [VoiceState] 要如实说明是哪一条
  *
  * 关键词不接受中文原文: sherpa-onnx 的 keywords 文件里每一行是**模型的 token 序列**加一个
@@ -110,7 +111,7 @@ class WakeWordService : Service() {
     private var modelDirectory: File? = null
 
     // 类型写出来是必须的: 这两个数从 Intent 那来的是 Double (extra 只有 double), 而 sherpa 的
-    // 配置要的是 Float。原来靠 `= DEFAULT_THRESHOLD` 推出来的类型是 Double, 于是同一个文件里
+    // 配置要的是 Float,原来靠 `= DEFAULT_THRESHOLD` 推出来的类型是 Double, 于是同一个文件里
     // ".toFloat() 赋给 Double 字段" 与 "Double 传给要 Float 的形参" 两处都过不了编译
     private var threshold = DEFAULT_THRESHOLD.toFloat()
     private var score = DEFAULT_SCORE.toFloat()
@@ -159,7 +160,7 @@ class WakeWordService : Service() {
      * 顺序是刻意的: 先看权限, 再建识别器 (它会读模型, 慢), 最后才开麦克风 —— 这样"缺权限"
      * 与"模型坏了"分得开, 而麦克风一旦开了就一定有人在读它
      *
-     * 只有唤醒词那一条是"起不来就别听了" (它是这个服务的门槛, 也是主人按下那个开关的意图)。切段
+     * 只有唤醒词那一条是"起不来就别听了" (它是这个服务的门槛, 也是主人按下那个开关的意图),切段
      * 与出字是两条**尽力而为**的附加链: silero 模型没下、识别模型没下、原生库起不来, 都只记在
      * [VoiceState] 里, 服务照常听着唤醒词 —— 反过来做就会变成"没下模型导致喊不醒"
      */
@@ -220,8 +221,7 @@ class WakeWordService : Service() {
         prepareSegmentation()
         prepareRecognition()
         val device = AudioCapture(::onCaptureError).also { capture = it }
-        device.add(keywordSink)
-        vad?.let { device.add(it) }
+        device.add(halfDuplex)
         if (!device.start()) {
             // 麦克风起不来是这条链的唯一硬失败: 谁来读都没有音频了
             stopListening()
@@ -240,6 +240,19 @@ class WakeWordService : Service() {
         announce(listeningText())
         Log.i(TAG, "listening for ${WakeWordState.keywords.joinToString()}")
         return true
+    }
+
+    /**
+     * 半双工那道闸, 也是采集上唯一挂着的消费者
+     *
+     * 喇叭正在说话时**谁都不许吃音频**: 不采就没有"把自己的声音录回去"这回事, 顺带也解决了
+     * 唤醒词被自己念的那句话叫醒,闸放在两个消费者之前 (而不是各自里面), 就是为了让"不许吃"
+     * 只写一次
+     */
+    private val halfDuplex = AudioCapture.Sink { samples ->
+        if (VoiceState.speaking) return@Sink
+        keywordSink.accept(samples)
+        vad?.accept(samples)
     }
 
     /**
@@ -267,7 +280,7 @@ class WakeWordService : Service() {
         VoiceState.segments += 1
         VoiceState.lastTruncated = vad?.lastWasTruncated ?: false
         if (!segments.offer(samples)) {
-            // 队列满 = 这台设备认不过来。丢的是最新的那一段, 而丢了多少必须看得见
+            // 队列满 = 这台设备认不过来,丢的是最新的那一段, 而丢了多少必须看得见
             VoiceState.dropped += 1
             Log.w(TAG, "the transcriber is behind: dropped a ${samples.size} sample segment")
         }
@@ -318,7 +331,7 @@ class WakeWordService : Service() {
     /**
      * 认字那条线程: 一段一段地认, 一次一段
      *
-     * 单独一条线程是必须的: SenseVoice 认一句要几百毫秒, 放在采集线程上就是几百毫秒不读麦克风。
+     * 单独一条线程是必须的: SenseVoice 认一句要几百毫秒, 放在采集线程上就是几百毫秒不读麦克风,
      * 队列留着上限, 满时丢最新的那一段并计数 —— 悄悄丢比报错更难查
      */
     private fun startTranscribing() {
@@ -350,15 +363,23 @@ class WakeWordService : Service() {
     }
 
     /**
-     * 出字之后去哪儿
+     * 出字之后去哪儿: 投进队列, 由宿主那侧读走并送进会话
      *
-     * **批次 1 只到这里**: 进日志与通知栏, 一句话都不进会话 —— 那一步是批次 2 的投递, 而它是"开始
-     * 自动把话发进对话"之前最后一道能改主意的关口, 所以单独一批、单独一个提交
+     * 这一句只做"投出去"这一件事, 而**投没投进去要如实说**: 写失败 (磁盘满 / 目录建不出来) 与
+     * 投出去了对主人是两回事, 所以失败时状态里留下原因, 通知栏也照它改
      */
     private fun deliver(text: String) {
         VoiceState.lastText = text
         VoiceState.lastAt = System.currentTimeMillis()
-        Log.i(TAG, "segment ${VoiceState.recognized}: $text")
+        val seq = VoiceInbox.append(this, text, SOURCE_VOICE)
+        if (seq == null) {
+            VoiceState.lastError = "could not queue \"$text\": the voice inbox file is not writable"
+            Log.w(TAG, VoiceState.lastError!!)
+        } else {
+            VoiceState.delivered += 1
+            VoiceState.lastSeq = seq
+            Log.i(TAG, "segment ${VoiceState.recognized} queued as #$seq: $text")
+        }
         runCatching { announce(listeningText()) }
     }
 
@@ -406,8 +427,7 @@ class WakeWordService : Service() {
         listening = false
         // 采集先停: 它同时喂着唤醒词与切段, 反过来的话手上那半段话会被下一帧接上, 切成一段怪的
         capture?.let { device ->
-            device.remove(keywordSink)
-            vad?.let(device::remove)
+            device.remove(halfDuplex)
             device.stop()
         }
         capture = null
@@ -550,6 +570,9 @@ class WakeWordService : Service() {
 
         /** 从 MainActivity 那一侧读得到的最后听到的词, 供界面显示 */
         const val EXTRA_HEARD = "heard"
+
+        /** 投递给宿主那行话的来源标记: 会话里据此看得出这是说出来的, 不是打字的 */
+        const val SOURCE_VOICE = "voice"
 
         /** 关键词检测是 16 kHz / 80 维 fbank, 与模型训练时那几个数对不上就什么都听不出来 */
         private const val FEATURE_DIM = 80
