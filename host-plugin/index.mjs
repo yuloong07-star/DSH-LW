@@ -89,6 +89,22 @@ const DISPLAY_ID = {
 }
 
 /**
+ * 屏参数的另一版: 可以省略, 省了就是"每一块屏"
+ *
+ * 与 [DISPLAY_ID] 的区别是刻意的: 那一版把 displayId 定成必填, 因为**动手**必须点名是哪一块屏
+ * (选中的屏是用户随时能改的); 而事件订阅只是**看**, 省略就等于全看, 那才是它的默认用法
+ *
+ * **声明必须在 `TOOLS` 数组之前**: `const` 不提升, 放到下面就是模块求值期抛错, 而那张表是模块级的
+ * —— 整包 UNSUPPORTED_SCHEMA, 会话里一个 `lw_*` 工具都不剩 (自检会报 "Cannot access ... before
+ * initialization")
+ */
+const WATCHED_DISPLAY = {
+  type: 'integer',
+  description: "Only this screen's changes; leave it out to watch every screen, which is the usual "
+    + 'thing here because watching is reading rather than acting',
+}
+
+/**
  * What one acting call is for, said by the caller in its own words
  *
  * Every call that changes something on a screen carries one, the way an agent framework asks for a
@@ -1269,6 +1285,78 @@ const TOOLS = [
     },
   ),
 
+  // ---- 1.0.3 批次 6: 事件订阅 ----
+  //
+  // 这一批要改的是模型的**读法**: 按一下之后不要马上反复 lw_ui, 而是先说清"我在等什么", 再等它发生。
+  // 事件由系统送进服务那条有界队列 (掩码里就四个类型), 这两条工具读的就是那根游标
+
+  simpleTool(
+    'lw_events_subscribe',
+    'Start watching a screen for changes, so a later call can be told what happened instead of'
+    + ' asking again and again. Use it right after an action that makes something change: the'
+    + ' answer lists what had just happened in the same scope (so you are not blind to the moments'
+    + ' before you started) and hands back an id. Then lw_events_wait with that id collects what'
+    + ' happens next. **This is how to stop polling**: lw_ui reads a snapshot and costs a round'
+    + ' trip, while a subscription costs nothing until something actually changes. A subscription'
+    + ' lives for lifeMs (ten minutes by default) and then forgets itself; op=stop ends one early,'
+    + ' op=list shows the live ones. The four kinds are window (a different window or activity came'
+    + ' up), content (the inside of a window changed), focus (a field was focused) and scroll.',
+    'eventsSubscribe',
+    {
+      op: {
+        type: 'string',
+        description: 'start watching (the default), stop one, or list the live ones',
+        enum: ['start', 'stop', 'list'],
+      },
+      id: { type: 'string', description: 'For op=stop: the id the subscription was given' },
+      displayId: WATCHED_DISPLAY,
+      kind: {
+        type: 'string',
+        description: 'Only this kind of change; leave it out for all four',
+        enum: ['window', 'content', 'focus', 'scroll'],
+      },
+      package: { type: 'string', description: 'Only changes from this app, by package name' },
+      lifeMs: {
+        type: 'integer',
+        description: 'How long the subscription lives, in milliseconds. Default 600000 (ten'
+          + ' minutes), at most 1800000',
+      },
+    },
+  ),
+
+  simpleTool(
+    'lw_events_wait',
+    'Wait until something changes on a screen, then answer with what happened. Give it the id of a'
+    + ' subscription from lw_events_subscribe to carry on from where that one got to, or pass the'
+    + ' filters instead and it watches just for this one call. It answers with the changes in order,'
+    + ' with how long after the wait started each one landed, and says so plainly when nothing'
+    + ' changed in that time - which is itself a useful answer, and cheaper than reading the screen'
+    + ' twice. Events arrive throttled by the system (about ten a second) and identical ones in a'
+    + ' row are collapsed into one line with a count, so a scroll shows up as a line rather than as'
+    + ' hundreds.',
+    'eventsWait',
+    {
+      displayId: WATCHED_DISPLAY,
+      id: {
+        type: 'string',
+        description: 'The subscription to carry on from; leave it out to watch just for this call'
+          + ' using the filters below',
+      },
+      kind: {
+        type: 'string',
+        description: 'Only this kind of change; leave it out for all four',
+        enum: ['window', 'content', 'focus', 'scroll'],
+      },
+      package: { type: 'string', description: 'Only changes from this app, by package name' },
+      timeoutMs: {
+        type: 'integer',
+        description: 'How long to wait before answering that nothing happened. Default 15000, at'
+          + ' most 90000',
+      },
+      limit: { type: 'integer', description: 'At most this many events to print. Default 20' },
+    },
+  ),
+
 ]
 
 /** One request, one response: the app answers a single line and closes the connection */
@@ -1395,7 +1483,9 @@ function answerOf(result) {
   return JSON.stringify(result)
 }
 
-/** The `hold` parameter of an acting tool, said once and shared by both of them */
+/**
+ * The `hold` parameter of an acting tool, said once and shared by both of them
+ */
 function holdParameter(tail) {
   const names = Object.entries(HOLD_NAMES).map(([name, ms]) => `${name} (${ms}ms)`).join(', ')
   return {

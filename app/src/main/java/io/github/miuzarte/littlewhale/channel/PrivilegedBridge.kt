@@ -2,6 +2,7 @@ package io.github.miuzarte.littlewhale.channel
 
 import android.graphics.Rect
 import android.util.Log
+import io.github.miuzarte.littlewhale.tool.LwEvents
 import io.github.miuzarte.littlewhale.tool.LwFiles
 import io.github.miuzarte.littlewhale.tool.LwKeepAwake
 import io.github.miuzarte.littlewhale.tool.LwMedia
@@ -903,6 +904,9 @@ object PrivilegedBridge {
         "takePhoto" -> appContext { LwPhoto.dispatch(it, request) }
         // 通知栏那一侧: 读的是系统绑在本进程里的监听服务, 与无障碍同一条路
         "notifications" -> appContext { LwNotifications.dispatch(it, request) }
+        // 1.0.3 批次 6: 事件订阅 —— 让模型"等到一件事发生", 而不是反复读屏
+        "eventsSubscribe" -> LwEvents.subscribe(request)
+        "eventsWait" -> LwEvents.wait(request)
         "power" -> appContext { LwPower.dispatch(it, request) }
         "syscmd" -> LwSystemCommand.dispatch(request)
 

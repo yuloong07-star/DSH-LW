@@ -155,7 +155,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 **1.0.2 又加了这些**, 都在同一个插件里, 由 `simpleTool` 那个工厂生成 (它们的形状一样): `lw_notify` / `lw_vibrate` / `lw_clipboard` / `lw_share` / `lw_open_file` / `lw_download` / `lw_device` / `lw_battery` / `lw_storage` / `lw_running` / `lw_volume` / `lw_media` / `lw_net` / `lw_system` / `lw_sensor` / `lw_location` / `lw_permissions` / `lw_power` / `lw_app_control` / `lw_wait_for` / `lw_ui_dump` / `lw_gesture` / `lw_pinch`
 
-**1.0.3 加的 (共 46 个工具)**: `lw_scroll` (走无障碍的滚动动作, 不注入触摸) / `lw_keep_awake` (`PARTIAL_WAKE_LOCK`, 谁开谁关) / `lw_key_combo` (`input keycombination`, 二到四个键) / `lw_intent` (`openUrl` 打开 http(s) 链接, `intent` 按动作或组件起一个 activity) / `lw_files` (工作区里的列 / 读 / 写, 每一条都带上"手机怎么看这个文件") / `lw_media_scan` (让媒体库看见一个路径) / `lw_take_photo` (系统相机拍一张, 落在工作区的 `photos/`) / `lw_notifications` (读通知栏与清通知)。另外 `lw_app_control` 多了 `enable` / `disable` / `setHome`, `lw_screenshot` 多了分区 (`x` / `y` / `width` / `height`) 与连拍 (`count`, 最多 5 张), `lw_type` 多了 `x` / `y` (先按那一点再打字), `lw_notify` 多了 `banner` (全屏 intent)。**`disable` 与那四条破坏性的一样要人点一下确认** —— 它比停应用更粘: 被停用的应用从桌面上消失, 要有人记得回去打开
+**1.0.3 加的 (共 48 个工具)**: `lw_scroll` (走无障碍的滚动动作, 不注入触摸) / `lw_keep_awake` (`PARTIAL_WAKE_LOCK`, 谁开谁关) / `lw_key_combo` (`input keycombination`, 二到四个键) / `lw_intent` (`openUrl` 打开 http(s) 链接, `intent` 按动作或组件起一个 activity) / `lw_files` (工作区里的列 / 读 / 写, 每一条都带上"手机怎么看这个文件") / `lw_media_scan` (让媒体库看见一个路径) / `lw_take_photo` (系统相机拍一张, 落在工作区的 `photos/`) / `lw_notifications` (读通知栏与清通知) / `lw_events_subscribe` 与 `lw_events_wait` (事件订阅: 等到一件事发生, 而不是反复读屏)。另外 `lw_app_control` 多了 `enable` / `disable` / `setHome`, `lw_screenshot` 多了分区 (`x` / `y` / `width` / `height`) 与连拍 (`count`, 最多 5 张), `lw_type` 多了 `x` / `y` (先按那一点再打字), `lw_notify` 多了 `banner` (全屏 intent)。**`disable` 与那四条破坏性的一样要人点一下确认** —— 它比停应用更粘: 被停用的应用从桌面上消失, 要有人记得回去打开
 
 **`lw_files` 是三条路里最容易被写成重复的那一条**: 这个会话自己就带着 `read` / `write` / `glob` / `grep` / `bash` (`packages/fs/*` + `packages/shell/*`), 而工作区就是那套工具的家 (进程 cwd 与 home 都在那儿), 所以"在工作区里读写一个文件"模型本来就会做 —— 加三个同名的工具只会让它在两个都行的选择之间犹豫。所以它**只做 app 这一侧拿得到的三件事**: 手机怎么看这个文件 (媒体库有没有它、系统认的 mime、一张图多大), 一个不随会话目录漂移的锚 (工作区是 `Workspace.resolve` 解析出来的, 而会话的目录是用户在界面里选的), 以及**写完顺手让系统看见** (两步动作模型只会记住一步)。围栏照计划书: 只认工作区里的路径, 越界一律拒
 
@@ -269,6 +269,35 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **模拟器上 `cmd notification post` 投不出通知**: 它打印 `posting: Notification(...)` 而通知栏里一条都
   没有 (系统那份 `NotificationRecord` 列表里查不到), 所以验 `lw_notifications` 时别拿它造数据 ——
   用栏里本来就有的别人的通知, 或者 `lw_notify` 自己发的那条 (它 id 固定, 一次只有一条可清的)
+
+## 事件订阅
+
+链路: 系统把事件送进 `LwAccessibility.onAccessibilityEvent` (**app 进程里**) → 一条有界队列 →
+`LwEvents` 的订阅 (游标 + 三个过滤条件) → 工具 `lw_events_subscribe` / `lw_events_wait`。**这一批改的
+是模型的读法**: 按一下之后与其反复 `lw_ui`, 不如先说清"我在等什么", 再等它发生
+
+- **掩码就是 `<xml>` 里那四个** (`typeWindowStateChanged|typeWindowContentChanged|typeViewFocused|`
+  `typeViewScrolled`), **不用 `typeAllMask`**: 那四个涵盖了"换窗口/内容变/聚焦/滚动", 而全掩码会把每一条
+  View 事件都灌进来。`notificationTimeout="100"` 是同一件事的另一半 —— 系统自己就把事件压到每秒十条上下
+- **一条订阅是一根游标, 不是一份拷贝**: `Watch` 只记"读到哪了"与三个过滤条件, 事件本身留在队列里。
+  所以订阅再多也不涨内存, 而"我订阅之前刚发生了什么"仍然读得到 (订阅那一步回看队列尾部几条)
+- **队列是有界的, 而且这件事看得见**: 上限 200 条, **同一类事件 400ms 内连着来就合并成一行** (带 `xN`
+  计数, 滚动因此是一行而不是几百行), 满了丢最旧的并累加一个丢弃计数。`lw_events_subscribe` 的答案里
+  会印"缓冲里现在有几条 / 上限多少 / 这个会话丢过几条" —— 一个数字涨到上限就不再涨, 那才是"不会无限涨"
+  的证据, 而不是一句注释
+- **事件上没有 displayId**: `AccessibilityEvent` 只有 `windowId` (display 那个字段不存在, 用 `javap` 查过),
+  所以屏是拿 windowId 去 `windowsOnAllDisplays()` 里**反查**出来的, 结果缓存一秒 (读窗口表要过 binder,
+  而事件一秒能来十几条)。查不到就是 **-1**, 不猜 0 —— 0 是别人手里那台手机
+- **`event.eventTime` 是 uptime 那一套**, 而别处用的是墙钟: 两者相减永远是负数, 于是每一行都印 `+0ms`。
+  所以偏移一律拿 `SystemClock.uptimeMillis()` 当基准, 而且基准取**念出来的第一条**而不是"这次调用开始的
+  时刻" —— 订阅与 wait 之间发生的事也要被念出来, 那些在调用之前
+- **等是轮询队列 (150ms 一次), 不是等服务回调**: 队列读的是内存, 而 `notificationTimeout` 已经把事件
+  压到十条每秒, 让服务反向通知反而要引入一套线程协议。**游标在答完之后才前移**, 而且念不下的那些
+  (超过 `limit`) 也一起前移 —— 否则下一次 wait 会把它们再念一遍
+- **`Heard` 声明在文件顶层**: companion 里嵌套的类, 外面要写成 `LwAccessibility.Companion.Heard` 才引用
+  得到, 而这个文件的惯例 (与 `UiNode` / `UiTree` / `UiTap` 一样) 就是顶层放数据类
+- 一次性的 wait (不带 `id`) 会建一个临时订阅, 答完就丢; 订阅自己也会过期 (`lifeMs`, 默认十分钟), 所以
+  忘了它的订阅不会留下永不消失的状态
 
 ## 端侧 OCR
 
