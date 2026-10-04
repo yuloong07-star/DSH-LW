@@ -437,8 +437,25 @@ class LwAccessibility : AccessibilityService() {
             }
         }
 
+        /**
+         * 这块屏上现在画着的是哪个应用
+         *
+         * `lw_take_photo` 用它分辨"相机真的开了"与"这次启动被系统丢掉了": 后者不抛异常、不报错,
+         * 屏上还是原来那个界面, 而调用方会以为相机正开着等人按快门 —— 同一类静默失败在这个仓库里
+         * 已经踩过两次 (熄屏的截图、被丢掉的 secure settings 写入)
+         *
+         * @return 包名。null 有两种意思 (服务没开, 或者这块屏上没有应用窗口), 用 [running] 分开
+         */
+        fun packageOn(displayId: Int): String? = try {
+            windowOn(displayId)?.root?.packageName?.toString()
+        } catch (error: Throwable) {
+            Log.d(TAG, "could not read the package on display $displayId", error)
+            null
+        }
+
         /** The window a caller means, preferring the one an app is actually showing there */
-        private fun windowOn(displayId: Int): AccessibilityWindowInfo? {            val all = try {
+        private fun windowOn(displayId: Int): AccessibilityWindowInfo? {
+            val all = try {
                 instance?.windowsOnAllDisplays
             } catch (error: Throwable) {
                 Log.w(TAG, "could not read the windows", error)

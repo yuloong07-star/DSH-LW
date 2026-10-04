@@ -1154,6 +1154,81 @@ const TOOLS = [
     },
   ),
 
+  // ---- 1.0.3 批次 4: 工作区里的文件、媒体库、拍照 ----
+  //
+  // 这三条与 1.0.2 那一批同形 (app 进程里用 Context 做, 走桥只为把结果按同一套协议送回来), 但
+  // `lw_files` 的说明要多说一句它**不**是什么: 这个会话自己就带着 read / write / glob, 而工作区
+  // 就是那套工具的家, 所以模型不该为了"在工作区里读写一个文件"来这里
+
+  simpleTool(
+    'lw_files',
+    'Look at the work area the way the phone does: list a directory, read a text file, write one.'
+    + ' Reach for this when the question is about what the *device* makes of a file - whether the'
+    + ' media library lists it (that is what the gallery, the music player and a file manager read),'
+    + ' what type the system calls it, how big a picture is - or when a file has to be written and'
+    + ' the phone has to see it in the same step. Writing scans the file afterwards, so a picture'
+    + ' lands in the gallery without a second call. **Paths are resolved against the work area**'
+    + ' (a relative one starts there, and anything outside it is refused), which is the one anchor'
+    + ' that does not drift with the session\'s own directory. This is not a replacement for this'
+    + ' session\'s own read / write / glob tools: those work anywhere the session is allowed to, and'
+    + ' they are the ones to use inside the work area for anything else.',
+    'files',
+    {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'list a directory, read a text file, or write one',
+        enum: ['list', 'read', 'write'],
+      },
+      path: {
+        type: 'string',
+        description: 'The file or directory, relative to the work area or absolute inside it.'
+          + ' Required for read and write; list defaults to the work area itself',
+      },
+      text: {
+        type: 'string',
+        description: 'What to write, required when op is write. Text only - a binary file has to'
+          + ' be built by something else',
+      },
+    },
+  ),
+
+  simpleTool(
+    'lw_media_scan',
+    'Ask the Android media library to index a file or a directory, and answer with what it made'
+    + ' of each file. Use it after something wrote a picture, a video or a piece of audio that the'
+    + ' gallery still cannot see: a file that lands in shared storage is not in the library until'
+    + ' something scans it, and that is the difference between "the file is there" and "the person'
+    + ' can find it". A relative path starts at the work area and an absolute one is taken as it is,'
+    + ' so a file inside the work area works either way and one outside it (Downloads, for instance)'
+    + ' has to be named in full - this only asks the system to index it and hands back the library\'s'
+    + ' own answer, so it discloses no content. A file the scanner does not add (a `.nomedia`'
+    + ' directory, a type it does not index) is reported as exactly that rather than as a failure.',
+    'mediaScan',
+    { path: { type: 'string', required: true, description: 'The file or directory to index' } },
+  ),
+
+  simpleTool(
+    'lw_take_photo',
+    'Take a photo with the device\'s own camera app, and leave it in the work area. This is for'
+    + ' "show me what is in front of the phone" or "photograph this": it opens the system camera on'
+    + ' the phone\'s own screen and waits (up to waitMs) for a picture to be written. **A person has'
+    + ' to press the shutter** - the shutter is on the phone\'s screen, not on a virtual screen of'
+    + ' ours, so this only works with someone holding the device. It answers whether the camera'
+    + ' really came up, and whether a photo landed; when nothing did, the empty file it made is'
+    + ' removed rather than left behind. Read the result back with read_image to see it, or hand it'
+    + ' to the person with lw_open_file.',
+    'takePhoto',
+    {
+      waitMs: {
+        type: 'integer',
+        description: 'How long to wait for the photo, in milliseconds. Default 20000, at most'
+          + ' 120000 - a person has to take it in that time',
+      },
+      note: NOTE,
+    },
+  ),
+
 ]
 
 /** One request, one response: the app answers a single line and closes the connection */

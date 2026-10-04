@@ -223,6 +223,11 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- 相机应用: 不声明这一条, `lw_take_photo` 的 `queryIntentActivities` 会**空手而归而相机
+             就在那儿** (Android 11 起别的包对它不可见), 于是"这台设备不能拍照"会是一句假话 -->
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
     </queries>
 
 </manifest>

@@ -2,8 +2,11 @@ package io.github.miuzarte.littlewhale.channel
 
 import android.graphics.Rect
 import android.util.Log
+import io.github.miuzarte.littlewhale.tool.LwFiles
 import io.github.miuzarte.littlewhale.tool.LwKeepAwake
+import io.github.miuzarte.littlewhale.tool.LwMedia
 import io.github.miuzarte.littlewhale.tool.LwNotify
+import io.github.miuzarte.littlewhale.tool.LwPhoto
 import io.github.miuzarte.littlewhale.tool.LwPower
 import io.github.miuzarte.littlewhale.tool.LwSystem
 import io.github.miuzarte.littlewhale.tool.LwSystemCommand
@@ -869,7 +872,8 @@ object PrivilegedBridge {
 
         // 下面这一批是 1.0.2 加的: 通知、震动、剪贴板、分享、下载在 app 进程里自己做, 不需要特权;
         // 设备与系统信息同理 (读的多); 这几条回的都是 {"text": ...}, 由插件念给模型
-        "notify" -> appContext { LwNotify.notify(it, request) }        "vibrate" -> appContext { LwNotify.vibrate(it, request) }
+        "notify" -> appContext { LwNotify.notify(it, request) }
+        "vibrate" -> appContext { LwNotify.vibrate(it, request) }
         "clipboard" -> appContext { LwNotify.clipboard(it, request) }
         "share" -> appContext { LwNotify.share(it, request) }
         "openFile" -> appContext { LwNotify.openFile(it, request) }
@@ -887,6 +891,10 @@ object PrivilegedBridge {
         "permissions" -> appContext { text(PermissionCatalog.report(it)) }
         // 1.0.3: 让设备别睡 —— app 进程里一个 PARTIAL_WAKE_LOCK 就够, 不必过特权
         "keepAwake" -> LwKeepAwake.dispatch(request)
+        // 1.0.3 批次 4: 工作区里那几个文件与手机那一侧的读数、让媒体库看见、拍一张照
+        "files" -> appContext { LwFiles.dispatch(it, request) }
+        "mediaScan" -> appContext { LwMedia.dispatch(it, request) }
+        "takePhoto" -> appContext { LwPhoto.dispatch(it, request) }
         "power" -> appContext { LwPower.dispatch(it, request) }
         "syscmd" -> LwSystemCommand.dispatch(request)
 
