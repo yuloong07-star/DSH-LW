@@ -17,6 +17,13 @@
 
 import { connect } from 'node:net'
 
+import { createHash, randomUUID } from 'node:crypto'
+import { createWriteStream } from 'node:fs'
+import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { join } from 'node:path'
+
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 /** Set by the app when it starts the host; both absent everywhere else */
@@ -69,6 +76,18 @@ export function apply(ctx) {
   // nobody watching it, so a question is not a safety net, it is a stall. The approval log still
   // records that a decision was made and what it was
   ctx.on('approval/request', (_request, _next) => Promise.resolve('allowed-once'), { prepend: true })
+
+  // 语音输入是 dsh 里可选的一套 (voice-input bundle 带的那个客户端录音按钮): 服务在才注册
+  // 本机的转写 provider, 不在就什么都不做 —— 一个可选能力不该让 lw_* 那堆工具跟着挂
+  try {
+    if (typeof ctx.inject === 'function') {
+      ctx.inject(['speechToText'], (speechCtx) => {
+        registerVoiceInput(speechCtx)
+      })
+    }
+  } catch (error) {
+    ctx.logger?.warn?.(`the on-device speech provider was not registered: ${error.message}`)
+  }
 }
 
 /** The display a call is about, which is the id `lw_screen` reports and nothing else */
@@ -993,6 +1012,64 @@ const TOOLS = [
       durationMs: { type: 'integer', description: 'How long the pinch takes. Default 300' },
     },
   ),
+  defineTool({
+    name: 'lw_speech',
+    description:
+      'Transcribe speech on this phone with no network and no API key: the app links sherpa-onnx '
+      + 'and runs SenseVoice (Chinese, English, Cantonese, Japanese and Korean, with punctuation) '
+      + 'in its own process, so the audio never leaves the device. op=status reports the engine and '
+      + 'whether the model is on disk; op=prepare downloads it once, about 240 MB from the '
+      + 'hf-mirror copy of the model (huggingface.co itself is unreachable from this phone); '
+      + 'op=transcribe turns one 16 kHz mono PCM16 WAV file into text. This is the same engine the '
+      + "GUI's own voice input button uses, so prepare is what makes that button usable.",
+    parameters: {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'status, prepare or transcribe',
+      },
+      wav: {
+        type: 'string',
+        description:
+          'Absolute path of a 16 kHz mono PCM16 WAV file, required for op=transcribe',
+      },
+      language: {
+        type: 'string',
+        description:
+          'auto, zh, en, yue, ja or ko (default auto, which lets the model decide)',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      if (args.op === 'status') {
+        const info = await speechInspect()
+        return [
+          `engine ${info.engine} ${info.sherpa} (onnxruntime ${info.onnxruntime})`,
+          `model ${info.model} in ${info.directory}`,
+          info.present
+            ? `downloaded: ${info.modelBytes} bytes of weights, ${info.tokensBytes} bytes of tokens`
+            : 'the model is not downloaded yet, so op=prepare is what comes first',
+          `loaded in memory: ${info.loaded ? 'yes' : 'no'}`,
+          `languages: ${info.languages}`,
+        ].join('\n')
+      }
+      if (args.op === 'prepare') {
+        const info = await speechPrepare()
+        return `the model is ready in ${info.directory}; the GUI voice input button (and`
+          + ' op=transcribe) can use it now'
+      }
+      if (args.op === 'transcribe') {
+        if (!args.wav) throw new Error('op=transcribe names the recording with wav=<a 16 kHz mono WAV>')
+        const answer = await speechTranscribe(args.wav, args.language)
+        return `${answer.text}\n\n(${answer.seconds.toFixed(1)}s of audio, ${answer.language},`
+          + ` ${answer.elapsedMs} ms of inference)`
+      }
+      throw new Error(`op has to be status, prepare or transcribe, not "${args.op}"`)
+    },
+  }),
 ]
 
 /** One request, one response: the app answers a single line and closes the connection */
@@ -1640,4 +1717,184 @@ function sameRect(a, b) {
 /** A report a model can read, with the structured answer kept underneath it */
 function withJson(lines, result) {
   return [...lines, '', JSON.stringify(result, null, 2)].join('\n')
+}
+
+/* ------------------------------------------------------------------ on-device speech */
+
+/**
+ * dsh's voice input records in the page (getUserMedia + MediaRecorder) and hands the host a
+ * canonical 16 kHz mono PCM16 WAV to transcribe. The official local provider wants
+ * sherpa-onnx-node, and that package ships native addons for darwin / linux / win only - there is
+ * no android-arm64 build to load - so this host registers a provider that hands the audio back to
+ * the app: the APK links sherpa-onnx statically and answers the `speech` channel method.
+ *
+ * The model is not in the APK (SenseVoice int8 is around 240 MB) and is not in this repository:
+ * it is downloaded into the app's private directory on demand. huggingface.co cannot be reached
+ * from this phone, so the hf-mirror copy is tried first. Both files are checked against the sha256
+ * the official voice-input bundle publishes, so a mirror cannot quietly hand over something else.
+ */
+const SPEECH_PROVIDER_ID = 'lw-native'
+
+const SPEECH_LANGUAGES = ['auto', 'zh', 'en', 'yue', 'ja', 'ko']
+
+const SPEECH_SOURCES = [
+  'https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main',
+  'https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main',
+]
+
+const SPEECH_FILES = [
+  {
+    name: 'model.int8.onnx',
+    bytes: 239233841,
+    sha256: 'c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51',
+  },
+  {
+    name: 'tokens.txt',
+    bytes: 315894,
+    sha256: 'f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc',
+  },
+]
+
+/** How far the model is, as the page's voice input reads it */
+const speechState = { phase: 'checking', detail: 'looking for the model' }
+const speechListeners = new Set()
+
+function speechAnnounce(phase, detail) {
+  speechState.phase = phase
+  speechState.detail = detail
+  for (const listener of speechListeners) {
+    try {
+      listener()
+    } catch {
+      // one observer throwing must not stop the others
+    }
+  }
+}
+
+async function speechSize(path) {
+  try {
+    return (await stat(path)).size
+  } catch {
+    return -1
+  }
+}
+
+/** What the engine and the model say right now, without downloading anything */
+async function speechInspect() {
+  const info = await call('speech', { op: 'status' })
+  const sizes = await Promise.all(
+    SPEECH_FILES.map((file) => speechSize(join(info.directory, file.name))),
+  )
+  const present = SPEECH_FILES.every((file, index) => sizes[index] === file.bytes)
+  speechAnnounce(
+    present ? 'ready' : 'unprepared',
+    present ? `sherpa-onnx ${info.sherpa}` : 'the model is not downloaded yet',
+  )
+  return { ...info, present }
+}
+
+/** Fetch the model once, from whichever mirror answers */
+async function speechPrepare() {
+  const info = await speechInspect()
+  if (info.present) return info
+  await mkdir(info.directory, { recursive: true })
+  for (const file of SPEECH_FILES) {
+    const target = join(info.directory, file.name)
+    if (await speechSize(target) === file.bytes) continue
+    await speechDownload(file, target)
+  }
+  speechAnnounce('ready', `sherpa-onnx ${info.sherpa}`)
+  return { ...info, present: true }
+}
+
+async function speechDownload(file, target) {
+  let failure = null
+  for (const base of SPEECH_SOURCES) {
+    const partial = `${target}.part`
+    try {
+      speechAnnounce('downloading', `${file.name} from ${new URL(base).host}`)
+      const response = await fetch(`${base}/${file.name}`)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const digest = createHash('sha256')
+      let received = 0
+      const meter = new Transform({
+        transform(chunk, _encoding, callback) {
+          digest.update(chunk)
+          received += chunk.length
+          speechState.bytes = received
+          speechState.total = file.bytes
+          callback(null, chunk)
+        },
+      })
+      await pipeline(Readable.fromWeb(response.body), meter, createWriteStream(partial))
+      const actual = digest.digest('hex')
+      if (actual !== file.sha256) throw new Error(`sha256 ${actual} is not ${file.sha256}`)
+      await rename(partial, target)
+      return
+    } catch (error) {
+      failure = error
+      await rm(partial, { force: true })
+    }
+  }
+  speechAnnounce('failed', String(failure?.message ?? failure))
+  throw new Error(`could not download ${file.name}: ${failure?.message ?? failure}`)
+}
+
+/** One recording through the app's own engine; a missing model is an error, not a 240 MB surprise */
+async function speechTranscribe(wav, language) {
+  const info = await speechInspect()
+  if (!info.present) {
+    throw new Error('the speech model is not downloaded yet: run lw_speech op=prepare once')
+  }
+  return await call('speech', { op: 'transcribe', wav, language: language ?? 'auto' })
+}
+
+/** Register the provider the page's voice input button resolves to */
+function registerVoiceInput(ctx) {
+  const speech = ctx.speechToText
+  if (!speech || typeof speech.register !== 'function') return
+  speech.register({
+    info: {
+      id: SPEECH_PROVIDER_ID,
+      name: 'On-device SenseVoice (sherpa-onnx)',
+      location: 'host-local',
+      languages: SPEECH_LANGUAGES,
+      downloadSources: SPEECH_SOURCES,
+      setupEstimate: {
+        recommendedDiskBytes: 260 * 1024 * 1024,
+        expectedMemoryBytes: 700 * 1024 * 1024,
+        minimumMinutes: 1,
+        maximumMinutes: 30,
+      },
+    },
+    preparation: {
+      snapshot: () => ({ ...speechState }),
+      prepare: async () => {
+        await speechPrepare()
+      },
+      cancel: async () => {
+        speechAnnounce('ready', 'cancelled')
+      },
+      subscribe: (listener) => {
+        speechListeners.add(listener)
+        return () => speechListeners.delete(listener)
+      },
+    },
+    async transcribe({ audio, language }) {
+      const info = await speechInspect()
+      if (!info.present) {
+        throw new Error('the speech model is not downloaded yet: run lw_speech op=prepare once')
+      }
+      const wav = join(info.directory, `recording-${randomUUID()}.wav`)
+      await writeFile(wav, Buffer.from(audio))
+      try {
+        const answer = await speechTranscribe(wav, language)
+        return { text: answer.text }
+      } finally {
+        await rm(wav, { force: true })
+      }
+    },
+  })
+  // Look once at load so the page knows whether this provider is usable, without downloading
+  void speechInspect().catch((error) => speechAnnounce('failed', String(error?.message ?? error)))
 }
