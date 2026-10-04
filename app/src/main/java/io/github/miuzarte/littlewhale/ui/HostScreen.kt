@@ -625,6 +625,10 @@ private fun HostWebView(url: String, modifier: Modifier = Modifier) {
                 // a desktop browser reach the same server with different appearance settings
                 settings.domStorageEnabled = true
                 settings.allowFileAccess = false
+                // dsh 的朗读在页面里播放音频, 而 WebView 默认要有用户手势才放音: 消息到了
+                // 自动朗读会在没有手势的时候被拦掉, 这一条就是给它的 (系统引擎那一路走
+                // 通道的 speak, 不经页面, 不受这条影响)
+                settings.mediaPlaybackRequiresUserGesture = false
                 // Compose sizes an AndroidView through the modifier and leaves layoutParams at
                 // WRAP_CONTENT, and a WebView in that state resolves every viewport unit to 0,
                 // which collapses the dialogs, menus and directory picker dsh measures in vh,

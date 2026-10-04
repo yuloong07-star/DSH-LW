@@ -1,0 +1,245 @@
+package io.github.miuzarte.littlewhale.tool
+
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+
+/**
+ * 本机朗读: 把一段文字交给系统语音合成念出来
+ *
+ * 为什么是这一条: 它是这台手机上唯一不需要密钥、不需要联网的语音输出 —— 引擎是 ROM 自带的
+ * (vivo 的 AIService / AiAgent 声明了 `android.intent.action.TTS_SERVICE`, 见
+ * AndroidManifest.xml 里 queries 那一条: Android 11 起不声明, 系统引擎对本应用就是不可见的),
+ * 而网络那几家 (edge-tts、MiMo TTS) 要么走别人的服务, 要么要密钥
+ *
+ * 四个动作: `status` 看引擎与中文音色在不在, `speak` 念一段, `stop` 掐断正在念的, `release`
+ * 把引擎还回去 (初始化要几百毫秒, 所以平时留着复用)
+ */
+internal object LwSpeak {
+
+    /** 引擎初始化与一次朗读各自的上限; 到点就说没念完, 不无限等 */
+    private const val INIT_BUDGET_MS = 8_000L
+    private const val SPEAK_BUDGET_MS = 15_000L
+    private const val SPEAK_BUDGET_PER_CHAR_MS = 250L
+    private const val MAX_WAIT_MS = 120_000L
+
+    /** 正在等的那一条: 只有它的完成/出错才算这一次念完了 */
+    private class Utterance(val id: String, val latch: CountDownLatch)
+
+    private val lock = Any()
+    private var engine: TextToSpeech? = null
+
+    @Volatile
+    private var current: Utterance? = null
+
+    @Volatile
+    private var failure: String? = null
+
+    @Volatile
+    private var spoken: Int = 0
+
+    fun dispatch(context: Context, request: JsonObject): JsonObject = when (val op = request.string("op")) {
+        "status" -> status(context)
+        "speak" -> speak(context, request)
+        "stop" -> stop()
+        "release" -> release()
+        else -> throw IllegalArgumentException("op has to be status, speak, stop or release, not \"$op\"")
+    }
+
+    /** 引擎现在什么样: 有没有引擎、默认是哪一个、中文音色能不能用 */
+    private fun status(context: Context): JsonObject {
+        val attempt = runCatching { engine(context) }
+        val tts = attempt.getOrNull()
+        val chinese = tts?.let { runCatching { it.setLanguage(Locale.CHINESE) }.getOrElse { -99 } }
+        val voices = tts?.let { runCatching { it.voices }.getOrNull() }
+        return buildJsonObject {
+            put("engine", tts?.defaultEngine ?: "unavailable")
+            put("voices", voices?.size ?: 0)
+            put(
+                "chineseVoices",
+                voices
+                    ?.filter { it.locale.language == "zho" || it.locale.language == "zh" }
+                    ?.take(6)
+                    ?.joinToString(", ") { it.name }
+                    .orEmpty(),
+            )
+            put(
+                "chinese",
+                when (chinese) {
+                    TextToSpeech.LANG_AVAILABLE -> "available"
+                    TextToSpeech.LANG_COUNTRY_AVAILABLE -> "available (country)"
+                    TextToSpeech.LANG_COUNTRY_VAR_AVAILABLE -> "available (variant)"
+                    TextToSpeech.LANG_MISSING_DATA -> "missing data: the engine still has to download its Chinese voice"
+                    TextToSpeech.LANG_NOT_SUPPORTED -> "not supported by this engine"
+                    null -> "unknown: the engine did not come up (${attempt.exceptionOrNull()?.message})"
+                    else -> "unknown ($chinese)"
+                },
+            )
+            put("speaking", current != null)
+            put("utterances", spoken)
+        }
+    }
+
+    /** 念一段: 太长就按句切, 只等最后一片念完 */
+    private fun speak(context: Context, request: JsonObject): JsonObject {
+        val text = request.string("text").trim()
+        if (text.isEmpty()) {
+            unavailable("speaking", "the text is empty")
+        }
+        val tts = engine(context)
+        val chinese = tts.setLanguage(Locale.CHINESE)
+        if (chinese == TextToSpeech.LANG_MISSING_DATA || chinese == TextToSpeech.LANG_NOT_SUPPORTED) {
+            unavailable(
+                "speaking Chinese",
+                "the system engine has no usable Chinese voice (setLanguage said $chinese);" +
+                    " download a voice pack in the system's text-to-speech settings",
+            )
+        }
+        runCatching {
+            tts.setSpeechRate(request.number("rate", 1.0).toFloat().coerceIn(0.5f, 2.0f))
+        }
+        val pieces = chunk(text, TextToSpeech.getMaxSpeechInputLength())
+        val latch = CountDownLatch(1)
+        val lastId = "lw-speak-${++spoken}-${pieces.lastIndex}"
+        failure = null
+        current = Utterance(lastId, latch)
+        val interrupt = request.bool("interrupt", true)
+        pieces.forEachIndexed { index, piece ->
+            val id = "lw-speak-$spoken-$index"
+            val mode = if (interrupt && index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+            val result = tts.speak(piece, mode, null, id)
+            if (result != TextToSpeech.SUCCESS) {
+                current = null
+                unavailable("speaking", "the engine refused the utterance ($result)")
+            }
+        }
+        val budget = (SPEAK_BUDGET_MS + text.length * SPEAK_BUDGET_PER_CHAR_MS).coerceAtMost(MAX_WAIT_MS)
+        val finished = latch.await(budget, TimeUnit.MILLISECONDS)
+        val reported = failure
+        current = null
+        return buildJsonObject {
+            put("spoken", finished && reported == null)
+            put("text", text)
+            put("pieces", pieces.size)
+            put("characters", text.length)
+            put("waitedMs", budget)
+            put("detail", reported ?: if (finished) "the engine finished" else "still speaking after ${budget}ms")
+        }
+    }
+
+    /** 掐断正在念的, 队列里的也一起 */
+    private fun stop(): JsonObject {
+        val tts = synchronized(lock) { engine }
+        if (tts == null) {
+            return buildJsonObject {
+                put("stopped", false)
+                put("detail", "no engine is loaded, so there is nothing to stop")
+            }
+        }
+        val result = tts.stop()
+        current = null
+        return buildJsonObject {
+            put("stopped", result == TextToSpeech.SUCCESS)
+            put("detail", "stop said $result")
+        }
+    }
+
+    /** 把引擎放掉: 下一次 status/speak 会重新初始化 */
+    private fun release(): JsonObject {
+        val held = synchronized(lock) {
+            val loaded = engine
+            engine = null
+            loaded
+        }
+        current = null
+        if (held == null) {
+            return buildJsonObject {
+                put("released", false)
+                put("detail", "no engine was loaded")
+            }
+        }
+        held.stop()
+        held.shutdown()
+        return buildJsonObject { put("released", true) }
+    }
+
+    /**
+     * 建一个可用的引擎: 初始化是异步的, 而且 TextToSpeech 要在有 Looper 的线程上建, 所以这一步
+     * 交给主线程做, 这里等它回话
+     */
+    private fun engine(context: Context): TextToSpeech {
+        synchronized(lock) {
+            engine?.let { return it }
+            val app = context.applicationContext
+            val ready = CountDownLatch(1)
+            var created: TextToSpeech? = null
+            var init = TextToSpeech.ERROR
+            val create = Runnable {
+                created = TextToSpeech(app) { result ->
+                    init = result
+                    ready.countDown()
+                }
+            }
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                create.run()
+            } else {
+                Handler(Looper.getMainLooper()).post(create)
+            }
+            val up = ready.await(INIT_BUDGET_MS, TimeUnit.MILLISECONDS)
+            val instance = created
+            if (!up || init != TextToSpeech.SUCCESS || instance == null) {
+                instance?.let { runCatching { it.shutdown() } }
+                unavailable(
+                    "speaking through the system engine",
+                    "the text to speech engine did not come up within ${INIT_BUDGET_MS}ms (init said $init)",
+                )
+            }
+            instance.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) = Unit
+
+                override fun onDone(utteranceId: String?) {
+                    val waiting = current
+                    if (waiting != null && waiting.id == utteranceId) waiting.latch.countDown()
+                }
+
+                override fun onError(utteranceId: String?) {
+                    failure = "the engine reported an error for $utteranceId"
+                    current?.latch?.countDown()
+                }
+
+                override fun onError(utteranceId: String?, errorCode: Int) {
+                    failure = "the engine reported error $errorCode for $utteranceId"
+                    current?.latch?.countDown()
+                }
+            })
+            engine = instance
+            return instance
+        }
+    }
+
+    /** 按句号换行切到引擎能吃的长度; 切不出好位置就硬切 */
+    private fun chunk(text: String, limit: Int): List<String> {
+        val safe = if (limit <= 0) 4000 else limit
+        if (text.length <= safe) return listOf(text)
+        val pieces = mutableListOf<String>()
+        var start = 0
+        while (start < text.length) {
+            var end = (start + safe).coerceAtMost(text.length)
+            if (end < text.length) {
+                val cut = text.lastIndexOfAny(charArrayOf('。', '！', '？', '；', '\n', '.', '!', '?', ';'), end)
+                if (cut > start + safe / 2) end = cut + 1
+            }
+            pieces += text.substring(start, end)
+            start = end
+        }
+        return pieces
+    }
+}

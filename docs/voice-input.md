@@ -93,3 +93,57 @@ app/.../ui/HostScreen.kt             WebView 的麦克风授权 (第一步, 已�
 host-plugin/index.mjs                lw-native provider + lw_speech 工具 + 模型下载
 docs/voice-input.md                  本文
 ```
+
+## 十、读出（语音输出）
+
+读入是页面录音、宿主转写；读出反过来：文字在 app 这一侧变成声音。
+
+### 为什么用系统引擎
+
+这台手机上不需要密钥、也不需要联网的语音输出只有一条：ROM 自带的 TTS 引擎。实测扫过 261 个
+系统 APK 的清单，`AIService`、`AiAgent`（vivo）声明了 `android.intent.action.TTS_SERVICE`
+并且 dex 里引用了 `android/speech/tts/TextToSpeechService`（即提供引擎），`TalkBack` 与
+`SwitchAccess` 只是 `<queries>` 查询、不提供。所以 `android.speech.tts.TextToSpeech` 在本机
+可用。
+
+**清单里必须声明可见性**：Android 11 起不声明就看不见 TTS 引擎，所以
+`AndroidManifest.xml` 的 `<queries>` 里补了一条 `TTS_SERVICE`（与 Shizuku、launcher 那两条
+并列）。
+
+### 通道方法 `speak`
+
+`tool/LwSpeak.kt`，四个动作：
+
+| op | 做什么 |
+|---|---|
+| `status` | 引擎包名、音色数、中文是否可用（`LANG_MISSING_DATA` 会明说要下语音包）、当前是否在念 |
+| `speak` | 念一段；超长按句切（引擎单次上限 `getMaxSpeechInputLength()`）；默认打断前一句；等到最后一片念完才回话 |
+| `stop` | 掐断正在念的与排队的 |
+| `release` | 把引擎还回去（初始化要几百毫秒，平时留着复用） |
+
+TextToSpeech 必须在有 Looper 的线程上建，而通道的应答跑在工作线程，所以 LwSpeak 把创建这一步
+post 到主线程再等它回话（8 秒预算，超时如实报错）。
+
+### 谁在什么时候念
+
+- **任务收尾**：`lw_speak op=speak text="一句话"` —— 与已有的完成通知并列，通知走通知栏、朗读
+  走喇叭，两条互不影响。
+- **GUI 内的朗读按钮**：那是另一条路，见下面。
+
+### GUI 里的「朗读」按钮（可选）
+
+装 `dsh-xiaomi-tts`（3.0.8，零依赖、客户端插件：助手消息操作栏里的朗读按钮 + 设置面板；MiMo
+流式 PCM，用本机已有的 `XIAOMI_API_KEY`；另有「本地优先 / 仅 MiMo / MiMo 优先」三档，本地那档
+走浏览器语音）。它要求 dsh `0.2.0-rc.2` 与 Node 22+，本机两条都满足。
+
+**它需要 APK 里多一行**：`HostWebView` 补上
+`settings.mediaPlaybackRequiresUserGesture = false` —— WebView 这项默认是 `true`，意思是
+没有用户手势就不许放音频，「消息到了自动朗读」会被这条拦掉（在系统浏览器里不受此限）。
+
+### 验证判据
+
+- `lw_speak op=status`：报出引擎包名与中文可用性；`chinese` 若是 `missing data`，去系统的
+  「文字转语音」设置里下一个中文语音包。
+- `lw_speak op=speak text="测试"`：回执说「engine took N characters … reported it finished」。
+  **回执不等于有声**——是否真出声要真人确认一次，这一条与通知/震动同一个道理。
+- GUI 里：点助手消息的朗读按钮。

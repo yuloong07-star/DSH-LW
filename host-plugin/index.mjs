@@ -1070,6 +1070,70 @@ const TOOLS = [
       throw new Error(`op has to be status, prepare or transcribe, not "${args.op}"`)
     },
   }),
+  defineTool({
+    name: 'lw_speak',
+    description:
+      'Speak a line out loud on this phone through its own text-to-speech engine: nothing goes over '
+      + 'the network and no API key is involved. op=status reports the engine, how many voices it '
+      + 'has and whether Chinese is usable; op=speak says the text and waits until the engine '
+      + 'reports it finished; op=stop cuts off whatever is being said; op=release lets the engine go '
+      + '(bringing it up costs a few hundred milliseconds, so it is kept while in use). Use it to '
+      + 'read a result back to the person holding the phone, for instance one line when a task is '
+      + 'done. Whether sound actually came out is theirs to confirm: the answer only reports what '
+      + 'the engine said.',
+    parameters: {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'status, speak, stop or release',
+      },
+      text: {
+        type: 'string',
+        description: 'The line to speak, required for op=speak. Keep it short: this is read aloud.',
+      },
+      interrupt: {
+        type: 'boolean',
+        description: 'Cut off whatever is being said before this line (default true)',
+      },
+      rate: {
+        type: 'number',
+        description: 'Speech rate from 0.5 to 2.0 (default 1.0)',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      const request = { op: args.op }
+      if (args.text !== undefined) request.text = args.text
+      if (args.interrupt !== undefined) request.interrupt = args.interrupt
+      if (args.rate !== undefined) request.rate = args.rate
+      const answer = await call('speak', request)
+      if (args.op === 'status') {
+        return [
+          `engine ${answer.engine}`,
+          `voices ${answer.voices}, Chinese: ${answer.chinese}`,
+          answer.chineseVoices
+            ? `Chinese voices: ${answer.chineseVoices}`
+            : 'no Chinese voice is listed by the engine',
+          `speaking right now: ${answer.speaking ? 'yes' : 'no'} (${answer.utterances} utterances so far)`,
+        ].join('\n')
+      }
+      if (args.op === 'speak') {
+        if (!answer.spoken) return `the engine did not report finishing: ${answer.detail}`
+        return `the engine took ${answer.characters} characters`
+          + (answer.pieces > 1 ? ` in ${answer.pieces} pieces` : '')
+          + ' and reported it finished'
+      }
+      if (args.op === 'stop') {
+        return answer.stopped ? 'stopped' : `nothing was stopped: ${answer.detail}`
+      }
+      return answer.released
+        ? 'the engine was let go; the next call brings it up again'
+        : answer.detail
+    },
+  }),
 ]
 
 /** One request, one response: the app answers a single line and closes the connection */

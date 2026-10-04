@@ -223,6 +223,11 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- 语音合成 (TTS) 引擎在 Android 11 起也是可见性问题: 不在这里声明一条, 系统引擎
+             对本应用就不可见, TextToSpeech 初始化拿不到默认引擎 -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
     </queries>
 
 </manifest>
