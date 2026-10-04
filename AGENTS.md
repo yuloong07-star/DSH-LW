@@ -185,6 +185,8 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **截图的描述里写明了它会很小** (1080x2400 可能只有 536x1192), 所以"读屏用 `lw_ui` / `lw_ocr`, 截图只用来'像人一样看一眼'"这句话进了 `lw_screenshot` 的描述
 - **host 树里的 `sharp` 是官方 0.35.5 的 WebAssembly 构建** (`sharp` + `@img/sharp-wasm32`, 由 `pack-host.mjs` 当普通依赖装进树里): 原生那条路在这台设备上是死的 (平台包裹的 libvips 按 glibc 编, 而且 `--omit=optional` 本来就不装), 而 wasm 不需要任何原生 binding, sharp 自己会挑。**1.0.3 之前树里放的是一个只解 PNG 的纯 JS 替身**, 代价是相册里的 JPEG / WebP / GIF 一律 `INVALID_IMAGE`, 而且超过 route 预算的图必然把整轮请求打成 `TRANSPORT` —— 那条限制随替身一起没了, 历史见 `image-backend/README.md` 与 `docs/step5-record.md`
 - 验证用 `tools/lw-bridge.ps1` (单次桥调用) 与 `tools/lw-device-turn.ps1` (run-as 起一次 headless turn, 用设备自己的树和凭据); 但**读图不能在 run-as 里验** —— 它不给 app 的 mount namespace, 而且打不开 `/data/user/0` 的祖先目录
+- **桥验的是应用那一侧, 插件那一层要另验**: `defineTool` 的参数表 -> `drop(args)` -> 一行 JSON -> `answerOf` 这段只有在模型调用时才走到, 所以有 `tools/lw-plugin-call.mjs` —— 它用与自检同一个注册表把工具取出来直接 `execute`, 不花模型的钱 (2026-10-04 就是它试出 `lw_media_scan` 只认绝对路径而 `lw_files` 认相对路径这条不一致)。用法: 先把端口 forward 到本机, 再 `LW_CHANNEL_ENDPOINT=127.0.0.1:<端口> LW_CHANNEL_TOKEN=<token> node tools/lw-plugin-call.mjs lw_files '{"op":"list"}'`
+- **两个 PS 脚本与 `push-host.mjs` 里的 adb 路径是开发机那一台的** (`B:\Software\AndroidSDK\...`), 换机器时用 `$env:LW_ADB` 覆盖, 不用改文件
 
 ## 主屏 (displayId 0) 与触摸刹车
 

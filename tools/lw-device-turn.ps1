@@ -16,7 +16,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$adb = 'B:\Software\AndroidSDK\platform-tools\adb.exe'
+$adb = if ($env:LW_ADB) { $env:LW_ADB } else { 'B:\Software\AndroidSDK\platform-tools\adb.exe' }
 $device = Join-Path (Split-Path -Parent $PSCommandPath) 'lw-device'
 $sandbox = "/data/user/0/$Package/files"
 if (-not $SessionDirectory) { $SessionDirectory = "$sandbox/DSH" }

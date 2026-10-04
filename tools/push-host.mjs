@@ -19,8 +19,13 @@ import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { parseArgs } from 'node:util'
 
-/** The adb from the local Android SDK, which is not on PATH */
-const ADB = 'B:\\Software\\AndroidSDK\\platform-tools\\adb.exe'
+/**
+ * The adb from the local Android SDK, which is not on PATH
+ *
+ * `LW_ADB` overrides it: the path below is the development machine's, and a second checkout of this
+ * repo on another machine should not have to edit this file to push a host tree
+ */
+const ADB = process.env.LW_ADB ?? 'B:\\Software\\AndroidSDK\\platform-tools\\adb.exe'
 
 /** Name the app reads the version from, in the assets and in the unpacked tree */
 const STAMP = 'host-version.txt'
