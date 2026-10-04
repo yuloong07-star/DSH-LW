@@ -159,6 +159,8 @@ class OverlayService : Service() {
 
             override fun onTouch(view: View, event: MotionEvent): Boolean {
                 val layout = params ?: return false
+                // 窗不一定还在: 关窗与拖动可以撞在一起, 所以这里也判一次空
+                val target = root ?: return false
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         downX = event.rawX
@@ -171,7 +173,7 @@ class OverlayService : Service() {
                     MotionEvent.ACTION_MOVE -> {
                         layout.x = fromX + (event.rawX - downX).toInt()
                         layout.y = fromY + (event.rawY - downY).toInt()
-                        runCatching { window?.updateViewLayout(root, layout) }
+                        runCatching { window?.updateViewLayout(target, layout) }
                         return true
                     }
 
