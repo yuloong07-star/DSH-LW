@@ -415,17 +415,10 @@ private fun PermissionsItems() {
         val state = remember(revision, capability) { PermissionCatalog.state(context, capability) }
         ArrowPreference(
             title = capability.name,
-            summary = buildString {
-                append(
-                    when (state) {
-                        Grant.GRANTED -> stringResource(R.string.settings_permission_granted)
-                        Grant.DENIED -> stringResource(R.string.settings_permission_denied)
-                        Grant.MISSING -> stringResource(R.string.settings_permission_missing)
-                    },
-                )
-                append(" · ")
-                append(capability.note ?: capability.why)
-            },
+            // 副标题**不再写"已允许/未允许"**: 最后那一条(安装未知应用)读出来的值与系统页上看到的
+            // 对不上, 与其在屏幕上放一个会和系统打架的结论, 不如只留这条权限是干什么的 —— 反正点一下
+            // 就是去它自己那一页, 那里才是权威
+            summary = capability.note ?: capability.why,
             onClick = {
                 // 特殊访问只能开系统页; 能点名的才弹框。`ask` 返回 false 有两种情况 —— 特殊访问,
                 // 或者用户已经"拒绝且不再问", 两种都只能让它去设置页
@@ -448,13 +441,7 @@ private fun PermissionsItems() {
 private fun AccessibilityItems() {
     val context = LocalContext.current
     val working = AccessibilitySetting.working
-    val error = AccessibilitySetting.lastError
-    val state = AccessibilitySetting.state
-    LaunchedEffect(Unit) {
-        AccessibilitySetting.refresh()
-        // 状态那几件事要起子进程, 所以在 worker 线程上读, 读完自己会回到 UI
-        AccessibilitySetting.refreshState()
-    }
+    LaunchedEffect(Unit) { AccessibilitySetting.refresh() }
     SwitchPreference(
         title = stringResource(R.string.settings_accessibility),
         summary = stringResource(R.string.settings_accessibility_summary),
@@ -462,43 +449,6 @@ private fun AccessibilityItems() {
         enabled = !working,
         onCheckedChange = { AccessibilitySetting.set(it) },
     )
-    // **只读的真实状态**: 这台设备上"设置里写着"与"系统真的绑着"经常不是一件事, 而含糊的失败提示
-    // 已经误导过一次, 所以把六个事实摊开, 让人自己看得见卡在哪一层
-    state?.let { inspected ->
-        val yes = stringResource(R.string.settings_bool_yes)
-        val no = stringResource(R.string.settings_bool_no)
-        ArrowPreference(
-            title = stringResource(R.string.settings_accessibility_state),
-            summary = stringResource(
-                R.string.settings_accessibility_state_summary,
-                inspected.reason(),
-                if (inspected.componentListed) yes else no,
-                if (inspected.running) yes else no,
-                if (inspected.writeChannelOpen) yes else no,
-            ),
-            onClick = { AccessibilitySetting.refreshState() },
-        )
-    }
-    // 复制命令那条: 说明文字删掉了 (原来那句"点一下复制命令"), 复制与 Toast 一个字没动
-    ArrowPreference(
-        title = stringResource(R.string.settings_accessibility_script),
-        summary = error ?: "",
-        onClick = {
-            val clipboard = context.getSystemService(ClipboardManager::class.java)
-            clipboard?.setPrimaryClip(
-                ClipData.newPlainText(
-                    "lw-install",
-                    context.getString(R.string.settings_accessibility_install_command),
-                ),
-            )
-            Toast.makeText(
-                context,
-                context.getString(R.string.settings_accessibility_copied),
-                Toast.LENGTH_SHORT,
-            ).show()
-        },
-    )
-    // 跳转那条: 下面那行灰色小字删掉了 (它解释的是"这个页面为什么显示关闭"), 跳转与三级回退没动
     ArrowPreference(
         title = stringResource(R.string.settings_accessibility_manual),
         onClick = {

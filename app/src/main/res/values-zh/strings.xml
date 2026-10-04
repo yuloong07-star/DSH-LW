@@ -60,13 +60,6 @@
     <string name="settings_accessibility">允许 DSH 通过无障碍服务读取屏幕内容</string>
     <string name="settings_accessibility_summary">启用后, 模型直接能读到屏幕上每个控件的文字与精确位置</string>
     <string name="settings_accessibility_manual">跳转到无障碍设置</string>
-    <string name="settings_accessibility_state">现在到底怎么样</string>
-    <string name="settings_accessibility_state_summary">%1$s\n组件在列表里: %2$s / 服务绑着: %3$s / 能写设置: %4$s</string>
-    <string name="settings_accessibility_script">用电脑跑装机脚本</string>
-    <string name="settings_accessibility_copied">命令已复制</string>
-    <string name="settings_bool_yes">是</string>
-    <string name="settings_bool_no">不是</string>
-    <string name="settings_accessibility_install_command">pwsh -File D:\apk\LittleWhale\\tools\lw-install.ps1</string>
 
     <string name="settings_section_screenshot">截图</string>
     <string name="settings_screenshot_budget">截图预算</string>
@@ -106,11 +99,8 @@
 
     <string name="settings_section_permissions">权限</string>
     <string name="settings_permissions_summary">此权限由用户自行开关，可供DSH-LW自由开发。</string>
-    <string name="settings_permission_granted">已允许</string>
-    <string name="settings_permission_denied">未允许</string>
     <string name="settings_permission_ask">授权</string>
     <string name="settings_permission_settings">去设置</string>
-    <string name="settings_permission_missing">未声明</string>
 
     <string name="notification_channel_tools">工具通知</string>
     <string name="notification_channel_tools_description">模型用 lw_notify 发出来的通知</string>
