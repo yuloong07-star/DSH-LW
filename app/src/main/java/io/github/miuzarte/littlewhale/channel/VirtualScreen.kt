@@ -114,6 +114,15 @@ object VirtualScreen {
      */
     private val surfaces = mutableMapOf<Int, Surface?>()
 
+    /**
+     * The app-owned surface each screen falls back to when no preview is drawing into it
+     *
+     * See [ScreenKeeper] for why a screen may never be left without one: the preview is a thing a
+     * person looks at, and what the model sees through the tools is not that - hiding the preview,
+     * or the app going to the background, must not take the screen away from the model
+     */
+    private val keepers = mutableMapOf<Int, ScreenKeeper>()
+
     /** How many screens this app has asked for, which is only used to label the unnamed ones */
     private var created = 0
 
@@ -190,11 +199,15 @@ object VirtualScreen {
         val density = if (dpi > 0) dpi else metrics.densityDpi
         Log.i(TAG, "asking for a ${pixelsWide}x$pixelsHigh screen at ${density}dpi named ${name ?: "(none)"}")
         return try {
-            val id = requireService().createDisplay(pixelsWide, pixelsHigh, density, null)
+            val service = requireService()
+            val id = service.createDisplay(pixelsWide, pixelsHigh, density, null)
             created += 1
             val screen = ScreenState(id, pixelsWide, pixelsHigh, density, label(name))
             screens = screens + screen
             selected = screen
+            // 建屏时就把面交上去: 预览可能过很久才挂上, 也可能一直不挂, 而屏从存在的那一刻起就该
+            // 有画面 —— 有画面才有窗口, 有窗口工具才找得到它
+            service.setDisplaySurface(id, surfaceFor(screen))
             lastError = null
             screen
         } catch (problem: Throwable) {
@@ -235,6 +248,10 @@ object VirtualScreen {
             val resized = screen.copy(width = pixelsWide, height = pixelsHigh, dpi = density)
             screens = screens.map { if (it.displayId == screen.displayId) resized else it }
             if (selected?.displayId == screen.displayId) selected = resized
+            // 面是一块按老尺寸做好的 buffer, 换尺寸就得跟着换: 合成器不缩放, 旧面只装得下新屏的
+            // 左上角。预览那块 SurfaceView 会自己 setFixedSize 并重新 attach, 这一句管的是没有
+            // 预览、只剩保活面的那种屏
+            requireService().setDisplaySurface(resized.displayId, surfaceFor(resized))
             lastError = null
             resized
         } catch (problem: Throwable) {
@@ -388,14 +405,18 @@ object VirtualScreen {
         val previous = selected
         if (previous?.displayId == screen?.displayId) return
         selected = screen
-        val surface = screen?.let { surfaces[it.displayId] }
+        // 两边的面都在这条线程上取好: 下面那段跑在 worker 上, 而 surfaces 与 keepers 是主线程也在
+        // 动的两张表 (与上一版把 surface 先取出来是同一个理由)
+        val letting = previous?.let { it to surfaceFor(it) }
+        val taking = screen?.let { it to surfaceFor(it) }
         worker.execute {
             try {
                 val service = requireService()
                 // The old one is let go first: two screens drawing into one buffer would leave the
-                // picture on whichever the compositor happened to finish last
-                if (previous != null) service.setDisplaySurface(previous.displayId, null)
-                if (screen != null) service.setDisplaySurface(screen.displayId, surface)
+                // picture on whichever the compositor happened to finish last. It goes back to its
+                // keeper rather than to null, so it stays a screen the tools can still use
+                letting?.let { (old, surface) -> service.setDisplaySurface(old.displayId, surface) }
+                taking?.let { (shown, surface) -> service.setDisplaySurface(shown.displayId, surface) }
                 lastError = null
             } catch (problem: Throwable) {
                 report("select", problem)
@@ -412,6 +433,7 @@ object VirtualScreen {
     fun release(screen: ScreenState, byUser: Boolean = false) {
         screens = screens.filterNot { it.displayId == screen.displayId }
         surfaces.remove(screen.displayId)
+        keepers.remove(screen.displayId)?.close()
         if (selected?.displayId == screen.displayId) selected = null
         remember(screen, byUser)
         working = true
@@ -466,6 +488,27 @@ object VirtualScreen {
     }
 
     /**
+     * The surface one screen should be drawing into right now
+     *
+     * The preview's own surface when there is a preview, and the screen's keeper otherwise. Never
+     * null: a virtual screen with no output surface is not composed at all, and then it has no
+     * windows for the accessibility tree (`lw_ui`, `lw_tap`, `lw_type` all read that) and no valid
+     * display id for `screencap` (`lw_screenshot` runs it) - the screen is still there in this app's
+     * list and in the system's, but nothing can see or touch it. That is what "hide the preview"
+     * used to do, and it is the same state the app lands in when its window is torn down
+     */
+    private fun surfaceFor(screen: ScreenState): Surface =
+        surfaces[screen.displayId] ?: keeper(screen).surface
+
+    /** The keeper for one screen, made when it is missing and remade when the screen changed size */
+    private fun keeper(screen: ScreenState): ScreenKeeper {
+        val existing = keepers[screen.displayId]
+        if (existing != null && existing.matches(screen)) return existing
+        existing?.close()
+        return ScreenKeeper(screen.width, screen.height).also { keepers[screen.displayId] = it }
+    }
+
+    /**
      * Follow the preview's surface for one screen
      *
      * A screen with no surface is a normal state rather than a broken one: the app goes to the
@@ -476,9 +519,13 @@ object VirtualScreen {
         // Only the screen the preview is on is worth telling the device about; the other one is
         // either on its way out or waiting for its turn, and it gets told when its turn comes
         if (selected?.displayId != screen.displayId) return
+        // 与 select 同一个理由: 面在主线程取好, 下面那段在 worker 上跑
+        val attached = surfaceFor(screen)
         worker.execute {
             try {
-                requireService().setDisplaySurface(screen.displayId, surface)
+                // A preview that went away hands the screen back to its keeper rather than to
+                // null - the screen keeps being composed, so the tools keep having a screen
+                requireService().setDisplaySurface(screen.displayId, attached)
                 lastError = null
             } catch (problem: Throwable) {
                 // A screen that was released while its preview was going away is not worth a line
