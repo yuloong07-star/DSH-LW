@@ -136,7 +136,9 @@ foreach ($commit in $commits) {
         $body = @{
             message   = $candidate
             tree      = $tree
-            parents   = @($parentSha)
+            # merge 提交有**两个**父: 少送一个 SHA 就不一样 (实测 12c891f 卡在这里), 所以按
+            # `git rev-list --parents` 那一行原样送, 不写死第一个
+            parents   = @($parts[1..($parts.Count - 1)])
             author    = $author
             committer = $committer
         } | ConvertTo-Json -Depth 6 -Compress
