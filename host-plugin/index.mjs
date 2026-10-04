@@ -19,7 +19,7 @@ import { connect } from 'node:net'
 
 import { createHash, randomUUID } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
-import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { join } from 'node:path'
@@ -1181,6 +1181,112 @@ const TOOLS = [
       ].filter(Boolean).join('\n')
     },
   }),
+  defineTool({
+    name: 'lw_wakeword',
+    description:
+      'Listen for a wake word on this phone, so the agent can be called by voice instead of by '
+      + 'typing. The listening runs in the app itself with sherpa-onnx keyword spotting - a 3.3M '
+      + 'parameter zipformer, 16 kHz mono, nothing leaves the device and no API key is involved. '
+      + 'op=status reports the model, the words being watched for, whether the microphone '
+      + 'permission is granted, whether the listener is up and how many times it has fired; '
+      + 'op=prepare downloads the model once (about 5.5 MB) and writes the default word 素云; '
+      + 'op=keywords replaces the word table (each word is given as 词=拼音, for example '
+      + '素云=su4 yun2 - the pinyin is what the model needs, see docs/wake-word.md); op=start '
+      + 'starts the foreground listener, which keeps a notification with a 停止 button; op=stop '
+      + 'ends it. What happens on a hit is onWake: app brings the app forward (default, and the '
+      + 'one that works without the overlay permission), overlay floats the GUI window over '
+      + 'whatever is on the screen. Two things to say plainly: the microphone is really on the '
+      + 'whole time while it listens, and a two syllable word like 素云 does get false hits, '
+      + 'so threshold is worth tuning on the real device.',
+    parameters: {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'status, prepare, keywords, start or stop',
+      },
+      words: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'For op=keywords (and for op=prepare, to override the default word): one "词=拼音" entry'
+          + ' per word, for example "素云=su4 yun2" or "小爱同学=xiao3 ai4 tong2 xue2". Tone numbers'
+          + ' are what the model wants; pinyin already carrying tone marks is accepted as it is',
+      },
+      lines: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'For op=keywords: raw keyword lines in the model\'s own token form, for example'
+          + ' "s ù y ún @素云". Use this only when the pinyin route cannot say what you mean',
+      },
+      threshold: {
+        type: 'number',
+        description: 'For op=start: how sure the spotter has to be before it fires (default 0.25)',
+      },
+      score: {
+        type: 'number',
+        description: 'For op=start: how strongly the keyword is boosted (default 1.5)',
+      },
+      onWake: {
+        type: 'string',
+        description:
+          'For op=start: "app" brings the app forward, "overlay" floats the GUI window (default app)',
+      },
+      vibrateMs: {
+        type: 'integer',
+        description: 'For op=start: how long to buzz on a hit (default 200, 0 for silent)',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      if (args.op === 'status') {
+        const info = await wakeWordInspect()
+        return [
+          `engine sherpa-onnx keyword spotting, model ${info.model}`,
+          `model in ${info.directory}: ${info.present ? 'downloaded' : 'not downloaded yet'}`
+            + (info.modelFiles ? ` (${info.modelFiles})` : ''),
+          `watching for: ${info.keywordNames || 'nothing yet'}`,
+          `microphone permission: ${info.permission ? 'granted' : `not granted - ${info.permission}`}`,
+          `listener: ${info.listening ? 'up' : 'not running'}, ${info.hits} hit(s)`
+            + (info.lastKeyword ? `, last was ${info.lastKeyword} at ${new Date(info.lastHitAt).toLocaleString()}` : ''),
+          info.unknownTokens
+            ? `these tokens are not in the model's table, so their lines would be dropped silently:`
+              + ` ${info.unknownTokens}`
+            : '',
+          info.lastError ? `last problem: ${info.lastError}` : '',
+        ].filter(Boolean).join('\n')
+      }
+      if (args.op === 'prepare') {
+        const info = await wakeWordPrepare(args.words)
+        return `the model is in ${info.directory} (${WAKEWORD_FILES.length} files, sha256 checked)`
+          + ` and the table holds: ${info.keywordNames || 'nothing'}. op=start is what begins listening`
+      }
+      if (args.op === 'keywords') {
+        const lines = await wakeWordLinesFor(args)
+        const answer = await call('wakeword', { op: 'keywords', lines })
+        return answer.written
+          ? `the table now holds ${answer.keywords}`
+          : `the table was not changed: ${answer.keywords || 'it is empty'}`
+      }
+      if (args.op === 'start') {
+        const request = { op: 'start' }
+        for (const key of ['threshold', 'score', 'onWake', 'vibrateMs']) {
+          if (args[key] !== undefined) request[key] = args[key]
+        }
+        const answer = await call('wakeword', request)
+        return `listening for ${answer.keywords}; the microphone is on until op=stop, and a hit`
+          + ' shows up in op=status'
+      }
+      if (args.op === 'stop') {
+        const answer = await call('wakeword', { op: 'stop' })
+        return `${answer.detail} (${answer.hits} hit(s) this run)`
+      }
+      throw new Error(`op has to be status, prepare, keywords, start or stop, not "${args.op}"`)
+    },
+  }),
 ]
 
 /** One request, one response: the app answers a single line and closes the connection */
@@ -1958,6 +2064,196 @@ async function speechTranscribe(wav, language) {
     throw new Error('the speech model is not downloaded yet: run lw_speech op=prepare once')
   }
   return await call('speech', { op: 'transcribe', wav, language: language ?? 'auto' })
+}
+
+/* ── 唤醒词 ─────────────────────────────────────────────────────────────────
+ * 引擎在 app 那一侧 (同一个 sherpa-onnx, 换成了 KeywordSpotter), 这一侧只做两件事: 把模型取到
+ * 手机上、把词表写成 sherpa-onnx 认的那一行。
+ *
+ * 词表为什么不能写中文原文: keywords 文件每一行是**模型的 token 序列**加 `@显示名`, 而
+ * EncodeKeywords 只认模型 tokens.txt 里的符号 —— 中文原文一个都不在表里, 它不报错, 只是把那
+ * 一行静默丢掉, 结果是"照做了但永远不触发"。所以这里把拼音拆成声母 + 带调韵母, 逐个对一遍
+ * 符号表, 对不上就当面报错
+ */
+
+/** 按文件取的那一份: ModelScope 上同名的中文 zipformer KWS (3.3M 参数) */
+const WAKEWORD_SOURCES = [
+  'https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=',
+]
+
+/** 字节数与 sha256 都是本机实测过的 (2026-10-04): 换包一定会被发现 */
+const WAKEWORD_FILES = [
+  {
+    name: 'encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx',
+    bytes: 4807159,
+    sha256: '017af32f2c0138f931d05fbc009ee864295e910aff304f77d2f563815fc834fb',
+  },
+  {
+    name: 'decoder-epoch-12-avg-2-chunk-16-left-64.onnx',
+    bytes: 675349,
+    sha256: 'bb3d8640cc6a495088707173bc1707a8a4ffe014594fc9adcba8389e27d0339f',
+  },
+  {
+    name: 'joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx',
+    bytes: 65208,
+    sha256: '431de10b554f134ef8af320feea2db337e641290449a3d3f6cb6e5f5fd2c9c3d',
+  },
+  {
+    name: 'tokens.txt',
+    bytes: 1627,
+    sha256: '72316508d9119696145abc6f1f8cdc46287535c34e5ce7e595f845cb1499cf2e',
+  },
+]
+
+/** 开门那一句; 改词表就是改这一行 (见 op=keywords) */
+const WAKEWORD_DEFAULT_WORDS = ['素云=su4 yun2']
+
+/** 声母: 长在前, 免得 zh 被拆成 z + h */
+const PINYIN_INITIALS = [
+  'zh', 'ch', 'sh', 'b', 'p', 'm', 'f', 'd', 't', 'n', 'l',
+  'g', 'k', 'h', 'j', 'q', 'x', 'r', 'z', 'c', 's', 'y', 'w',
+]
+
+/** 声调往哪个元音上标 */
+const TONE_MARKS = {
+  a: 'āáǎà',
+  o: 'ōóǒò',
+  e: 'ēéěè',
+  i: 'īíǐì',
+  u: 'ūúǔù',
+  'ü': 'ǖǘǚǜ',
+}
+
+/** su4 -> sù; 已经带调号的 (sù) 原样回来; 轻声 (第 5 声) 不带调号 */
+function markedSyllable(raw) {
+  let syllable = raw.trim().toLowerCase().replace(/u:/g, 'ü').replace(/v/g, 'ü')
+  const tone = syllable.match(/([1-5])$/)
+  if (!tone) return syllable
+  syllable = syllable.slice(0, -1)
+  if (tone[1] === '5') return syllable
+  const at = toneIndex(syllable)
+  const marks = at >= 0 ? TONE_MARKS[syllable[at]] : null
+  if (!marks) return syllable
+  return syllable.slice(0, at) + marks[Number(tone[1]) - 1] + syllable.slice(at + 1)
+}
+
+/** 一个音节里调号落在哪个字符上: a / o / e 优先, iu 落在 u, ui 落在 i, 其余落在最后一个元音 */
+function toneIndex(syllable) {
+  for (const vowel of ['a', 'o', 'e']) {
+    const at = syllable.indexOf(vowel)
+    if (at >= 0) return at
+  }
+  if (syllable.endsWith('iu') || syllable.endsWith('ui')) return syllable.length - 1
+  for (let at = syllable.length - 1; at >= 0; at -= 1) {
+    if ('iuü'.includes(syllable[at])) return at
+  }
+  return -1
+}
+
+/** 模型认得的那张符号表: tokens.txt 每行第一个字段 */
+async function wakeWordSymbols(directory) {
+  const text = await readFile(join(directory, 'tokens.txt'), 'utf8')
+  const symbols = new Set()
+  for (const line of text.split('\n')) {
+    const token = line.split(' ')[0].trim()
+    if (token) symbols.add(token)
+  }
+  return symbols
+}
+
+/** 一个词 + 它的拼音 -> sherpa-onnx 要的那一行; 有符号表里没有的 token 就直接报错 */
+function wakeWordLine(word, pinyin, symbols) {
+  const tokens = []
+  for (const raw of String(pinyin).trim().split(/\s+/)) {
+    const syllable = markedSyllable(raw)
+    if (!syllable) throw new Error(`"${pinyin}" has an empty syllable`)
+    const initial = PINYIN_INITIALS.find(
+      (one) => syllable.startsWith(one) && syllable.length > one.length,
+    )
+    const parts = initial ? [initial, syllable.slice(initial.length)] : [syllable]
+    for (const token of parts) {
+      if (!symbols.has(token)) {
+        throw new Error(
+          `the model's tokens.txt has no "${token}" (from ${raw} of "${word}"), so sherpa-onnx`
+          + ' would drop the whole line without saying so',
+        )
+      }
+    }
+    tokens.push(...parts)
+  }
+  return `${tokens.join(' ')} @${word}`
+}
+
+/** "素云=su4 yun2" -> 一行; 没写等号就当成拼音与词同名的一对, 报错让人补上 */
+async function wakeWordLinesFor(args, directory) {
+  const raw = args?.lines?.length ? args.lines : null
+  if (raw) return raw.map((line) => String(line).trim()).filter(Boolean)
+  const pairs = args?.words?.length ? args.words : null
+  if (!pairs) throw new Error('op=keywords names the words: words=["素云=su4 yun2", ...]')
+  const folder = directory ?? (await call('wakeword', { op: 'status' })).directory
+  const symbols = await wakeWordSymbols(folder)
+  return pairs.map((pair) => {
+    const at = String(pair).indexOf('=')
+    if (at <= 0) throw new Error(`"${pair}" has to be 词=拼音, for example 素云=su4 yun2`)
+    return wakeWordLine(String(pair).slice(0, at).trim(), String(pair).slice(at + 1), symbols)
+  })
+}
+
+/** 现在什么样: 引擎报的 + 磁盘上那几个文件的大小对不对 */
+async function wakeWordInspect() {
+  const info = await call('wakeword', { op: 'status' })
+  const sizes = await Promise.all(
+    WAKEWORD_FILES.map((file) => speechSize(join(info.directory, file.name))),
+  )
+  const present = WAKEWORD_FILES.every((file, index) => sizes[index] === file.bytes)
+  return { ...info, present }
+}
+
+/** 取一次模型, 顺便把缺省词表写上; 已经有了就不动它 */
+async function wakeWordPrepare(words) {
+  const before = await wakeWordInspect()
+  await mkdir(before.directory, { recursive: true })
+  for (const file of WAKEWORD_FILES) {
+    const target = join(before.directory, file.name)
+    if (await speechSize(target) === file.bytes) continue
+    await wakeWordDownload(file, target)
+  }
+  if (words?.length) {
+    const lines = await wakeWordLinesFor({ words }, before.directory)
+    await call('wakeword', { op: 'keywords', lines })
+  } else if (!before.keywords) {
+    const lines = await wakeWordLinesFor({ words: WAKEWORD_DEFAULT_WORDS }, before.directory)
+    await call('wakeword', { op: 'keywords', lines })
+  }
+  return await wakeWordInspect()
+}
+
+/** 与 speech 那一套同一个写法: 换镜像、对 sha256、失败不留半条文件 */
+async function wakeWordDownload(file, target) {
+  let failure = null
+  for (const base of WAKEWORD_SOURCES) {
+    const partial = `${target}.part`
+    try {
+      const response = await fetch(`${base}${encodeURIComponent(file.name)}`)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const digest = createHash('sha256')
+      const meter = new Transform({
+        transform(chunk, _encoding, callback) {
+          digest.update(chunk)
+          callback(null, chunk)
+        },
+      })
+      await pipeline(Readable.fromWeb(response.body), meter, createWriteStream(partial))
+      const actual = digest.digest('hex')
+      if (actual !== file.sha256) throw new Error(`sha256 ${actual} is not ${file.sha256}`)
+      await rename(partial, target)
+      return
+    } catch (error) {
+      failure = error
+      await rm(partial, { force: true })
+    }
+  }
+  throw new Error(`could not download ${file.name}: ${failure?.message ?? failure}`)
 }
 
 /** Register the provider the page's voice input button resolves to */
