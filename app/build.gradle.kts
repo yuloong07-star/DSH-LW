@@ -130,9 +130,9 @@ android {
         // decision: the accessibility tree path needs API 30, and nothing here has been run below 33.
         minSdk = 33
         targetSdk = 37
-        // 1.0.2: 返回提示、权限、通知与震动、剪贴板、传输、设备与系统信息、输入增强
-        versionCode = 2
-        versionName = "1.0.2"
+        // 2.0.0: 虚拟屏在后台可用(保活面)、语音输入与输出、浮窗面板 A、唤醒词
+        versionCode = 4
+        versionName = "2.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
