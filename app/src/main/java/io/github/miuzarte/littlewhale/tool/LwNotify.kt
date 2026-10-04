@@ -49,7 +49,7 @@ internal object LwNotify {
         permissions = listOf(Manifest.permission.VIBRATE),
     )
 
-    /** 发一条通知, 可以顺手震一下; 点它回到应用 */
+    /** 发一条通知, 可以顺手震一下; 点它把已经在跑的那个界面拿到最前面, 不另开一个 */
     fun notify(context: Context, request: JsonObject): JsonObject {
         val title = request.string("title")
         val body = request.string("text")
@@ -61,10 +61,20 @@ internal object LwNotify {
             ?: unavailable("notifications", "this device has no notification manager")
         ensureChannel(context, manager, vibrateMs > 0)
 
+        // 点通知要的是「把已经在跑的那一页拿到前面来」, 不是再开一页: MainActivity 是 standard
+        // 启动模式, 一个不带 flag 的 Intent 会在同一个 task 里再压一个实例, 新的 Compose 树带着新的
+        // WebView 重新 loadUrl, 屏幕上正看着的那场会话就没了。CLEAR_TOP 让系统去找栈里那一个,
+        // SINGLE_TOP 让这次启动走 onNewIntent 而不是重建一次
         val open = PendingIntent.getActivity(
             context,
             0,
-            Intent(context, MainActivity::class.java),
+            Intent(context, MainActivity::class.java).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK
+                        or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        or Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                )
+            },
             PendingIntent.FLAG_IMMUTABLE,
         )
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
