@@ -4,7 +4,7 @@
 
 **DSH** for Android, built on **[LittleWhale](https://github.com/Miuzarte/LittleWhale)**
 
-本应用围绕 DSHLW 应用基于 Little 开发, 部分功能与特点取自 DSHA。
+本应用围绕 DSHLW 应用基于 LittleWhale 开发, 部分功能与特点取自 DSHA。
 
 把 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) 装进手机的一个应用: 一台安卓设备同时当 dsh 的**主机**与**受控端**, 界面就是 dsh 自己的 Web GUI (装在 WebView 里), 原生那一半把屏幕与输入能力做成 dsh 原生工具交给模型
 
