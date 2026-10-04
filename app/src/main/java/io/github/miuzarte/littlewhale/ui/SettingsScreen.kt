@@ -415,10 +415,24 @@ private fun PermissionsItems() {
         val state = remember(revision, capability) { PermissionCatalog.state(context, capability) }
         ArrowPreference(
             title = capability.name,
-            // 副标题**不再写"已允许/未允许"**: 最后那一条(安装未知应用)读出来的值与系统页上看到的
-            // 对不上, 与其在屏幕上放一个会和系统打架的结论, 不如只留这条权限是干什么的 —— 反正点一下
-            // 就是去它自己那一页, 那里才是权威
-            summary = capability.note ?: capability.why,
+            // 副标题是"状态 · 它是干什么的"。**但有一条例外**: 「安装未知应用」这台设备上读出来的值
+            // (canRequestPackageInstalls) 与系统页上看到的对不上, 与其在屏幕上放一个会和系统打架的
+            // 结论, 那一条只留说明 —— 点一下就是去它自己那一页, 那里才是权威
+            summary = if (capability.noState) {
+                capability.note ?: capability.why
+            } else {
+                buildString {
+                    append(
+                        when (state) {
+                            Grant.GRANTED -> stringResource(R.string.settings_permission_granted)
+                            Grant.DENIED -> stringResource(R.string.settings_permission_denied)
+                            Grant.MISSING -> stringResource(R.string.settings_permission_missing)
+                        },
+                    )
+                    append(" · ")
+                    append(capability.note ?: capability.why)
+                }
+            },
             onClick = {
                 // 特殊访问只能开系统页; 能点名的才弹框。`ask` 返回 false 有两种情况 —— 特殊访问,
                 // 或者用户已经"拒绝且不再问", 两种都只能让它去设置页

@@ -99,8 +99,11 @@
 
     <string name="settings_section_permissions">权限</string>
     <string name="settings_permissions_summary">此权限由用户自行开关，可供DSH-LW自由开发。</string>
+    <string name="settings_permission_granted">已允许</string>
+    <string name="settings_permission_denied">未允许</string>
     <string name="settings_permission_ask">授权</string>
     <string name="settings_permission_settings">去设置</string>
+    <string name="settings_permission_missing">未声明</string>
 
     <string name="notification_channel_tools">工具通知</string>
     <string name="notification_channel_tools_description">模型用 lw_notify 发出来的通知</string>

@@ -99,8 +99,11 @@
 
     <string name="settings_section_permissions">Permissions</string>
     <string name="settings_permissions_summary">These permissions are switched on and off by the user, and DSH-LW is free to build on them.</string>
+    <string name="settings_permission_granted">Granted</string>
+    <string name="settings_permission_denied">Not granted</string>
     <string name="settings_permission_ask">Grant</string>
     <string name="settings_permission_settings">Open settings</string>
+    <string name="settings_permission_missing">Not declared</string>
 
     <string name="notification_channel_tools">Tool notifications</string>
     <string name="notification_channel_tools_description">Notifications the model posts with lw_notify</string>
