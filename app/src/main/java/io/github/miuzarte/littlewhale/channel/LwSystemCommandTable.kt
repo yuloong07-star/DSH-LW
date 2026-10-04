@@ -12,6 +12,9 @@ import java.util.concurrent.TimeUnit
  *
  * 每一条都是 `am` / `pm` / `svc` / `cmd` / `input` 里那一个具体动作, 而不是"把命令给我": 这是这一层
  * 与"给模型一个 shell"之间唯一的区别
+ *
+ * 例外只有一条: `shell` —— 那是主人点名要的, 一整条命令交给 `sh -c`。它把上面那句话打开了, 所以它跑
+ * 起来时, 这个应用看得见的东西就不再是上限; 参数上限 (4 个、每个 512 字) 与超时仍然适用于它
  */
 internal object LwSystemCommandTable {
 
@@ -45,6 +48,10 @@ internal object LwSystemCommandTable {
         "bluetooth" to Entry("svc", listOf("bluetooth")),
         "wake" to Entry("input", listOf("keyevent", "KEYCODE_WAKEUP")),
         "sleep" to Entry("input", listOf("keyevent", "KEYCODE_SLEEP")),
+
+        // 主人自己点名要的一条: 一整条命令交给 sh 跑。它跑在特权进程的 uid 上 (本机是 shizuku 给的
+        // shell, 2000), 所以看得见的东西比这个应用多; 参数上限与超时照旧适用于它, 命令本身就占其中一个参数
+        "shell" to Entry("/system/bin/sh", listOf("-c")),
     )
 
     /**
