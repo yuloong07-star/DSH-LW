@@ -83,10 +83,20 @@ internal class LwCapture {
         return ""
     }
 
-    /** 屏已经不在合成器的名单里: 这与"屏在而没画出来"是两件事, 处置也不同 */
+    /**
+     * 合成器名单里没有这个屏名
+     *
+     * 这**不等于"这块屏没了"**: 刚建出来、还没有 surface 附着的屏也不在那个名单里 (实测模拟器上
+     * 就是这样: `createVirtualDisplay` 报成功, 而 `dumpsys SurfaceFlinger --display-id` 只有手机
+     * 自己那块屏)。两块屏的处置完全不同, 所以这句要把两种可能都说出来, 并给出下一步
+     *
+     * 真正"这块屏已经不在我们表里"的那种情形在更上一层就拦下了 (`missingScreenReason`), 走不到这里
+     */
     private fun gone(name: String): String =
-        "no display named \"$name\" is in the compositor's list any more, so that screen is gone:" +
-            " create another one (lw_screen_create) and launch the app on it"
+        "the compositor has no display named \"$name\": either that screen is gone, or nothing has" +
+            " been drawn on it yet - a screen with no surface attached is not in that list. Check" +
+            " lw_screen for the screens that are left; if this one is still there, launch an app on" +
+            " it and take the picture again"
 
     /** Read one screen's compositor id out of the list the compositor prints, by name */
     private fun resolve(name: String): String? {
