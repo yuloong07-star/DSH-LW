@@ -142,8 +142,8 @@ android {
         targetSdk = 37
         // 1.0.3: 先修「一个工具都用不上」的那几处 (插件 schema / OCR 进包 / 图片编码), 再补
         // 四/五级能力 (应用控制、事件订阅、录屏、通知监听) 与无障碍滚动
-        versionCode = 4
-        versionName = "1.1.0"
+        versionCode = 5
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
