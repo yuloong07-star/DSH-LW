@@ -993,6 +993,31 @@ const TOOLS = [
       durationMs: { type: 'integer', description: 'How long the pinch takes. Default 300' },
     },
   ),
+  simpleTool(
+    'lw_scroll',
+    'Scroll a screen by a screenful, through the scrollable control\'s own accessibility action'
+    + ' rather than an injected drag. Use it wherever a list or a form is longer than the screen:'
+    + ' a control that has not been laid out yet cannot be pressed by name, and on this device an'
+    + ' injected drag does not move a list at all. It scrolls the largest scrollable control on the'
+    + ' screen, or the container around the control that a name points at. Read the screen again'
+    + ' afterwards - every row has moved, and the rectangles with them.',
+    'scroll',
+    {
+      displayId: DISPLAY_ID,
+      direction: {
+        type: 'string',
+        description: 'forward reads on (the content moves up), backward goes back. Default forward',
+        enum: ['forward', 'backward'],
+      },
+      text: {
+        type: 'string',
+        description: 'Name of a control whose scrollable container should be scrolled, as lw_ui'
+          + ' reported it. Leave it out to scroll the largest scrollable control on the screen',
+      },
+      times: { type: 'integer', description: 'How many screenfuls, 1 to 10. Default 1' },
+    },
+  ),
+
 ]
 
 /** One request, one response: the app answers a single line and closes the connection */
