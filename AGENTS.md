@@ -479,6 +479,26 @@ adb logcat -d -s DshHost -s DshWebView
 
 **装机之后别再强停**: `am start -S` 会把系统那个无障碍绑定实例摘掉, 而**条目还留着** —— 现象是"设置里明明开着、服务却没绑上" (`dumpsys activity services <pkg>` 里那条 `LwAccessibility` ServiceRecord 不见了), 于是读屏与事件订阅静默失效。所以装完要用**不带 `-S`** 的 `am start`, 而 `tools/lw-install.ps1` 判过"绑定成功"之后就别再动它。恢复要走"摘掉 → 停 800ms → 放回"那套 (设置页那个开关自己会做), 而**这只在重装打开的写入窗口里写得动** —— 2026-10-04 在 vivo 上实测: 同一次 shell 里 `pm install` 之后立刻写探针也读到 `null`, 也就是窗口没接住时连"装 + 写回"连着一口气做都不行; 而 `tools/lw-install.ps1` **只在条目缺失时才写**, 遇到"条目在而实例没了"它什么都不做, 得自己走那套摘/放
 
+### 推送与发布 (这台开发机上 github.com 被挡着)
+
+**这条网络上 `github.com:443` 不通, 而 `api.github.com` 与 `uploads.github.com` 通** —— 所以 `git push`
+会以 `Failed to connect to github.com port 443` 失败, 而 `gh api` 与 `gh release create` 一切正常
+(2026-10-04 实测: 五个 github.com 的 IP 全部超时, 换 HTTP/1.1 一样, 没有 IPv6, 本机也没有代理端口)。
+三条路:
+
+1. **SSH 走 443 是通的** (`ssh://git@ssh.github.com:443/yuloong07-star/DSH-LW.git`), 但本机那把
+   `id_rsa` 属于**另一个账号** (`Yuloong07`), 对 `yuloong07-star/DSH-LW` 没有写权限; 而 GitHub 的 SSH
+   **不允许端口转发** (`-L` / `-D` 一起来就关), 所以拿它当隧道也不行
+2. **用 API 重放提交** (这次用的就是这条): `tools/lw-api-push.ps1` 上传 blob → 按 `base_tree` 建 tree →
+   建 commit → **最后才移动 ref**, 而且**每一个对象都与本地算出的 SHA 逐个比对**, 全对才动 ref
+   (前几轮只创建没人引用的对象, 不动 ref 就影响不到仓库)。实测那 24 个提交**全部逐字节一致** ——
+   等于一次正常 push, 连带注解的 tag 对象重放出来的 SHA 都相同
+3. 让有代理的环境推, 推完回这台机器 `gh release create`
+
+要记住的两条: `-input` 送的 JSON **不能带 BOM** (`[Text.Encoding]::UTF8` 会写 BOM, GitHub 直接回
+`Problems parsing JSON` 400), 以及提交对象的正文末尾那个换行是**对象里本来就有的**, 送错一个字节
+SHA 就变 —— 所以脚本先按原样送, 不一致再去掉一个换行重试
+
 ### adb 安装失败时怎么装 (termux / root 兜底)
 
 小米 / HyperOS 上 `gradlew installDebug` 或 `adb install` 会失败 (典型原因是设备上弹了安装确认框而没人点, `INSTALL_FAILED_USER_RESTRICTED`, 或 MIUI 的"USB 安装"开关没开); 本机这台设备上**普通 `adb install -r` 其实是通的**, 下面这条是失败时的兜底, 已实测可用:
