@@ -66,18 +66,35 @@ internal object LwSpeech {
         val directory = modelDirectory(context, request)
         val model = File(directory, MODEL_FILE)
         val tokens = File(directory, TOKENS_FILE)
+        val present = model.isFile && tokens.isFile
         val held = synchronized(lock) { loaded }
+        // **模型不在就不要碰原生库**: `VersionInfo.version` 是一条 JNI 调用, 会把 sherpa 那个
+        // .so 拉起来 —— 而它只为回答一句"引擎是什么版本"。插件的 `lw-native` provider 在**加载时**
+        // 就问一次状态 (页面靠它决定录音按钮能不能按), 于是这一问落在每次 host 启动的路径上:
+        // 模型还没下、或者这台设备的 ABI 跑不动那个库时, 整条启动就跟着那个库一起死 (2026-10-05
+        // 在模拟器上实测: AndroidRuntime 之外的 SIGSEGV, 线程是 lw-bridge-reque)。
+        // 模型下好了才回去问版本, 那时才是真的要用它
+        val sherpa = if (present) {
+            runCatching { VersionInfo.version }.getOrElse { "unavailable: ${it.message}" }
+        } else {
+            "not loaded (the model is not downloaded yet)"
+        }
+        val onnxruntime = if (present) {
+            runCatching { VersionInfo.onnxruntimeVersion }.getOrElse { "unavailable" }
+        } else {
+            "not loaded"
+        }
         return buildJsonObject {
             put("engine", "sherpa-onnx")
-            put("sherpa", runCatching { VersionInfo.version }.getOrElse { "unavailable: ${it.message}" })
-            put("onnxruntime", runCatching { VersionInfo.onnxruntimeVersion }.getOrElse { "unavailable" })
+            put("sherpa", sherpa)
+            put("onnxruntime", onnxruntime)
             put("model", MODEL_NAME)
             put("directory", directory.absolutePath)
             put("modelPath", model.absolutePath)
             put("tokensPath", tokens.absolutePath)
             put("modelBytes", model.length())
             put("tokensBytes", tokens.length())
-            put("present", model.isFile && tokens.isFile)
+            put("present", present)
             put("loaded", held != null && held.directory == directory.absolutePath)
             put("languages", LANGUAGES.joinToString(", "))
         }
