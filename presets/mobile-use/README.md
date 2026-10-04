@@ -22,6 +22,12 @@
 - 安装（等价于本目录 `cordis.patch.yml` 的内容）：把该段追加到 profile patch；`dsh-hmr` 监听该文件，保存即 `reconcileProfilePatches` 热生效，**不必重启 dsh web**。
 - 也支持作为 bundle 安装（`dsh.bundle.patch` 已声明）：本机 `plugin_manager install_bundle` 被 `DSHA_NATIVE_PLUGIN_MANAGER` 策略拦截，走既定直改安装范式（拷包 → `profiles/web/node_modules` 软链 → `package.json` 的 dependencies 与 `dsh.profile.bundles`）。
 
+## 配套技能 android-device-control
+
+本分支同时携带该技能本体：[`skills/android-device-control/SKILL.md`](../../skills/android-device-control/SKILL.md)。预设 persona 第 1 句就要求「动手前先 skill 加载 android-device-control 技能」，那份技能指定了本机通道事实（只用 `lw_*`，没有 `/app/*`、没有 adb、没有 root 模块）、虚拟屏建屏与回收纪律、无障碍树与 OCR 的取用顺序、截图坐标换算、锁屏等待与安全红线；缺它时预设仍可用，但规则只剩 persona 里那 23 条。
+
+安装：把 `skills/android-device-control/` 整个目录拷进 `<DSH_HOME>/skills/`（或 DSH 的 `~/.agents/skills/`），技能库会即时列出，无需重启。
+
 ## 卸载 / 回滚
 
 还原备份 `profiles/web/cordis.patch.yml.bak-before-mobile-use`，或删掉 `- insert:` 那一段；hmr 会自动 reconcile。已开会话保留其启动时的预设版本，验证改动请新开会话。
