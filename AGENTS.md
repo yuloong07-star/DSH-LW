@@ -477,6 +477,8 @@ adb logcat -d -s DshHost -s DshWebView
 
 **每次 `adb install -r` 都会把我们踢出 `enabled_accessibility_services`**: 装完要么在设置页拨一下那个开关, 要么 `settings put secure enabled_accessibility_services <原值>:<我们的组件>` —— **同样要读出来改**, 设备上还有别人的服务
 
+**装机之后别再强停**: `am start -S` 会把系统那个无障碍绑定实例摘掉, 而**条目还留着** —— 现象是"设置里明明开着、服务却没绑上" (`dumpsys activity services <pkg>` 里那条 `LwAccessibility` ServiceRecord 不见了), 于是读屏与事件订阅静默失效。所以装完要用**不带 `-S`** 的 `am start`, 而 `tools/lw-install.ps1` 判过"绑定成功"之后就别再动它。恢复要走"摘掉 → 停 800ms → 放回"那套 (设置页那个开关自己会做), 而**这只在重装打开的写入窗口里写得动** —— 2026-10-04 在 vivo 上实测: 同一次 shell 里 `pm install` 之后立刻写探针也读到 `null`, 也就是窗口没接住时连"装 + 写回"连着一口气做都不行; 而 `tools/lw-install.ps1` **只在条目缺失时才写**, 遇到"条目在而实例没了"它什么都不做, 得自己走那套摘/放
+
 ### adb 安装失败时怎么装 (termux / root 兜底)
 
 小米 / HyperOS 上 `gradlew installDebug` 或 `adb install` 会失败 (典型原因是设备上弹了安装确认框而没人点, `INSTALL_FAILED_USER_RESTRICTED`, 或 MIUI 的"USB 安装"开关没开); 本机这台设备上**普通 `adb install -r` 其实是通的**, 下面这条是失败时的兜底, 已实测可用:

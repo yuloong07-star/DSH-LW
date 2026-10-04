@@ -237,6 +237,14 @@ if ($Perms) {
 }
 
 Write-Host ""
+Write-Host "装完别再用 am start -S 强停" -ForegroundColor Yellow
+Write-Host "  强停会把系统那个无障碍绑定实例摘掉, 而**条目还留着** —— 现象是"设置里写着开着、服务却没绑上": "
+Write-Host "  上面那条 service bound 判据随后就会变成 0, 读屏与事件订阅静默失效。拉动应用请用不带 -S 的:"
+Write-Host "    adb -s $Serial shell am start -n $Package/.MainActivity"
+Write-Host "  真被强停了: 恢复要走"摘掉 -> 停 800ms -> 放回"那套 (设置页那个开关自己会做), 而它只在重装打开的"
+Write-Host "  写入窗口里写得动 —— 本脚本也只在**条目缺失**时才写, 遇到"条目在而实例没了"它什么都不做"
+
+Write-Host ""
 Write-Host "剩下这些只能人去系统页里点 (脚本给不了):" -ForegroundColor Cyan
 Write-Host "  - 全屏通知 (横幅): 设置 -> 应用 -> DSH-LW -> 特殊应用权限里那一条, lw_notify 的 banner 靠它"
 Write-Host "  - 录屏授权 (以后要用到时再说)"
