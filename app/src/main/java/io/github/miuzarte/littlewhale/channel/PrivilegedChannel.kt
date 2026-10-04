@@ -96,7 +96,15 @@ object PrivilegedChannel {
             lastError = "the channel was never initialized"
             return null
         }
-        routes.forEach { route -> connect(route)?.let { return it } }
+        // 两条路各说各的为什么不行, 而且失败时**不留下最后一条的理由**: 以前 lastError 是 Shizuku
+        // 那句, root 那半就丢了, 于是一台既没给 root 又没跑 Shizuku 的设备只会被告知"Shizuku 没授权"
+        val refused = mutableListOf<String>()
+        for (route in routes) {
+            connect(route)?.let { return it }
+            lastError?.let { refused += it }
+        }
+        lastError = NOTHING_TO_CONNECT + (if (refused.isEmpty()) "" else " (${refused.joinToString("; ")})")
+        Log.w(TAG, lastError ?: NOTHING_TO_CONNECT)
         null
     }
 
@@ -165,7 +173,9 @@ object PrivilegedChannel {
     private fun connect(route: Route): LwServiceProxy? {
         val label = route.connector.backend.label
         if (!route.permission.isAvailable()) {
-            Log.i(TAG, "$label is not available on this device")
+            val reason = "$label is not installed, or it is not running"
+            lastError = reason
+            Log.i(TAG, reason)
             return null
         }
         if (!route.permission.isGranted() && !route.permission.requestPermission()) {
@@ -247,4 +257,16 @@ object PrivilegedChannel {
 
     /** Room for the spawn call and the cleanup that happens outside the connector's own wait */
     private const val CONNECT_SLACK_MS = 3_000L
+
+    /**
+     * 两条路都不通时给的那一句话
+     *
+     * 它要说的是"下一步做什么", 而不是"哪里不对": 屏幕那一整套工具全靠这条通道, 而一台设备上没有
+     * root 也没有 Shizuku 时, 以前的答案只会说"Shizuku 没授权", 让人去装一个本来就没装的东西
+     */
+    private const val NOTHING_TO_CONNECT =
+        "the screen side needs root (KernelSU / Magisk) or Shizuku, and neither is usable right now:" +
+            " for root, allow this app in the root manager by hand - nothing pops up on its own to ask," +
+            " and the app cannot even tell whether root is there until you do; for Shizuku, install it," +
+            " start it, and allow this app when it asks"
 }

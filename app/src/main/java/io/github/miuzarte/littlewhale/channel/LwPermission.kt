@@ -80,15 +80,16 @@ data class AccessibilityState(
             "$AT$ADVANCED_NOTE"
 
         !writeChannelOpen -> "这台设备不接受写入: `settings put` 返回 0 而值不变, 所以应用自己开不了它。" +
-            " 用电脑跑 tools/lw-install.ps1, 它会赶在重装之后那段窗口里写完并读回$AT"
+            " 用电脑跑 $INSTALL_SCRIPT, 它会赶在重装之后那段窗口里写完并读回$AT"
 
         installer.isEmpty() -> "装的时候没带安装者身份 (installerPackageName 是 null), 而 Android 13" +
-            " 起这样的应用不许开无障碍。用带 -i 的方式重装: tools/lw-install.ps1$AT"
+            " 起这样的应用不许开无障碍。用带 -i 的方式重装: $INSTALL_SCRIPT$AT"
 
         restrictedSettings != "allow" -> "受限设置那道 op 还是 \"$restrictedSettings\" (要 allow);" +
-            " 这台设备上它只有带安装者身份重装之后才设得动$AT"
+            " 这台设备上它只有带安装者身份重装之后才设得动 —— $INSTALL_SCRIPT$AT"
 
-        !componentListed -> "组件不在设备的列表里, 写一次就能放回去 (重装会把我们踢出去)$AT"
+        !componentListed -> "组件不在设备的列表里, 写一次就能放回去 (重装会把我们踢出去):" +
+            " $INSTALL_SCRIPT$AT"
 
         else -> "组件在列表里但系统没有把它绑起来: 开关会先摘掉、停一下再放回, 那一下是让系统重新评估$AT"
     }
@@ -106,6 +107,15 @@ data class AccessibilityState(
     private val ADVANCED_NOTE: String
         get() = " (这台设备开着高级保护模式: 它只把无障碍交给带 isAccessibilityTool 标志的服务," +
             "本应用带了那个标志。模式开着时系统设置里的无障碍页不会给这个应用授权, 别在那里找开关)"
+
+    /**
+     * 这台设备上把无障碍打开的唯一办法, 连命令一起给
+     *
+     * 说"跑装机脚本"是不够的: 脚本在电脑上, 要带设备序列号, 而人在屏幕上看到的这句话就是他手里
+     * 仅有的线索 —— 给一行能直接粘的命令, 比给一个文件名有用
+     */
+    private val INSTALL_SCRIPT: String
+        get() = "pwsh -File tools/lw-install.ps1 -Serial <设备序列号>"
 
     private val AT: String
         get() = " (读取 " +

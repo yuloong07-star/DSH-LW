@@ -1383,19 +1383,28 @@ function formatGesture(verb, result, note) {
 /** Where the picture went, and how to read coordinates off it */
 function formatScreenshot(result) {
   if (!result.path) {
+    // 没有图的原因现在分两种, 而它们要做的下一步不一样: 屏没了 (再建一块) 与屏在而还没画出来
+    // (在它上面起个应用再拍) —— 理由由设备那一侧写, 这里原样念
     return `no picture was written: ${result.error || 'no reason reported'}`
   }
   const kilobytes = (result.bytes / 1024).toFixed(1)
   const picture = result.picture ?? {}
-  const size = picture.scale > 1
+  const scaled = picture.scale > 1
+  const size = scaled
     ? `${picture.width}x${picture.height} px, so multiply coordinates measured on the picture by`
       + ` ${picture.scale.toFixed(2)} to get screen coordinates`
     : 'the same size as the screen'
+  // 一次截图落两个文件: 全尺寸那份给人看, 缩过的那份给模型。清理要两份一起删, 而这件事以前没有
+  // 任何一处写出来, 收尾时就得自己在两个名字之间对账
+  const pair = scaled
+    ? `; the scaled copy is ${result.path.replace(/\.png$/i, '-small.png')}`
+      + ' - the two belong together, so deleting the screenshot means deleting both'
+    : ''
   return withJson(
     [
       `displayId ${result.displayId} "${result.label}" captured to ${result.path}`
       + ` (screen ${result.width}x${result.height}, picture ${size}; ${kilobytes} KB, overwritten`
-      + ' by the next capture of this screen)',
+      + ` by the next capture of this screen${pair})`,
     ],
     result,
   )
@@ -1482,7 +1491,14 @@ function formatLaunched(result, note) {
     ]
   const output = (result.output ?? '').trim()
   if (output) lines.push(output)
-  lines.push('Call lw_ui to see what the screen says now.')
+  // 起完的自查: `am start` 报成功不等于窗口落在这块屏上, 而"没有窗口"这件事以前只有模型自己去发现
+  if (result.windowOnDisplay === false) {
+    lines.push(result.windowNote
+      || `displayId ${result.displayId} has no window on it after the launch`)
+    lines.push('Read the screen back with lw_ui before acting on it.')
+  } else {
+    lines.push('Call lw_ui to see what the screen says now.')
+  }
   return said(lines.join('\n'), note)
 }
 

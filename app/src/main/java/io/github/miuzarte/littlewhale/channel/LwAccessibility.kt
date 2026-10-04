@@ -410,9 +410,17 @@ class LwAccessibility : AccessibilityService() {
             fallback
         }
 
+        /**
+         * 这块屏上现在有没有窗口
+         *
+         * `lw_launch` 之后用它自查, 因为 `am start` 报成功不等于窗口落在了这一块屏上: 应用已经在跑
+         * 的时候, 系统把 intent 交给的是那个正在跑的实例, 而它的窗口可能在别处 —— 于是"启动了"与
+         * "这块屏上一片空白"同时成立, 而这一层以前要模型自己想到
+         */
+        fun hasWindow(displayId: Int): Boolean = windowOn(displayId) != null
+
         /** The window a caller means, preferring the one an app is actually showing there */
-        private fun windowOn(displayId: Int): AccessibilityWindowInfo? {
-            val all = try {
+        private fun windowOn(displayId: Int): AccessibilityWindowInfo? {            val all = try {
                 instance?.windowsOnAllDisplays
             } catch (error: Throwable) {
                 Log.w(TAG, "could not read the windows", error)

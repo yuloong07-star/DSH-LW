@@ -12,7 +12,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -213,6 +213,25 @@ run(
 cpSync(join(webuiStage, 'node_modules', webui), join(out, 'node_modules', webui), { recursive: true })
 rmSync(webuiStage, { recursive: true, force: true })
 console.log(`pack-host: installed the ${webui} plugin from the registry`)
+
+// 第三方插件与它自己声明的依赖对不对得上, 只有真 import 一次才知道
+//
+// 漏一个依赖时, npm 不会说话 —— 包照样装进来, 而它在**加载时**才抛, 于是设备上的表现是"这个功能
+// 整块不见了", 而不是一句安装错误。手机上中过一次同类的: 打包时漏了 `rrule`, 定时任务全停
+// (2026-10-04 的真机记录)。这里 import 一次它的入口: 模块求值期就把这种问题暴露出来的地方
+const webuiManifest = JSON.parse(
+  readFileSync(join(out, 'node_modules', webui, 'package.json'), 'utf8'),
+)
+const webuiEntry = typeof webuiManifest.main === 'string' ? webuiManifest.main : 'index.js'
+try {
+  await import(pathToFileURL(join(out, 'node_modules', webui, webuiEntry)).href)
+} catch (error) {
+  throw new Error(
+    `${webui} cannot be imported after installation (${error?.message ?? error}): it is missing a`
+    + ' dependency it actually imports. Declare it in the host tree\'s dependencies, or drop the plugin',
+  )
+}
+console.log(`pack-host: ${webui} imports cleanly`)
 
 // LittleWhale's own host plugin is copied in rather than packed: it is a few hundred lines of
 // plain ESM with no build step, and it has to sit under node_modules so that its import of

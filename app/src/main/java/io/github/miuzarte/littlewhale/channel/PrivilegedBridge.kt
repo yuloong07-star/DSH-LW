@@ -613,6 +613,20 @@ object PrivilegedBridge {
                 put("user", userId)
                 put("code", code)
                 put("started", code == 0 && output.contains(STARTED_MARK))
+                // 起完自查一次窗口: 见 waitForWindow 上那段
+                val window = waitForWindow(screen.displayId)
+                put("windowOnDisplay", window)
+                if (!window) {
+                    put(
+                        "windowNote",
+                        "the launch was accepted but displayId ${screen.displayId} still has no" +
+                            " window on it. An app that is already running keeps its window where it" +
+                            " already is - $packageName is most likely up on the phone's own screen or" +
+                            " on another screen of ours. Either name that screen instead, or make a" +
+                            " fresh one (lw_screen_create) and launch again: a second launch on the" +
+                            " same screen does not move the running window onto it.",
+                    )
+                }
                 put("output", output.trim())
             }
         }
@@ -942,6 +956,21 @@ object PrivilegedBridge {
     }
 
     /**
+     * 等这块屏上出现窗口, 给 `lw_launch` 用来自查
+     *
+     * `am start -W` 等到 activity 起来就返回, 而窗口进无障碍那份窗口列表要再晚一点, 所以这里是问几次
+     * 而不是问一次就下结论 —— 否则一个慢一点的启动会被说成"什么都没有"
+     */
+    private fun waitForWindow(displayId: Int): Boolean {
+        val deadline = System.currentTimeMillis() + WINDOW_SETTLE_MS
+        while (true) {
+            if (LwAccessibility.hasWindow(displayId)) return true
+            if (System.currentTimeMillis() >= deadline) return false
+            Thread.sleep(WINDOW_POLL_MS)
+        }
+    }
+
+    /**
      * The key one request names
      *
      * A name and a number are both accepted, because a caller may have either: the name is the
@@ -1151,6 +1180,10 @@ object PrivilegedBridge {
     private const val DEFAULT_LAUNCH_MS = 20_000L
     private const val MIN_LAUNCH_MS = 1_000L
     private const val MAX_LAUNCH_MS = 60_000L
+
+    /** 起完之后窗口落进无障碍那份列表要给多久, 以及多久问一次 */
+    private const val WINDOW_SETTLE_MS = 1_500L
+    private const val WINDOW_POLL_MS = 150L
 
     /** More apps than this in one answer is a listing nobody reads, so it is cut and said so */
     private const val MAX_APPS = 400

@@ -21,9 +21,15 @@ internal class LwCapture {
     /** The compositor's ids, by the name the screen was created with */
     private val known = mutableMapOf<String, String>()
 
-    /** Capture one of our screens into a file, answering whether the device wrote one */
-    fun capture(name: String, path: String): Boolean {
-        val target = known[name] ?: resolve(name) ?: return false
+    /**
+     * Capture one of our screens into a file
+     *
+     * @returns an empty string once a picture is there, otherwise why there is none. 两种"没有图"
+     *   必须分得开: 屏已经不在合成器的名单里 (那块屏没了), 与屏在而它这一帧还没画出来 (应用还没
+     *   铺上去) —— 处置完全不同, 而以前的答案只有一句"没有画面", 只能靠人猜
+     */
+    fun capture(name: String, path: String): String {
+        val target = known[name] ?: resolve(name) ?: return gone(name)
         return written(run(SCREENCAP, "-d", target, "-p", fresh(path)), path, "display $target") {
             // The screen may have been rebuilt under a new id, so the next call looks again
             known.remove(name)
@@ -35,8 +41,10 @@ internal class LwCapture {
      *
      * The default display is the one display whose compositor id is not worth looking up: `-d`
      * names a mode the phone happens to be in, while saying nothing is the phone as it is now
+     *
+     * @returns an empty string once a picture is there, otherwise why there is none
      */
-    fun capturePrimary(path: String): Boolean =
+    fun capturePrimary(path: String): String =
         written(run(SCREENCAP, "-p", fresh(path)), path, "the phone's own screen")
 
     /** Forget every id, which is what a screen going away makes necessary */
@@ -56,17 +64,29 @@ internal class LwCapture {
         return path
     }
 
-    /** Say whether a capture left a picture behind, and clean up when it did not */
-    private fun written(outcome: String, path: String, what: String, forget: () -> Unit = {}): Boolean {
+    /**
+     * Say why there is no picture, and clean up when there is one
+     *
+     * @returns an empty string once the file has bytes in it, otherwise the sentence to hand back
+     */
+    private fun written(outcome: String, path: String, what: String, forget: () -> Unit = {}): String {
         val size = File(path).length()
         if (size <= 0L) {
             Log.w(TAG, "the device wrote no picture for $what: $outcome")
             forget()
-            return false
+            val said = outcome.trim().lines().firstOrNull { it.isNotBlank() }.orEmpty()
+            return "the screen is there but the device wrote no picture of it: nothing has drawn on it" +
+                " yet, so launch an app on that screen and take the picture again" +
+                (if (said.isEmpty()) "" else " (screencap said: $said)")
         }
         Log.i(TAG, "captured $what into $path, $size bytes")
-        return true
+        return ""
     }
+
+    /** 屏已经不在合成器的名单里: 这与"屏在而没画出来"是两件事, 处置也不同 */
+    private fun gone(name: String): String =
+        "no display named \"$name\" is in the compositor's list any more, so that screen is gone:" +
+            " create another one (lw_screen_create) and launch the app on it"
 
     /** Read one screen's compositor id out of the list the compositor prints, by name */
     private fun resolve(name: String): String? {

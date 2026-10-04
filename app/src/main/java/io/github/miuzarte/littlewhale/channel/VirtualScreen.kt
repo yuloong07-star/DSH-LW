@@ -692,9 +692,9 @@ object VirtualScreen {
     private fun captureSettled(screen: ScreenState, staging: File): String? {
         var last = "nothing"
         repeat(CAPTURE_ATTEMPTS) { attempt ->
-            if (!requireService().screenshot(screen.displayId, staging.absolutePath)) {
-                return "the device wrote no picture"
-            }
+            // 特权侧回的是"为什么没有图": 屏没了, 与屏在而应用还没画上去, 是两件事
+            val problem = requireService().screenshot(screen.displayId, staging.absolutePath)
+            if (problem.isNotEmpty()) return problem
             val size = Picture.sizeOf(staging) ?: return null
             if (size.first == screen.width && size.second == screen.height) return null
             last = "${size.first}x${size.second}"

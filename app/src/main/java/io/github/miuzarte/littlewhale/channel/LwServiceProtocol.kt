@@ -518,14 +518,17 @@ class LwServiceProxy(private val remote: IBinder) {
      *
      * The file is written by the privileged process, so the caller has to be able to read what
      * that uid leaves behind - which holds for the app's own directories and nothing else
+     *
+     * @returns an empty string once a picture is there, otherwise why there is none: 那句话要能分开
+     *   "屏已经不在"与"屏在而这一帧没画出来", 两件事的处置完全不同, 所以这里回的是理由而不是布尔
      */
-    fun screenshot(displayId: Int, path: String): Boolean = transact(
+    fun screenshot(displayId: Int, path: String): String = transact(
         code = LwServiceProtocol.SCREENSHOT,
         write = {
             writeInt(displayId)
             writeString(path)
         },
-        read = { readInt() == 1 },
+        read = { readString().orEmpty() },
     )
 
     /**
