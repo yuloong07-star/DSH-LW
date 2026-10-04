@@ -2,6 +2,13 @@ package io.github.miuzarte.littlewhale.channel
 
 import android.graphics.Rect
 import android.util.Log
+import io.github.miuzarte.littlewhale.tool.LwNotify
+import io.github.miuzarte.littlewhale.tool.LwPower
+import io.github.miuzarte.littlewhale.tool.LwSystem
+import io.github.miuzarte.littlewhale.tool.LwSystemCommand
+import io.github.miuzarte.littlewhale.tool.text
+import io.github.miuzarte.littlewhale.util.PermissionCatalog
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
@@ -53,6 +60,21 @@ object PrivilegedBridge {
 
     /** A caller that connects and then goes silent must not hold the only accept loop */
     private const val REQUEST_TIMEOUT_MS = 120_000
+
+    /** The socket's own read timeout, a moment past the request budget so the caller hears why */
+    private const val SO_TIMEOUT_MS = REQUEST_TIMEOUT_MS + 5_000
+
+    /**
+     * One request at a time is no longer enough
+     *
+     * Every request used to be served on the accept loop, which was fine while they were all
+     * quick: read a screen, inject a touch, take a picture. A confirmation is not quick - it waits
+     * for a person - and serving that on the accept loop would freeze every other call for as long
+     * as the dialog is up. So each connection gets its own thread now, and the loop only accepts
+     */
+    private val callers = java.util.concurrent.Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "lw-bridge-request").apply { isDaemon = true }
+    }
 
     private var server: ServerSocket? = null
     private var worker: Thread? = null
@@ -111,39 +133,44 @@ object PrivilegedBridge {
                 return
             }
             try {
-                serve(client)
+                callers.execute { serve(client) }
             } catch (error: Throwable) {
                 Log.w(TAG, "a channel request failed", error)
-            } finally {
                 runCatching { client.close() }
             }
         }
     }
 
     private fun serve(client: Socket) {
-        client.soTimeout = REQUEST_TIMEOUT_MS
-        val request = client.getInputStream().bufferedReader().readLine() ?: return
-        val response = respond(request)
-        client.getOutputStream().write((response + "\n").toByteArray())
-        client.getOutputStream().flush()
+        try {
+            client.soTimeout = SO_TIMEOUT_MS
+            val request = client.getInputStream().bufferedReader().readLine() ?: return
+            val response = respond(request)
+            client.getOutputStream().write((response + "\n").toByteArray())
+            client.getOutputStream().flush()
+        } catch (error: Throwable) {
+            Log.w(TAG, "serving a channel request failed", error)
+        } finally {
+            runCatching { client.close() }
+        }
     }
 
-    private fun respond(request: String): String {
+    private fun respond(request: String): String = runBlocking {
         val parsed = try {
             Json.parseToJsonElement(request).jsonObject
         } catch (error: Throwable) {
-            return failure("the request is not a JSON object: ${error.message}")
+            return@runBlocking failure("the request is not a JSON object: ${error.message}")
         }
         // Any app on the device could open this port, so the token is the guard rather than the
         // socket's location
         val presented = parsed["token"]?.jsonPrimitive?.contentOrNull
         if (presented == null || presented != current?.token) {
             Log.w(TAG, "refusing a request that did not present the channel token")
-            return failure("the request did not present the channel token")
+            return@runBlocking failure("the request did not present the channel token")
         }
         val method = parsed["method"]?.jsonPrimitive?.contentOrNull
-            ?: return failure("the request names no method")
-        return try {
+            ?: return@runBlocking failure("the request names no method")
+        try {
             buildJsonObject {
                 put("ok", true)
                 put("result", dispatch(method, parsed))
@@ -160,7 +187,7 @@ object PrivilegedBridge {
      * The request object travels along because a screen is made by its caller: the name it is to
      * be shown under, and the size it is to have, are both decided out there rather than here
      */
-    private fun dispatch(method: String, request: JsonObject) = when (method) {
+    private suspend fun dispatch(method: String, request: JsonObject) = when (method) {
         "ping" -> buildJsonObject { put("pong", true) }
         "status" -> ChannelReport.status(PrivilegedChannel.state())
         "connect" -> {
@@ -679,7 +706,36 @@ object PrivilegedBridge {
             perf = request["perf"]?.jsonPrimitive?.contentOrNull ?: "burst",
         )
 
+        // 下面这一批是 1.0.2 加的: 通知、震动、剪贴板、分享、下载在 app 进程里自己做, 不需要特权;
+        // 设备与系统信息同理 (读的多); 这几条回的都是 {"text": ...}, 由插件念给模型
+        "notify" -> appContext { LwNotify.notify(it, request) }
+        "vibrate" -> appContext { LwNotify.vibrate(it, request) }
+        "clipboard" -> appContext { LwNotify.clipboard(it, request) }
+        "share" -> appContext { LwNotify.share(it, request) }
+        "openFile" -> appContext { LwNotify.openFile(it, request) }
+        "download" -> appContext { LwNotify.download(it, request) }
+        "device" -> appContext { LwSystem.device(it) }
+        "battery" -> appContext { LwSystem.battery(it) }
+        "storage" -> appContext { LwSystem.storage(it) }
+        "running" -> appContext { LwSystem.running(it) }
+        "volume" -> appContext { LwSystem.volume(it, request) }
+        "media" -> appContext { LwSystem.media(it, request) }
+        "net" -> appContext { LwSystem.net(it, request) }
+        "sensor" -> appContext { LwSystem.sensor(it, request) }
+        "location" -> appContext { LwSystem.location(it, request) }
+        "system" -> appContext { LwSystem.system(it, request) }
+        "permissions" -> appContext { text(PermissionCatalog.report(it)) }
+        "power" -> appContext { LwPower.dispatch(it, request) }
+        "syscmd" -> LwSystemCommand.dispatch(request)
+
         else -> throw IllegalArgumentException("unknown method $method")
+    }
+
+    /** 这一批工具要一个 Context 才能做事, 拿不到就是 app 那一侧还没初始化 */
+    private inline fun <T> appContext(block: (android.content.Context) -> T): T {
+        val context = PrivilegedChannel.context()
+            ?: throw IllegalStateException("this app has no context yet, so there is nothing to use")
+        return block(context)
     }
 
     /**

@@ -59,9 +59,22 @@ object PrivilegedChannel {
     @Volatile
     private var lastError: String? = null
 
+    /**
+     * 应用级的 context, 给那些"不需要特权、但需要一个 Context"的工具用
+     *
+     * 通知、剪贴板、电池、系统设置这些都在 app 进程里自己做, 走这条通道只是为了把它们的结果按
+     * 同一套协议回给 host。所以这里留一个只读的口子, 免得每个工具各自再持一份
+     */
+    @Volatile
+    private var application: Context? = null
+
+    /** 这个应用的 context, 没有就说明 [initialize] 还没被调过 */
+    fun context(): Context? = application
+
     /** Build the routes once, from an application context */
     fun initialize(context: Context) {
         synchronized(monitor) {
+            application = context.applicationContext
             if (routes.isNotEmpty()) return
             val app = context.applicationContext
             routes = listOf(

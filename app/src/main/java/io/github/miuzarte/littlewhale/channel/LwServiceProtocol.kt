@@ -111,6 +111,26 @@ object LwServiceProtocol {
      */
     const val PACKAGES = IBinder.FIRST_CALL_TRANSACTION + 19
 
+    /**
+     * One of a short list of things only a privileged uid can do
+     *
+     * 卸载、清数据、停应用、装包、飞行模式 / 移动数据 / 蓝牙开关、熄屏 —— `am` 与 `pm` 对 app uid
+     * 一律拒绝, 而 app_process 那侧以 root 或 shell 自居, 正是能做这些的身份
+     *
+     * 送过去的是一个**操作名**加几个参数, 不是一条命令: 具体怎么拼、能不能拼, 由特权进程里那张白名单
+     * 表决定, 这里只负责把参数搬运过去
+     */
+    const val SYSTEM_COMMAND = IBinder.FIRST_CALL_TRANSACTION + 20
+
+    /**
+     * 点亮或熄灭屏幕
+     *
+     * 走的是按键 (`KEYCODE_WAKEUP` / `KEYCODE_SLEEP`) 而不是电源服务: 平台自己处理这两个键, 而
+     * app_process 起的进程没有 Context 去申请电源锁。这是熄屏那条死结 (熄屏后 `screencap` 交旧帧、
+     * 注入的触摸唤不醒) 唯一能用的解
+     */
+    const val POWER = IBinder.FIRST_CALL_TRANSACTION + 21
+
     /** The three moments [INPUT_TOUCH] can report */
     const val TOUCH_DOWN = 0
     const val TOUCH_MOVE = 1
@@ -153,6 +173,14 @@ object LwServiceProtocol {
     /** The app's side of the protocol over any binder, local or remote */
     fun proxy(binder: IBinder): LwServiceProxy = LwServiceProxy(binder)
 }
+
+/**
+ * 一条特权命令的结果
+ *
+ * @property code 那条命令的退出码, 0 不代表事情真的做成了 (这台设备上见过退出码 0 而值不变)
+ * @property output 它打印的原话, 出错原因就在这里面
+ */
+data class SystemOutput(val code: Int, val output: String)
 
 /**
  * Calls the privileged service
@@ -251,6 +279,44 @@ class LwServiceProxy(private val remote: IBinder) {
         write = { writeInt(userId) },
         read = { readString().orEmpty() },
     )
+
+    /**
+     * 一件事: 白名单里的一个操作, 配几个参数
+     *
+     * 回的是"退出码 + 原话", 因为读回校验在这条路的上一层 (`LwSystemCommand`) 做: 这里只如实搬运,
+     * 不判断成功 —— 这台设备上"退出码 0 但什么都没发生"已经见过不止一次
+     *
+     * @param arguments 最多四个, 由特权那边再截一次
+     * @param timeoutMs 那一条命令自己能跑多久
+     */
+    fun systemCommand(
+        operation: String,
+        userId: Int,
+        arguments: List<String>,
+        timeoutMs: Long,
+    ): SystemOutput = transact(
+        code = LwServiceProtocol.SYSTEM_COMMAND,
+        write = {
+            writeString(operation)
+            writeInt(userId)
+            writeStringList(arguments)
+            writeLong(timeoutMs)
+        },
+        read = { SystemOutput(readInt(), readString().orEmpty()) },
+    )
+
+    /** 点亮或熄灭屏幕 */
+    fun power(on: Boolean): SystemOutput = transact(
+        code = LwServiceProtocol.POWER,
+        write = { writeInt(if (on) 1 else 0) },
+        read = { SystemOutput(readInt(), readString().orEmpty()) },
+    )
+
+    /** 一个字符串列表, 长度跟着内容走 */
+    private fun Parcel.writeStringList(values: List<String>) {
+        writeInt(values.size)
+        values.forEach { writeString(it) }
+    }
 
     /**
      * Press and lift at one point

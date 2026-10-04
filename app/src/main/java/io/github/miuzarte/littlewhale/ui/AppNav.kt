@@ -1,13 +1,25 @@
 package io.github.miuzarte.littlewhale.ui
 
 import androidx.activity.compose.LocalActivity
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.SnackbarDuration
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.nav.core.NavCornerClipMode
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
@@ -16,6 +28,7 @@ import top.yukonga.miuix.kmp.nav.core.rememberNavBackStack
 import top.yukonga.miuix.kmp.nav.core.rememberNavSystemCornerRadius
 import top.yukonga.miuix.kmp.nav.transition.NavSwipeDirection
 import top.yukonga.miuix.kmp.nav.transition.NavTransitions
+import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.squircle.LocalSquircleEnabled
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
@@ -93,6 +106,43 @@ fun LittleWhaleApp() {
         }
     }
 
+    /**
+     * 破坏性操作等人点一下
+     *
+     * 挂在整个应用这一层而不是某一页里: 模型要卸应用的时候, 人可能正看着设置页, 也可能停在主页
+     */
+    @Composable
+    fun confirm() {
+        val pending = DestructiveConfirm.pending
+        OverlayDialog(
+            show = pending != null,
+            title = stringResource(R.string.destructive_confirm_title),
+            summary = pending?.let { "${it.what}\n\n${it.target}" } ?: "",
+            onDismissRequest = { pending?.decide(false) },
+            onDismissFinished = {},
+        ) {
+            Text(
+                text = stringResource(R.string.destructive_confirm_hint, DESTRUCTIVE_WAIT_SECONDS),
+                color = colorScheme.onBackgroundVariant,
+                modifier = Modifier.padding(bottom = 16.dp),
+            )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                TextButton(
+                    text = stringResource(R.string.button_cancel),
+                    onClick = { pending?.decide(false) },
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(20.dp))
+                TextButton(
+                    text = stringResource(R.string.destructive_confirm_ok),
+                    onClick = { pending?.decide(true) },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.textButtonColorsPrimary(),
+                )
+            }
+        }
+    }
+
     MiuixTheme(controller = controller) {
         // 系统栏图标要跟着实际渲染出来的配色, 手动钉成深色时也得跟着变
         ApplySystemBarsAppearance(LocalActivity.current?.window)
@@ -123,6 +173,16 @@ fun LittleWhaleApp() {
                 entry<Screen.Home>(swipeDismiss = swipe) { HostScreen() }
                 entry<Screen.Settings>(swipeDismiss = swipe) { SettingsScreen() }
             }
+            // 破坏性操作的确认框挂在整个应用这一层: 不管当时在哪一页, 模型要卸应用都得先让人点一下
+            confirm()
         }
     }
 }
+
+/**
+ * 等人点一下的上限, 秒
+ *
+ * 与 `DestructiveConfirm` 里那个常量说的是同一件事 (那边是毫秒, 那边判超时): 这是个文件级的常数,
+ * 因为 `confirm` 是个 composable, 里面只能有表达式
+ */
+private const val DESTRUCTIVE_WAIT_SECONDS = 100

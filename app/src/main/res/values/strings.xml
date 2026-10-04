@@ -105,4 +105,11 @@
     <string name="settings_permission_ask">Grant</string>
     <string name="settings_permission_settings">Open settings</string>
     <string name="settings_permission_missing">Not declared</string>
+
+    <string name="notification_channel_tools">Tool notifications</string>
+    <string name="notification_channel_tools_description">Notifications the model posts with lw_notify</string>
+
+    <string name="destructive_confirm_title">Confirm this</string>
+    <string name="destructive_confirm_hint">This runs only if you tap OK; waiting %1$d seconds</string>
+    <string name="destructive_confirm_ok">OK</string>
 </resources>

@@ -105,4 +105,11 @@
     <string name="settings_permission_ask">授权</string>
     <string name="settings_permission_settings">去设置</string>
     <string name="settings_permission_missing">未声明</string>
+
+    <string name="notification_channel_tools">工具通知</string>
+    <string name="notification_channel_tools_description">模型用 lw_notify 发出来的通知</string>
+
+    <string name="destructive_confirm_title">要确认一下</string>
+    <string name="destructive_confirm_hint">不点就不执行, 等 %1$d 秒</string>
+    <string name="destructive_confirm_ok">确定</string>
 </resources>

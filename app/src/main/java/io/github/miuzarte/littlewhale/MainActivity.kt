@@ -30,6 +30,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // 点通知进来的时候, 屏幕可能锁着: 让这一页越过锁屏显示, 是"从通知回到应用"这条路能走通的
+        // 前提。它不解锁设备 —— 要看里面的内容仍然要解锁
+        setShowWhenLocked(true)
         // 外观设置要在第一帧之前读出来, 否则会先闪一下默认主题
         ThemeStore.initialize(this)
         // 同理: 预览能不能当触摸板, 默认是关, 得在画画面之前就知道

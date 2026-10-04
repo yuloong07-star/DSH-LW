@@ -176,6 +176,29 @@ class LwPrivilegedService(private val context: Context?) : Binder() {
                 writeString(launch.packages(data.readInt()))
             }
 
+            // 1.0.2 加的两条: 白名单里的系统命令, 以及屏幕的亮与灭
+            LwServiceProtocol.SYSTEM_COMMAND -> answering(data, reply) {
+                val operation = data.readString().orEmpty()
+                val userId = data.readInt()
+                val count = data.readInt()
+                val arguments = (0 until count).map { data.readString().orEmpty() }
+                val timeoutMs = data.readLong()
+                val result = LwSystemCommandTable.run(operation, userId, arguments, timeoutMs)
+                writeInt(result.code)
+                writeString(result.output)
+            }
+
+            LwServiceProtocol.POWER -> answering(data, reply) {
+                val result = LwSystemCommandTable.run(
+                    if (data.readInt() == 1) "wake" else "sleep",
+                    0,
+                    emptyList(),
+                    SCREEN_KEY_TIMEOUT_MS,
+                )
+                writeInt(result.code)
+                writeString(result.output)
+            }
+
             else -> super.onTransact(code, data, reply, flags)
         }
 
@@ -223,9 +246,12 @@ class LwPrivilegedService(private val context: Context?) : Binder() {
         const val TAG = "LwService"
 
         /** Bumped whenever the protocol changes in a way the app has to know about */
-        const val VERSION = "12"
+        const val VERSION = "13"
 
         /** Long enough for the reply to leave the process, short enough to look immediate */
         const val EXIT_DELAY_MS = 100L
+
+        /** 一个按键命令不该跑很久: 它要么立刻返回, 要么就是这台设备不认这个键 */
+        const val SCREEN_KEY_TIMEOUT_MS = 5_000L
     }
 }
