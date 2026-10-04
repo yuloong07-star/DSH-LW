@@ -66,3 +66,30 @@ Android 上转不了。所以本机这份把推理放回 app 进程：APK 里静
   `lw_speech` 不带、直接走通道 `speech op=release` 放掉；下次转写会重建。
 - SenseVoice 只认中英日韩粤；别的语言要另配模型（`LwSpeech.kt` 里的 `MODEL_NAME` 与
   `modelDirectory` 就是留给换模型的接口）。
+
+## 八、启用（不算在 APK 里）
+
+语音输入那一套是 dsh 的插件，装好 APK 之后还要在 profile 里挂上。三个包都已经在 host 的
+node_modules 里，不需要另外下载：
+
+| 包 | 作用 | 配置 |
+|---|---|---|
+| `@deepseek-ai/dsh-experimental-speech-to-text` | 转写服务的注册表与路由 | `defaultProvider: lw-native`, `language: auto` |
+| `@deepseek-ai/dsh-experimental-api-speech-to-text` | 页面到宿主那条带鉴权的传输 | 无 |
+| `@deepseek-ai/dsh-experimental-client-ui-voice-input` | 草稿框旁边那个录音按钮 | 无 |
+
+官方 bundle `@deepseek-ai/dsh-experimental-voice-input-bundle` 会一次把这四个都挂上，其中
+第四个是本地 SenseVoice provider，并把 `defaultProvider` 设成 `sensevoice-local` —— 那一条
+在本机是坏的（原因见第二节）。所以两条路：单独挂上面三个，或者挂 bundle 之后用 profile 的
+patch 层把 `speech-to-text` 那条的 `defaultProvider` 覆盖成 `lw-native`。
+
+## 九、这一分支改了什么
+
+```
+app/build.gradle.kts                 取 sherpa-onnx AAR + 依赖
+app/.../tool/LwSpeech.kt             新增: app 进程里的识别器与三个动作
+app/.../channel/PrivilegedBridge.kt  方法表加一行 speech
+app/.../ui/HostScreen.kt             WebView 的麦克风授权 (第一步, 已在分支上)
+host-plugin/index.mjs                lw-native provider + lw_speech 工具 + 模型下载
+docs/voice-input.md                  本文
+```
