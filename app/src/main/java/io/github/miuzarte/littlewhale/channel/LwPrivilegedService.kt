@@ -164,6 +164,11 @@ class LwPrivilegedService(private val context: Context?) : Binder() {
                 writeInt(if (permission.setAccessibility(enabled)) 1 else 0)
             }
 
+            LwServiceProtocol.NOTIFICATION_LISTEN -> answering(data, reply) {
+                val enabled = data.readInt() == 1
+                writeInt(if (permission.setNotificationListener(enabled)) 1 else 0)
+            }
+
             LwServiceProtocol.LAUNCH -> answering(data, reply) {
                 val displayId = data.readInt()
                 val userId = data.readInt()

@@ -61,6 +61,12 @@
     <string name="settings_accessibility_summary">Once on, the model reads the text and the exact position of every control on the screen</string>
     <string name="settings_accessibility_manual">Open accessibility settings</string>
 
+    <string name="settings_section_notifications">Notifications</string>
+    <string name="settings_notifications">Let DSH read the notification shade</string>
+    <string name="settings_notifications_summary">Once on, the model can list what is in the shade and dismiss it; turning it on also lets a notification come up as a banner over the lock screen</string>
+    <string name="settings_notifications_manual">Open notification access settings</string>
+    <string name="settings_notifications_banner">Open full-screen notification settings</string>
+
     <string name="settings_section_screenshot">Screenshots</string>
     <string name="settings_screenshot_budget">Screenshot budget</string>
     <string name="settings_screenshot_budget_summary">Scale a screenshot to this many pixels before the model sees it</string>

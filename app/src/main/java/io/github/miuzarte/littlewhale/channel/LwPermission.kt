@@ -146,6 +146,67 @@ data class AccessibilityState(
             java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(readAt) + ")"
 }
 
+/**
+ * 通知使用权现在到底怎么样
+ *
+ * 与 [AccessibilityState] 是同一套问法, 只是少了几件事实 (通知这边没有主开关, 也没有
+ * `isAccessibilityTool` 那个标志): `componentListed` 是"设置里写着", `running` 是"系统真的把服务
+ * 绑上了", 而 `granted` 是系统自己对这道授权的回答 —— 三者不一致时, **说话的是后两个**
+ *
+ * @property component 本应用那个监听服务的完整组件名
+ * @property componentListed `enabled_notification_listeners` 里有没有它
+ * @property otherListeners 设备上除此之外还有几个别人的监听 (写入要读出来改)
+ * @property running 系统有没有把服务实例绑起来
+ * @property granted `NotificationManager.isNotificationListenerAccessGranted` 的回答, null 表示问不到
+ * @property banners 全屏通知 (横幅) 现在给不给, null 表示这台设备问不到 (Android 14 以下)
+ * @property readAt 这一份是什么时候读的
+ */
+data class NotificationState(
+    val component: String,
+    val componentListed: Boolean,
+    val otherListeners: Int,
+    val running: Boolean,
+    val granted: Boolean?,
+    val banners: Boolean?,
+    val readAt: Long,
+) {
+
+    /** 健康的样子: 在名单里且真的绑着 */
+    val healthy: Boolean get() = componentListed && running
+
+    /**
+     * 一句能直接看的话, 说清现在卡在哪一层
+     *
+     * 末尾那个时间与无障碍那条同理: 每次重读都让这一行真的变一下, 不然"点了没反应"与"点了、结果
+     * 一样"在屏幕上看不出区别
+     */
+    fun reason(): String = when {
+        running && componentListed -> "服务在跑, 组件在设备的名单里$AT" + bannerNote()
+        running && !componentListed -> "服务在跑, 但它不在设备的名单里: 条目被摘掉不会杀已经绑好的" +
+            " 服务$AT" + bannerNote()
+        !componentListed -> "组件不在设备的名单里 (重装会把我们踢出去): 那个开关走系统自己的" +
+            " `cmd notification allow_listener`, 由特权进程执行; 它办不到时去这一段那个入口打开" +
+            " DSH-LW (系统会弹一个确认框)$AT"
+        else -> "组件在名单里但系统没有把它绑起来: 开关会先摘掉、停一下再放回; 若还是不动, 用这一段" +
+            " 那个入口去系统那页打开它 —— 有些设备只认系统自己那个确认框$AT"
+    }
+
+    /** 横幅那件事是另一道授权, 所以单独说一句 */
+    private fun bannerNote(): String = when (banners) {
+        true -> " (通知可以越过锁屏弹成横幅)"
+        false -> " (但横幅不给: 从 Android 14 起全屏通知要人去 设置 -> 应用 -> 特殊应用权限 里手动开," +
+            " 在那之前 lw_notify 的 banner 只是一个普通的高重要度通知)"
+        null -> ""
+    }
+
+    private val AT: String
+        get() = " (读取 " +
+            java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(readAt) + ")"
+
+    private val INSTALL_SCRIPT: String
+        get() = "pwsh -File tools/lw-install.ps1 -Serial <设备序列号>"
+}
+
 internal class LwPermission(private val context: Context?) {
 
     /**
@@ -334,6 +395,114 @@ internal class LwPermission(private val context: Context?) {
     }
 
     /**
+     * 把本应用的通知监听放进 (或拿出) 设备的已授权名单
+     *
+     * **先走系统自己的那条命令** (`cmd notification allow_listener` / `disallow_listener`), 而不是直接
+     * 写那条 secure setting —— 这是 2026-10-04 在模拟器上量出来的: **直写 `enabled_notification_listeners`
+     * 是不够的**。写进去、读回来也在、设备也留着, 而系统**根本不看它**: 服务不会被绑上, 系统自己那份
+     * "用户设过"的名单里也没有它 (通知那一页会把它列在 "Not allowed" 下面)。那条命令正是设置页上
+     * "允许"按钮走的同一条路 (它同时把"用户设过"记上), 双向都实测过: disallow 之后服务真的解绑,
+     * allow 之后真的重新绑上
+     *
+     * 直写那份名单留作退路 (没有那条命令的设备, 或者命令被拒), 因为无障碍那条路就是靠它走通的
+     *
+     * @return 设备的真实状态有没有变成 [enabled] —— 以名单读回为准, 不看退出码
+     */
+    fun setNotificationListener(enabled: Boolean): Boolean {
+        val context = context ?: run {
+            Log.w(TAG, "no context, so the app's own component name is unknown")
+            return false
+        }
+        val ours = ComponentName(context, LwNotificationListener::class.java)
+        // 侧载安装的应用在 Android 13 起连通知使用权也受限制设置那道闸管, 与无障碍同一条 op
+        if (enabled) allowRestrictedSettings(context.packageName)
+
+        val verb = if (enabled) "allow_listener" else "disallow_listener"
+        val answer = run(CMD, "notification", verb, ours.flattenToString())
+        val asked = answer != null && answer.first == 0
+        if (asked && listedIn(ours) == enabled) {
+            Log.i(TAG, "notification access ${if (enabled) "enabled" else "disabled"} through cmd notification")
+            return true
+        }
+        Log.i(
+            TAG,
+            "cmd notification $verb did not settle it (${answer?.second?.trim().orEmpty()}), so the" +
+                " list is written instead",
+        )
+        return setNotificationListenerByList(ours, enabled)
+    }
+
+    /** 名单里有没有这个组件, null 表示问不到 */
+    private fun listedIn(ours: ComponentName): Boolean? = get(ENABLED_LISTENERS)
+        ?.split(':')
+        ?.any { ComponentName.unflattenFromString(it) == ours }
+
+    /**
+     * 退路: 读出来改那份名单, 写完读回核对
+     *
+     * 名单是**与别的应用共用**的, 所以不能整串覆盖; 比较用 [ComponentName] 而不是字符串 (同一个组件
+     * 有两种拼法); "已在名单里却没被绑上"这件事两边一样 (强停之后就是), 所以也先摘掉、停一下、再放回
+     */
+    private fun setNotificationListenerByList(ours: ComponentName, enabled: Boolean): Boolean {
+        val stored = get(ENABLED_LISTENERS) ?: return false
+        val listed = stored.split(':')
+            .filter { it.isNotBlank() }
+            .mapNotNull { ComponentName.unflattenFromString(it) }
+        val others = listed.filter { it != ours }
+        val alreadyListed = listed.any { it == ours }
+
+        if (enabled && alreadyListed) {
+            if (!put(ENABLED_LISTENERS, others.joinToString(":") { it.flattenToString() })) {
+                return false
+            }
+            Thread.sleep(REBIND_GAP_MS)
+        }
+
+        val next = (if (enabled) others + ours else others)
+            .joinToString(":") { it.flattenToString() }
+        if (!put(ENABLED_LISTENERS, next)) return false
+
+        val kept = listedIn(ours) ?: return false
+        if (kept != enabled) {
+            Log.w(TAG, "the device kept a list where our listener is listed=$kept, not $enabled")
+            return false
+        }
+        Log.i(TAG, "notification access ${if (enabled) "enabled" else "disabled"} by writing the list")
+        return true
+    }
+
+    /**
+     * 通知栏那个服务现在到底有没有被绑上
+     *
+     * 与 [AccessibilityState] 同一个道理: "设置里写着"不等于"服务活着", 而这里要说的是后者
+     */
+    fun notificationListeners(): NotificationState {
+        val context = context
+        val component = context
+            ?.let { ComponentName(it, LwNotificationListener::class.java).flattenToString() }
+            .orEmpty()
+        val listed = get(ENABLED_LISTENERS).orEmpty()
+        val listedComponents = listed.split(':').filter { it.isNotBlank() }
+        return NotificationState(
+            component = component,
+            componentListed = listedComponents.any { it.trim() == component },
+            otherListeners = listedComponents.count { it.trim() != component },
+            running = LwNotificationListener.running,
+            granted = context?.let {
+                it.getSystemService(android.app.NotificationManager::class.java)
+                    ?.isNotificationListenerAccessGranted(
+                        ComponentName(it, LwNotificationListener::class.java),
+                    )
+            },
+            banners = context?.let {
+                it.getSystemService(android.app.NotificationManager::class.java)
+                    ?.canUseFullScreenIntent()
+            },
+            readAt = System.currentTimeMillis(),
+        )
+    }
+
+    /**
      * 无障碍现在到底怎么样
      *
      * 一次把六件事实读齐: 组件在不在设备列表里 / 主开关的值 / 服务实例活没活 / installer 身份 /
@@ -441,6 +610,9 @@ internal class LwPermission(private val context: Context?) {
 
         const val ENABLED_SERVICES = Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         const val ACCESSIBILITY_ENABLED = Settings.Secure.ACCESSIBILITY_ENABLED
+
+        /** 通知使用权的名单, 与无障碍那份是同一个形状的另一个 key (`Settings.Secure` 里没有公开常量) */
+        const val ENABLED_LISTENERS = "enabled_notification_listeners"
 
         /** A settings command is quick, but it starts a process and can wait on the provider */
         const val TIMEOUT_SECONDS = 5L

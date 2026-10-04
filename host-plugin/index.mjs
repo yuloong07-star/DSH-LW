@@ -674,11 +674,15 @@ const TOOLS = [
 
   simpleTool(
     'lw_notify',
-    'Post a notification on the phone, optionally vibrating. Use it to tell the person holding the'
-    + ' device something they should see outside this app - a job finished, a decision is waiting.'
-    + ' The same notification id is reused, so a second call replaces the first rather than stacking;'
-    + ' tapping it brings DSH-LW to the front. Needs the notification permission, and says so if it'
-    + ' is missing.',
+    'Post a notification on the phone, optionally vibrating or coming up as a banner. Use it to tell'
+    + ' the person holding the device something they should see outside this app - a job finished, a'
+    + ' decision is waiting. The same notification id is reused, so a second call replaces the first'
+    + ' rather than stacking; tapping it brings DSH-LW to the front. Needs the notification'
+    + ' permission, and says so if it is missing. **banner is a permission of its own**: since'
+    + ' Android 14 a full-screen intent has to be granted by hand, so the answer says whether the'
+    + ' banner will actually appear rather than assuming it. The channel is read back too - it is'
+    + ' created at high importance, but only the user can change that afterwards, and a channel the'
+    + ' user has turned down does not banner.',
     'notify',
     {
       title: { type: 'string', required: true, description: 'The notification title, one short line' },
@@ -687,6 +691,42 @@ const TOOLS = [
         type: 'integer',
         description: 'Vibrate for this many milliseconds as well (up to 3000). Needs the vibration'
           + ' permission, which the device grants on its own at install',
+      },
+      banner: {
+        type: 'boolean',
+        description: 'Also give it a full-screen intent, so it comes up over whatever is on the'
+          + ' screen (and over the lock screen). For something worth interrupting a person for;'
+          + ' whether it is allowed is a separate switch the user owns',
+      },
+    },
+  ),
+
+  simpleTool(
+    'lw_notifications',
+    'Read the notification shade, and dismiss what is in it. This is how the agent finds out what'
+    + ' the phone has been telling its owner: a message that arrived, a download that finished, a'
+    + ' two-factor code. op=list gives one line per notification, newest first, each starting with'
+    + ' the key that op=cancel takes - it names the app, the importance, whether it can be cleared'
+    + ' at all, and the title and text. cancelling takes one key, or a package to clear everything'
+    + ' that app posted. **Needs 通知使用权**, which no app can request at runtime: the answer says'
+    + ' so, and the switch for it is in DSH-LW\'s own Settings -> 通知. Ongoing notifications (a'
+    + ' music player, a call) are left alone and reported as such rather than as a failure.',
+    'notifications',
+    {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'list what is in the shade, or cancel',
+        enum: ['list', 'cancel'],
+      },
+      key: {
+        type: 'string',
+        description: 'For op=cancel: the key of one notification, exactly as op=list printed it',
+      },
+      package: {
+        type: 'string',
+        description: 'For op=cancel: clear every clearable notification from this app instead of'
+          + ' naming one key',
       },
     },
   ),

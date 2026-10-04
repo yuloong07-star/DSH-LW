@@ -5,6 +5,7 @@ import android.util.Log
 import io.github.miuzarte.littlewhale.tool.LwFiles
 import io.github.miuzarte.littlewhale.tool.LwKeepAwake
 import io.github.miuzarte.littlewhale.tool.LwMedia
+import io.github.miuzarte.littlewhale.tool.LwNotifications
 import io.github.miuzarte.littlewhale.tool.LwNotify
 import io.github.miuzarte.littlewhale.tool.LwPhoto
 import io.github.miuzarte.littlewhale.tool.LwPower
@@ -202,16 +203,21 @@ object PrivilegedBridge {
             ChannelReport.status(PrivilegedChannel.state())
         }
 
-        // 探针: 通道自己 + 无障碍那六件事实。无障碍放在这里而不是另开一个方法, 是因为模型问"通道
-        // 现在什么样"的时候, "无障碍到底开没开"几乎总是它真正想知道的那一半
+        // 探针: 通道自己 + 无障碍那六件事实 + 通知使用权那几件。无障碍放在这里而不是另开一个方法,
+        // 是因为模型问"通道现在什么样"的时候, "无障碍到底开没开"几乎总是它真正想知道的那一半;
+        // 通知使用权是 1.0.3 加的另一半, 同一个理由 (它也是一道要人去系统设置里给的授权)
         "probe" -> ChannelReport.probe(PrivilegedChannel.probe()).let { report ->
             val state = appContext { runCatching { LwPermission(it).inspect() }.getOrNull() }
-            if (state == null) {
+            val notices = appContext {
+                runCatching { LwPermission(it).notificationListeners() }.getOrNull()
+            }
+            if (state == null && notices == null) {
                 report
             } else {
                 buildJsonObject {
                     report.forEach { (name, element) -> put(name, element) }
-                    putJsonObject("accessibility") { accessibilityJson(state) }
+                    state?.let { putJsonObject("accessibility") { accessibilityJson(it) } }
+                    notices?.let { putJsonObject("notifications") { notificationJson(it) } }
                 }
             }
         }
@@ -895,6 +901,8 @@ object PrivilegedBridge {
         "files" -> appContext { LwFiles.dispatch(it, request) }
         "mediaScan" -> appContext { LwMedia.dispatch(it, request) }
         "takePhoto" -> appContext { LwPhoto.dispatch(it, request) }
+        // 通知栏那一侧: 读的是系统绑在本进程里的监听服务, 与无障碍同一条路
+        "notifications" -> appContext { LwNotifications.dispatch(it, request) }
         "power" -> appContext { LwPower.dispatch(it, request) }
         "syscmd" -> LwSystemCommand.dispatch(request)
 
@@ -1130,6 +1138,22 @@ object PrivilegedBridge {
         put("writeChannel", state.writeChannel.name.lowercase())
         // 三态: true/false 是设备答的, null 是这台设备根本没有那个类 (API 37 以下)
         put("advancedProtection", state.advancedProtection)
+        put("healthy", state.healthy)
+        put("reason", state.reason())
+    }
+
+    /**
+     * 通知使用权那几件事实
+     *
+     * 三态照旧: `granted` / `banners` 是设备答的, null 是"这台设备问不到" (横幅那条要 API 34)
+     */
+    private fun JsonObjectBuilder.notificationJson(state: NotificationState) {
+        put("component", state.component)
+        put("listed", state.componentListed)
+        put("otherListeners", state.otherListeners)
+        put("running", state.running)
+        put("granted", state.granted)
+        put("banners", state.banners)
         put("healthy", state.healthy)
         put("reason", state.reason())
     }

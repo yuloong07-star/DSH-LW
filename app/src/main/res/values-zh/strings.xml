@@ -61,6 +61,12 @@
     <string name="settings_accessibility_summary">启用后, 模型直接能读到屏幕上每个控件的文字与精确位置</string>
     <string name="settings_accessibility_manual">跳转到无障碍设置</string>
 
+    <string name="settings_section_notifications">通知</string>
+    <string name="settings_notifications">允许 DSH 读取通知栏</string>
+    <string name="settings_notifications_summary">启用后, 模型能列出通知栏里有什么并把它清掉; 打开它也是"通知能越过锁屏弹成横幅"的前提</string>
+    <string name="settings_notifications_manual">跳转到通知使用权设置</string>
+    <string name="settings_notifications_banner">跳转到全屏通知设置</string>
+
     <string name="settings_section_screenshot">截图</string>
     <string name="settings_screenshot_budget">截图预算</string>
     <string name="settings_screenshot_budget_summary">将截图缩放到这个像素数以内再交给模型</string>

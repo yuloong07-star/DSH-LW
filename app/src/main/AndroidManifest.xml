@@ -9,6 +9,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 通知越过锁屏弹成横幅 (lw_notify 的 banner)。Android 14 起这条对非闹钟/通话类的应用**默认
+         不给**: 声明了系统也不一定给, 要人去 `设置 -> 应用 -> 特殊应用权限 -> 全屏通知` 手动开。
+         所以 `lw_notify` 会去问 `canUseFullScreenIntent()` 并把真实答案说出来, 不假装横幅成了 -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- The workspace has to be a real path: dsh runs as a Node child process and works in
          directories, and a storage-access-framework grant only reaches this process's
@@ -202,6 +206,21 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/lw_accessibility" />
+        </service>
+
+        <!-- Reading the notification shade. Same shape as the accessibility service and for the same
+             reason: the system binds it into this process, so nothing goes over a binder and no
+             privileged uid is needed. The gate is the BIND permission, which only the system holds,
+             and on top of that the user has to hand this app 通知使用权 in system settings - the
+             settings page has a switch for it, because a reinstall takes it away -->
+        <service
+            android:name=".channel.LwNotificationListener"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
         </service>
 
         <!-- Shizuku's own provider, which is how the Shizuku app hands this app the server binder -->

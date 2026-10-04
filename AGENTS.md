@@ -155,7 +155,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 **1.0.2 又加了这些**, 都在同一个插件里, 由 `simpleTool` 那个工厂生成 (它们的形状一样): `lw_notify` / `lw_vibrate` / `lw_clipboard` / `lw_share` / `lw_open_file` / `lw_download` / `lw_device` / `lw_battery` / `lw_storage` / `lw_running` / `lw_volume` / `lw_media` / `lw_net` / `lw_system` / `lw_sensor` / `lw_location` / `lw_permissions` / `lw_power` / `lw_app_control` / `lw_wait_for` / `lw_ui_dump` / `lw_gesture` / `lw_pinch`
 
-**1.0.3 加的 (共 45 个工具)**: `lw_scroll` (走无障碍的滚动动作, 不注入触摸) / `lw_keep_awake` (`PARTIAL_WAKE_LOCK`, 谁开谁关) / `lw_key_combo` (`input keycombination`, 二到四个键) / `lw_intent` (`openUrl` 打开 http(s) 链接, `intent` 按动作或组件起一个 activity) / `lw_files` (工作区里的列 / 读 / 写, 每一条都带上"手机怎么看这个文件") / `lw_media_scan` (让媒体库看见一个路径) / `lw_take_photo` (系统相机拍一张, 落在工作区的 `photos/`)。另外 `lw_app_control` 多了 `enable` / `disable` / `setHome`, `lw_screenshot` 多了分区 (`x` / `y` / `width` / `height`) 与连拍 (`count`, 最多 5 张), `lw_type` 多了 `x` / `y` (先按那一点再打字)。**`disable` 与那四条破坏性的一样要人点一下确认** —— 它比停应用更粘: 被停用的应用从桌面上消失, 要有人记得回去打开
+**1.0.3 加的 (共 46 个工具)**: `lw_scroll` (走无障碍的滚动动作, 不注入触摸) / `lw_keep_awake` (`PARTIAL_WAKE_LOCK`, 谁开谁关) / `lw_key_combo` (`input keycombination`, 二到四个键) / `lw_intent` (`openUrl` 打开 http(s) 链接, `intent` 按动作或组件起一个 activity) / `lw_files` (工作区里的列 / 读 / 写, 每一条都带上"手机怎么看这个文件") / `lw_media_scan` (让媒体库看见一个路径) / `lw_take_photo` (系统相机拍一张, 落在工作区的 `photos/`) / `lw_notifications` (读通知栏与清通知)。另外 `lw_app_control` 多了 `enable` / `disable` / `setHome`, `lw_screenshot` 多了分区 (`x` / `y` / `width` / `height`) 与连拍 (`count`, 最多 5 张), `lw_type` 多了 `x` / `y` (先按那一点再打字), `lw_notify` 多了 `banner` (全屏 intent)。**`disable` 与那四条破坏性的一样要人点一下确认** —— 它比停应用更粘: 被停用的应用从桌面上消失, 要有人记得回去打开
 
 **`lw_files` 是三条路里最容易被写成重复的那一条**: 这个会话自己就带着 `read` / `write` / `glob` / `grep` / `bash` (`packages/fs/*` + `packages/shell/*`), 而工作区就是那套工具的家 (进程 cwd 与 home 都在那儿), 所以"在工作区里读写一个文件"模型本来就会做 —— 加三个同名的工具只会让它在两个都行的选择之间犹豫。所以它**只做 app 这一侧拿得到的三件事**: 手机怎么看这个文件 (媒体库有没有它、系统认的 mime、一张图多大), 一个不随会话目录漂移的锚 (工作区是 `Workspace.resolve` 解析出来的, 而会话的目录是用户在界面里选的), 以及**写完顺手让系统看见** (两步动作模型只会记住一步)。围栏照计划书: 只认工作区里的路径, 越界一律拒
 
@@ -228,6 +228,47 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **开启服务只能由特权进程写 `Settings.Secure`**, 而 `Settings.Secure` 在特权进程里**走不通** (`app_process` 没有 `IApplicationThread`) —— 正解是 `ProcessBuilder("/system/bin/settings", "get"/"put", ...)`。写入必须**读出来改** (设备上还有别人的无障碍服务)、开启时**先**写 `accessibility_enabled=1` 再写组件列表、写完**读回来核对**。**但读取不能走那条命令**: `/system/bin/settings` 是一条 shell 命令, Android 14 起对非 shell 的 uid 直接 `SecurityException: getCurrentUser() ... requires INTERACT_ACROSS_USERS`, 于是应用自己读回来的永远是 null —— 设置页与 `lw_probe` 会把"组件在列表里"说成"不在" (2026-10-04 实测, 已改成读 `ContentResolver`, 那条命令只留给特权进程当兜底)
 - **光写设置不够, 还有两件事**: 组件**已经在列表里但没被绑上**时 (强停之后就是这样), 把同样的值再写一遍不一定能让系统重新评估, 所以**先摘掉、停 800ms、再放回**; 而侧载安装的应用 (`installerPackageName=null`) 在 Android 13 起**不许开无障碍**, 那道闸是一个 app op —— 开启时顺手 `cmd appops set <pkg> ACCESS_RESTRICTED_SETTINGS allow` (best effort, 失败只记日志), 否则服务可能起不来而没有任何提示
 - **重装 APK 会把我们踢出 `enabled_accessibility_services`**, 所以设置页那个开关不是可选项, 而且**开关自己就会经特权通道把服务打开**; 「开没开」不是设置而是"系统有没有绑上", 状态从 `LwAccessibility.running` 读, 写完等最多 3s 再报真实状态
+
+## 通知栏
+
+链路: `LwNotificationListener` (**跑在 app 进程里**, 系统绑定的服务) → 取当前通知 / 清一条 →
+`PrivilegedBridge` 的 `notifications` (同进程直接调) → 工具 `lw_notifications`。**既不过 binder 也不需要
+特权 uid**, 与无障碍那条一模一样 —— 而它要的那道授权同样由特权进程去给
+
+- **那道授权只有系统自己那条命令给得到**: 通知使用权是 `enabled_notification_listeners` 这个 secure
+  setting, 但**直写它是不够的**, 这是 2026-10-04 在模拟器上量出来的 —— 值写进去了、读回来也在、设备
+  也留着, 而系统**根本不理它**: 服务不会被绑上, 系统那份"用户设过"的名单里也没有它 (通知那一页会把
+  这个应用列在 **Not allowed** 下面, 直到有人点过那个确认框)。正解是 `cmd notification allow_listener
+  <组件>` / `disallow_listener`, 也就是设置页上「允许」按钮走的同一条路 —— 双向都实测过:
+  `disallow_listener` 之后服务真的解绑 (`running: false`), `allow_listener` 之后真的重新绑上。
+  **所以 `LwPermission.setNotificationListener` 先走那条命令, 直写名单只当退路** (没有那条命令的
+  设备), 而两者都以名单读回为准
+- **首次授权要系统那个确认框**: 一个从没被允许过的应用, 命令/直写都可能不被采纳 —— 那时正解是在
+  设置页「通知」那一段的入口里打开 DSH-LW 并点「允许」。这一段有两个 `ArrowPreference` (通知使用权 /
+  全屏通知), 它们的 `startActivity` 都带**退到应用详情页**的回退 —— 那一页在个别 ROM 上没有接收者,
+  而点击换来的崩溃最不该有
+- **读写都要读出来改**: 那个名单是与别的应用共用的 (模拟器上本来就有 Google 的 AiAi 与 Launcher3
+  两条), 比较用 `ComponentName` 而不是字符串 (同一个组件有两种拼法); 写完读回核对
+- **重装 APK 会把它收走**, 所以装机脚本在装完那一次 shell 里连着给 (`cmd notification allow_listener`,
+  失败才退回写名单), 而判据里多了"listener listed"一条
+- **"通知栏是空的"与"读不到通知栏"长得一模一样**: 没有授权时 `activeNotifications` 也是空的。所以
+  `LwNotificationListener.active()` 回 **null** 表示没连上, 而 `lw_notifications` 那时说的是"读不到"并
+  把怎么开说清楚 (它去读一遍名单, 按"不在名单里 / 系统没绑上 / 系统说没有授权"分三种说) —— 这一条是
+  三态纪律里最容易违反的一处
+- **`StatusBarNotification.getRanking()` 不是公开 API**: 重要度与渠道要从 `NotificationListenerService
+  .currentRanking` 那个 `RankingMap` 里点名取 (`getRanking(key, Ranking())`), 取不到就报"没说"而不是
+  某个默认值
+- **常驻通知不是"清不掉"**: `isOngoing` 的那些 (音乐、通话、下载) 是应用自己的, 工具如实说"留着没动",
+  这不是失败。清完还要**再读一次**确认真的没了 —— 清一条是"请系统去做"
+- **横幅那件事 (D4 已定: 只做渠道 + 全屏 intent, 不自绘悬浮窗)**: 渠道的**重要度在创建之后应用改不动**
+  (那是用户在管的设置), 所以 1.0.3 新建了 `lw-tools-high` (IMPORTANCE_HIGH, 实测 `mImportance=4`) 并
+  **删掉旧的 `lw-tools`** (实测删掉了); 而 `USE_FULL_SCREEN_INTENT` 从 Android 14 起对非闹钟/通话类
+  **默认不给**, 判据是 `canUseFullScreenIntent()`, 所以 `lw_notify` 的答案会说自己到底会不会弹成横幅
+  (两个分支都实测过: appop deny → "asked for but this app may not use full-screen intents", 恢复
+  之后 → "comes up as a banner")
+- **模拟器上 `cmd notification post` 投不出通知**: 它打印 `posting: Notification(...)` 而通知栏里一条都
+  没有 (系统那份 `NotificationRecord` 列表里查不到), 所以验 `lw_notifications` 时别拿它造数据 ——
+  用栏里本来就有的别人的通知, 或者 `lw_notify` 自己发的那条 (它 id 固定, 一次只有一条可清的)
 
 ## 端侧 OCR
 
