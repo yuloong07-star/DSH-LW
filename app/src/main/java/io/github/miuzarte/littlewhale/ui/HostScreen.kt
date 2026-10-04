@@ -82,6 +82,7 @@ import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Remove
@@ -157,6 +158,12 @@ fun HostScreen(modifier: Modifier = Modifier) {
                 windowHidden = windowHidden,
                 onToggleWindow = { windowHidden = !windowHidden },
                 modifier = Modifier.padding(innerPadding),
+            )
+            // 「再按一次退出」走这里。挂在主页而不是脚手架上, 是因为提示只有主页会用到:
+            // 按返回从设置页回来的时候不该弹它, 弹的是这一页的返回
+            SnackbarHost(
+                state = ExitHint.host,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp),
             )
         }
     }

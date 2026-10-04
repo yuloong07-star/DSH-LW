@@ -95,4 +95,14 @@
 
     <string name="screen_window_hide">隐藏虚拟屏小窗</string>
     <string name="screen_window_show">显示虚拟屏小窗</string>
+
+    <string name="exit_hint_again">再按一次退出</string>
+
+    <string name="settings_section_permissions">权限</string>
+    <string name="settings_permissions_summary">这一版把能力要用的权限都声明了。系统只自动给普通权限, 下面这些要么在这里点一下, 要么用电脑上的 tools/lw-install.ps1 -Perms 批量给</string>
+    <string name="settings_permission_granted">已允许</string>
+    <string name="settings_permission_denied">未允许</string>
+    <string name="settings_permission_ask">授权</string>
+    <string name="settings_permission_settings">去设置</string>
+    <string name="settings_permission_missing">未声明</string>
 </resources>

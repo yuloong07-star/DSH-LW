@@ -7,6 +7,7 @@ import android.content.Intent
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -42,6 +43,10 @@ import io.github.miuzarte.littlewhale.scaffolds.SectionSmallTitle
 import io.github.miuzarte.littlewhale.theme.MonetKeyColorOptions
 import io.github.miuzarte.littlewhale.theme.ThemeSettings
 import io.github.miuzarte.littlewhale.theme.ThemeStore
+import io.github.miuzarte.littlewhale.util.Grant
+import io.github.miuzarte.littlewhale.util.PermissionCatalog
+import io.github.miuzarte.littlewhale.util.PermissionGate
+import io.github.miuzarte.littlewhale.util.PermissionRequests
 import io.github.miuzarte.littlewhale.workspace.Workspace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -232,6 +237,13 @@ fun SettingsScreen() {
             }
 
             item {
+                SectionSmallTitle(stringResource(R.string.settings_section_permissions))
+                Card {
+                    PermissionsItems()
+                }
+            }
+
+            item {
                 SectionSmallTitle(stringResource(R.string.settings_section_accessibility))
                 Card {
                     AccessibilityItems()
@@ -342,6 +354,57 @@ private fun routeState(route: RouteState): Int = when (route.backend) {
         !route.available -> R.string.settings_channel_state_stopped
         route.granted == true -> R.string.settings_channel_state_allowed
         else -> R.string.settings_channel_state_denied
+    }
+}
+
+/**
+ * 权限那一段
+ *
+ * 每一条是一个能力, 不是一个权限名: 模型问的是"能不能发通知", 而不是"有没有 POST_NOTIFICATIONS"。
+ * 状态每次重进这一页现读 (用户可能在系统设置页里改过), 所以 [PermissionCatalog] 的答案不缓存
+ *
+ * 两条路: 能点名要的直接弹系统框 (`PermissionRequests` -> MainActivity 里的 launcher), 只能去系
+ * 统页点的就开那一页。**没有第三步** —— 这里不做"假装已授权"
+ */
+@Composable
+private fun PermissionsItems() {
+    val context = LocalContext.current
+    val activity = LocalActivity.current
+    // 申请的结果回来要重画, 所以留一个能变的记号
+    var revision by remember { mutableStateOf(0) }
+    val runtime = PermissionCatalog.runtime
+    val special = PermissionCatalog.special
+
+    Text(
+        text = stringResource(R.string.settings_permissions_summary),
+        modifier = Modifier.padding(bottom = UiSpacing.Medium),
+    )
+    (runtime + special).forEach { capability ->
+        // revision 变了就重算: 这是"授权之后状态要跟着变"的那一处
+        val state = remember(revision, capability) { PermissionCatalog.state(context, capability) }
+        ArrowPreference(
+            title = capability.name,
+            summary = buildString {
+                append(
+                    when (state) {
+                        Grant.GRANTED -> stringResource(R.string.settings_permission_granted)
+                        Grant.DENIED -> stringResource(R.string.settings_permission_denied)
+                        Grant.MISSING -> stringResource(R.string.settings_permission_missing)
+                    },
+                )
+                append(" · ")
+                append(capability.note ?: capability.why)
+            },
+            onClick = {
+                // 特殊访问只能开系统页; 能点名的才弹框。`ask` 返回 false 有两种情况 —— 特殊访问,
+                // 或者用户已经"拒绝且不再问", 两种都只能让它去设置页
+                val asked = activity != null && PermissionGate.ask(activity, capability)
+                if (!asked) PermissionGate.openSettings(context, capability)
+                // 系统框是异步的, 这一下是把"点了之后可能已经变了"重算一次; 真正的答案回来时
+                // PermissionRequests.pending 会变, 那时再重算一次
+                revision++
+            },
+        )
     }
 }
 

@@ -95,4 +95,14 @@
 
     <string name="screen_window_hide">Hide the screen window</string>
     <string name="screen_window_show">Show the screen window</string>
+
+    <string name="exit_hint_again">Press back again to exit</string>
+
+    <string name="settings_section_permissions">Permissions</string>
+    <string name="settings_permissions_summary">This version declares every permission the tools can use. Android grants the normal ones on its own; the ones below are either tapped here or handed out in bulk by tools/lw-install.ps1 -Perms on a computer</string>
+    <string name="settings_permission_granted">Granted</string>
+    <string name="settings_permission_denied">Not granted</string>
+    <string name="settings_permission_ask">Grant</string>
+    <string name="settings_permission_settings">Open settings</string>
+    <string name="settings_permission_missing">Not declared</string>
 </resources>

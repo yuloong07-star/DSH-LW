@@ -4,7 +4,10 @@ import androidx.activity.compose.LocalActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.staticCompositionLocalOf
+import kotlinx.coroutines.launch
+import top.yukonga.miuix.kmp.basic.SnackbarDuration
 import top.yukonga.miuix.kmp.nav.core.NavCornerClipMode
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
@@ -16,6 +19,7 @@ import top.yukonga.miuix.kmp.nav.transition.NavTransitions
 import top.yukonga.miuix.kmp.squircle.LocalSquircleEnabled
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
+import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.theme.ApplySystemBarsAppearance
 import io.github.miuzarte.littlewhale.theme.ThemeSettings
 import io.github.miuzarte.littlewhale.theme.ThemeStore
@@ -71,6 +75,24 @@ fun LittleWhaleApp() {
     val crossActivity = settings.transition == ThemeSettings.TRANSITION_AOSP
     val transition = if (crossActivity) CrossActivityTransition else NavTransitions.MiuixDefault
 
+    // 主页上按返回不等于离开应用: 这一句提示是"再按一次"的第一次, 第二次才把任务放到后台去。
+    // 不管任务是去是留, host 与虚拟屏都照跑, 所以这里既不 finish 也不停服务
+    val activity = LocalActivity.current
+    val scope = rememberCoroutineScope()
+
+    /** 主页上的返回: 第一次提示, 再按一次放后台 */
+    fun exitHint() {
+        if (ExitHint.press()) {
+            activity?.moveTaskToBack(true)
+            return
+        }
+        if (!ExitHint.shouldHint()) return
+        val message = activity?.getString(R.string.exit_hint_again) ?: return
+        scope.launch {
+            ExitHint.host.showSnackbar(message, duration = SnackbarDuration.Custom(ExitHint.VISIBLE_MS))
+        }
+    }
+
     MiuixTheme(controller = controller) {
         // 系统栏图标要跟着实际渲染出来的配色, 手动钉成深色时也得跟着变
         ApplySystemBarsAppearance(LocalActivity.current?.window)
@@ -93,7 +115,8 @@ fun LittleWhaleApp() {
         ) {
             NavDisplay(
                 backStack = backStack,
-                onBack = navigator.pop,
+                // 还有上一页就是普通的返回; 只剩主页时那一次不算离开, 交给 exitHint
+                onBack = { if (backStack.size > 1) navigator.pop() else exitHint() },
                 transition = transition,
                 effects = effects,
             ) {

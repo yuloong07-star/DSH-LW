@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 交给别的应用的文件从哪儿来
+
+     `lw_share` 与 `lw_open_file` 把工作区里的一个路径变成 `content://`, 对方拿到的是一份授权而
+     不是路径。Android 10 起 `file://` 一律被拒 (FileUriExposedException), 所以这两条路只能用
+     provider
+
+     根挂在 `/` 上: 工作区既可能是 `/sdcard/DSH` 也可能是应用自己的媒体目录 `/sdcard/Android/
+     media/<pkg>/DSH`, 两条都在外部存储里, 写死一个 `<external-path>` 只能盖住其中一条。而这个
+     应用本来就握着 MANAGE_EXTERNAL_STORAGE, root-path 不额外放开任何它读不到的东西
+-->
+<paths>
+    <root-path
+        name="all"
+        path="/" />
+</paths>

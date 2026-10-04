@@ -19,6 +19,100 @@
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
+    <!-- 前台服务的类型: 一条权限对一种类型, 用不到的类型系统不会拦, 但少一条就会在起服务时拒。
+         mediaProjection 是录屏那条 (1.0.3), connectedDevice 是蓝牙, 其余对应用途一看就懂 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+    <!-- 通知与触感: lw_notify / lw_vibrate 用的就是这两条 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- 设备与交互: 拍照、录音、手电、身体传感器与活动识别, 都由对应的 lw_* 工具在运行时先过权限闸 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FLASHLIGHT" />
+    <uses-permission android:name="android.permission.BODY_SENSORS" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+
+    <!-- 网络与连接: lw_net 读状态、改开关, 蓝牙那几条给连接设备与后续的传输用。
+         NEARBY_WIFI_DEVICES 是 Android 13 起扫描/连接邻近 WiFi 要的那条 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-permission android:name="android.permission.READ_SYNC_SETTINGS" />
+    <uses-permission android:name="android.permission.WRITE_SYNC_SETTINGS" />
+
+    <!-- 位置与媒体: lw_location 与分享/下载那几条要从公共目录读文件, 所以媒体那几条一起要 -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
+    <!-- 特殊访问: 这几条装上就有, 但**要人去系统页或 adb 里点一次**才生效。
+         WRITE_SETTINGS 给 lw_system 里那些受保护的项, SYSTEM_ALERT_WINDOW 给以后要用的悬浮层,
+         PACKAGE_USAGE_STATS 给"最近任务/占用"那类查询, REQUEST_IGNORE_BATTERY_OPTIMIZATIONS 是
+         host 常驻的前提, 精确闹钟给定时任务, 装/卸那两条给 lw_app_control (1.0.3) -->
+    <uses-permission
+        android:name="android.permission.WRITE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.DELETE_PACKAGES" />
+
+    <!-- 通讯录 / 短信 / 通话记录 / 日历: 这一版**声明但不实现功能**, 是留着给以后的能力用。
+         全部 optional, 因为本应用一件也不做; 侧载安装时系统会在授权页把它们列出来, 不点也不影响
+         任何现有功能 -->
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.WRITE_CALL_LOG" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
+
+    <!-- 应用可见性: 现在"列应用"靠下面 queries 里那条窄声明, 这条是把整张表都放开。
+         声明式, 不触发任何弹窗 -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <!-- 相机、电话、麦克风都是"有也行没有也行"的硬件: 声明成 required=false, 免得设备上没这两样时
+         装不上 -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.nfc" android:required="false" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -59,11 +153,25 @@
         <service
             android:name=".host.DshHostService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse|location|camera|microphone|connectedDevice">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="runs the dsh agent host and its Web GUI in the background" />
         </service>
+
+        <!-- 工作区里的文件要交给别的应用: `lw_share` 与 `lw_open_file` 走 ACTION_SEND / ACTION_VIEW,
+             而 Android 10 起 `file://` 一律被拒, 所以交给它们的是这个 provider 发出来的
+             `content://`。根目录挂在 `/` 上: 工作区既可能在 /sdcard 也可能是应用自己的媒体目录,
+             而这个应用本来就握着 MANAGE_EXTERNAL_STORAGE, root-path 不额外放开任何东西 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.lw.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- How a privileged process returns its binder to this app: it can neither bind to a
              service here nor be handed one, but it can call a provider this app owns. Exported

@@ -106,7 +106,10 @@ class DshHostService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.host_notification_title))
             .setContentText(getString(R.string.host_notification_text))
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            // 通知的小图标不是启动器图标: 它按模板染色, 只认 alpha 通道, 所以给的是一张纯白的
+            // 鲸鱼剪影。原来这里用的是 `ic_launcher_foreground` (108dp 的启动器前景), 系统把它
+            // 缩进 24dp 的状态栏位里, 糊成一团
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(open)
             .setOngoing(true)
             .build()
