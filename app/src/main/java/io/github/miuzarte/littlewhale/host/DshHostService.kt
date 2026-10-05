@@ -14,6 +14,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import io.github.miuzarte.littlewhale.MainActivity
 import io.github.miuzarte.littlewhale.R
+import io.github.miuzarte.littlewhale.channel.LwModes
 import io.github.miuzarte.littlewhale.channel.PrivilegedBridge
 import io.github.miuzarte.littlewhale.channel.PrivilegedChannel
 import io.github.miuzarte.littlewhale.channel.VirtualScreen
@@ -42,6 +43,8 @@ class DshHostService : Service() {
         // finds it already there
         PrivilegedChannel.initialize(this)
         warmUpChannel()
+        // 模式: 首启把默认那份 (手机模式) 落到那个助手的提示词上, 也让主人有文件可改
+        LwModes.ensureDefault(this)
         VirtualScreen.initialize(this)
         PrivilegedBridge.start()
         DshHost.start(this)

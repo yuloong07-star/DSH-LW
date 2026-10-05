@@ -175,6 +175,52 @@ const NOTE = {
   description: 'One short sentence, in your own words, saying what this step is doing and why',
 }
 
+/**
+ * 把视频模式要的那块屏与相机起来, 回一句人话
+ *
+ * 这是**切换模式的一部分**, 不是新能力: 用的还是 `create` / `screen` / `launch` 那三个桥调用,
+ * 只是把"认屏 → 建屏 → 开相机"三步并成一次 —— 主人说一句"看看这是什么", 少等两轮往返
+ *
+ * 屏按固定形状建 (720x1280 / dpi 320): 相机是竖屏应用, 建一块竖屏的屏它才会铺满, 而**建屏时就把
+ * 形状定对**是这里唯一要紧的事 (应用不因为屏换了形状就重排)。已经有一块叫 `video` 的屏就沿用
+ */
+const VIDEO_SCREEN = { name: 'video', width: 720, height: 1280, dpi: 320 }
+
+/** 这台设备上相机可能叫什么: 先按包名试, 都不行就把判断交回给模型 */
+const CAMERA_PACKAGES = ['com.android.camera', 'com.vivo.camera', 'com.android.camera2']
+
+async function bringUpCamera() {
+  const lines = []
+  try {
+    const screens = await call('screen')
+    const all = Array.isArray(screens?.screens) ? screens.screens : []
+    const mine = all.find((screen) => screen?.name === VIDEO_SCREEN.name)
+    let displayId = mine?.displayId
+    if (displayId === undefined) {
+      const created = await call('create', VIDEO_SCREEN)
+      displayId = created?.displayId
+      lines.push(created?.created
+        ? `virtual screen ready on displayId ${displayId} (${VIDEO_SCREEN.width}x${VIDEO_SCREEN.height})`
+        : `the virtual screen did not come up: ${created?.detail ?? JSON.stringify(created)}`)
+    } else {
+      lines.push(`reusing the ${VIDEO_SCREEN.name} screen on displayId ${displayId}`)
+    }
+    if (displayId === undefined) return lines.join('\n')
+    for (const camera of CAMERA_PACKAGES) {
+      const launched = await call('launch', { displayId, package: camera })
+      if (launched?.launched !== false) {
+        lines.push(`camera ${camera} is in front on that screen`)
+        return lines.join('\n')
+      }
+      lines.push(`${camera}: ${launched?.detail ?? 'not started'}`)
+    }
+    lines.push('no camera package started; find the one this device ships and use lw_launch')
+  } catch (error) {
+    lines.push(`bringing the camera up failed: ${error?.message ?? error}`)
+  }
+  return lines.join('\n')
+}
+
 const TOOLS = [
   defineTool({
     name: 'lw_probe',
@@ -190,6 +236,44 @@ const TOOLS = [
     },
     async execute() {
       return formatProbe(await call('probe'))
+    },
+  }),
+  defineTool({
+    name: 'lw_mode',
+    description:
+      'Switch which mode this phone assistant is in. "phone" is the usual one: operate the phone '
+      + 'through the lw_* tools. "video" points the camera at what is in front of the user and '
+      + 'answers what it is, in one to three sentences. A switch replaces the assistant\'s prompt '
+      + 'text, so it takes effect on the NEXT model step rather than this one: call it, say the mode '
+      + 'changed, and stop there. Call it with "video" when the user asks to look at something, and '
+      + 'with "phone" when the video work is over (they said to quit video mode, close the camera or '
+      + 'stop looking). mode "status" reports which one is active right now.',
+    parameters: {
+      mode: {
+        type: 'string',
+        required: true,
+        description: 'phone, video, or status',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      const answer = await call('mode', { mode: args.mode })
+      // 切到视频模式顺带把屏与相机起来: 这一步本来要模型自己走三次 (认屏 / 建屏 / 开相机),
+      // 放到这里就成了一次调用 —— 主人说"看看这是什么"之后不用等三轮
+      const brought = answer.switched === true && answer.mode === 'video'
+        ? await bringUpCamera()
+        : null
+      if (answer.switched === false) return answer.detail
+      if (answer.modes) return `modes: ${answer.modes}\nactive: ${answer.active}`
+      if (answer.switched === true) {
+        return `mode -> ${answer.mode} (${answer.name}); ${answer.detail}`
+          + (brought ? `\n${brought}` : '')
+      }
+      return `mode: ${answer.mode} (${answer.name})\n`
+        + `prompt file: ${answer.promptWritten ? 'written' : 'missing'} (${answer.promptFile})`
     },
   }),
 

@@ -82,6 +82,8 @@
     <string name="settings_ocr_probe">自检</string>
     <string name="settings_ocr_probe_busy">自检...</string>
 
+    <string name="mode_phone">手机模式</string>
+    <string name="mode_video">视频模式</string>
     <string name="settings_section_speak">朗读</string>
     <string name="settings_speak_auto">朗读回答</string>
     <string name="settings_speak_auto_summary">开着时每一轮回答落定就念出来; 关掉之后它不会自己出声, 而点名要念一句 (lw_speak) 与下面那个试听照旧</string>

@@ -946,6 +946,8 @@ object PrivilegedBridge {
         "permissions" -> appContext { text(PermissionCatalog.report(it)) }
         // 1.0.3: 让设备别睡 —— app 进程里一个 PARTIAL_WAKE_LOCK 就够, 不必过特权
         "keepAwake" -> LwKeepAwake.dispatch(request)
+        // 模式: 只换那个助手的提示词文件 (手机模式 / 视频模式), 不动预设也不动工具表
+        "mode" -> appContext { LwModes.dispatch(it, request) }
         // 1.0.3 批次 4: 工作区里那几个文件与手机那一侧的读数、让媒体库看见、拍一张照
         "files" -> appContext { LwFiles.dispatch(it, request) }
         "mediaScan" -> appContext { LwMedia.dispatch(it, request) }
