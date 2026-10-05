@@ -72,6 +72,14 @@ object PluginOverlay {
     private const val VOICE_PROVIDER_ROW = "speech-to-text"
 
     /**
+     * 会撞车的那一条 row id: 它才是判"官方那几行是不是已经挂了"的准信号
+     *
+     * 不能拿 `speech-to-text` 去 contains —— 它是 `@deepseek-ai/dsh-experimental-speech-to-text`
+     * 的子串, 于是任何提到那个包名的 patch 都会让它误判成"bundle 开着"
+     */
+    private const val VOICE_API_ROW = "api-speech-to-text"
+
+    /**
      * 覆盖行的 `name` 与 profile 自己那条 `locale` 覆盖行同一个形状 (带 id 与 name 的配置覆盖),
      * 那是本机上正在生效的写法, 照它办最稳
      */
@@ -96,7 +104,7 @@ object PluginOverlay {
         val profile = profileDirectory(context)
         val declared = File(profile, "package.json").takeIf { it.isFile }?.readText().orEmpty()
         val patched = File(profile, "cordis.patch.yml").takeIf { it.isFile }?.readText().orEmpty()
-        return declared.contains(VOICE_BUNDLE) || patched.contains(VOICE_PROVIDER_ROW)
+        return declared.contains(VOICE_BUNDLE) || patched.contains(VOICE_API_ROW)
     }
 
     /**
@@ -124,7 +132,10 @@ object PluginOverlay {
                     appendLine("# The official voice-input bundle is on, so its rows already exist:")
                     appendLine("# this only points that provider at this app's own engine")
                     appendLine("- id: $VOICE_PROVIDER_ROW")
-                    appendLine("  name: $VOICE_PROVIDER_NAME")
+                    // **引号是必须的**: `@` 开头在 YAML 里是保留字符, 裸着写会
+                    // "bad indentation of a mapping entry", 而那是整份 overlay 解析失败 —— 主机
+                    // 直接起不来 (2026-10-05 在真机上就是这么把 host 弄挂的)
+                    appendLine("  name: '$VOICE_PROVIDER_NAME'")
                     appendLine("  config:")
                     VOICE_PROVIDER_CONFIG.forEach { appendLine("    $it") }
                 }
