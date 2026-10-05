@@ -46,7 +46,7 @@ internal fun wakeWordModelOf(directory: File): WakeWordModel? {
  * 模型认得的那张符号表
  *
  * sherpa-onnx 的 keywords 文件里每一行是 token 序列, 而 `EncodeKeywords` 只认这张表里有的符号:
- * 中文原文 (比如「素云」) 一个都不在表里, 它不报错, 只是**那一行被静默丢掉** —— 结果是"照做了
+ * 中文原文 (比如「你好小薇」) 一个都不在表里, 它不报错, 只是**那一行被静默丢掉** —— 结果是"照做了
  * 但永远不触发"。所以写词表之前先对一遍, 对不上就当面说
  */
 internal fun symbolsOf(tokens: File): Set<String> = tokens.readLines()

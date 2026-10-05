@@ -112,7 +112,7 @@ description: 本机（LittleWhale 构建）Android 设备操作的唯一规范�
 - **输入用 `lw_type`**（**能进可编辑字段时可打中文**；输入后回读比对）。**注意（2026-10-04 实测）**：该屏若报「no text field」（小程序/WebView 常如此），`lw_type` 会退化为键盘按键注入，**只出 ASCII，中文进不去**，且 `DEL` 一次仅删一字符（长按亦然）——此时不要跟输入框较劲，改走旁路（如点历史记录项、点列表里已有的条目）。
 - **截图链路会间歇性失效**：`lw_screenshot` 报 `the device wrote no picture`、`lw_ui` 报 `no window is on display N`，而屏其实正常（手机预览窗里照旧显示）。**不要据此判定屏死了或任务失败**，也不要改建屏、不要改用 display 0——**轮询重试若干次即自行恢复**。
 - **返回/后退用 `lw_key(BACK)`** 或树里的"返回"节点，不再依赖旧端点。
-- **产出目的地按本机重定**：旧机的"写入笔记 DSHA-素云 / `/app/notify` / `task-done.sh`"都不存在。需要落文本时写本机记忆（`memory` 工具）或工作区文件；需要通知用户用会话内直接说明或渠道通知工具（如 `de_channel_send`）。
+- **产出目的地按本机重定**：旧机的"写入笔记 / `/app/notify` / `task-done.sh`"都不存在。需要落文本时写本机记忆（`memory` 工具）或工作区文件；需要通知用户用会话内直接说明或渠道通知工具（如 `de_channel_send`）。
 
 ## 八、故障速查
 
@@ -128,7 +128,7 @@ description: 本机（LittleWhale 构建）Android 设备操作的唯一规范�
 | 应用缩在屏幕中间一条带里 | 该应用声明了自己的方向，屏的方向不对 → `lw_screen_rotate`/`resize` 或重建屏 |
 | 探针不可用 | `lw_probe` 不通不影响任务，继续做 |
 | `lw_screen_create` 报 `root was not granted` | **设备能力未授权**（不是屏被关）：`lw_probe` 会同时显示 privileged channel 未连接。这是本机**已实测**的失败模式——同一台设备上换个时间就可能出现。处置：如实告知主人「需要在手机 App 里授予设备能力（root/特权通道）」并停下等待；**不要**反复重建、不要改用 display 0 硬做 |
-| `lw_launch` 报 ok（WARM）但 `lw_ui` 报 `no window is on display N` | **该应用的单实例窗口已经活在别的屏上**（本机 2026-10-04 实测：素云自身 `io.github.miuzarte.littlewhale` 已驻主屏时，在虚拟屏 launch 只是把它唤到主屏，虚拟屏始终空白、截图仅几 KB）。处置：不要重复 launch、不要换屏重试——要操作它只能上 display 0（属「虚拟屏做不到」的例外，且主人手指在屏上时会被拒），或改用文件/配置/会话记录等非屏幕通道取证 |
+| `lw_launch` 报 ok（WARM）但 `lw_ui` 报 `no window is on display N` | **该应用的单实例窗口已经活在别的屏上**（本机 2026-10-04 实测：`io.github.miuzarte.littlewhale` 自身已驻主屏时，在虚拟屏 launch 只是把它唤到主屏，虚拟屏始终空白、截图仅几 KB）。处置：不要重复 launch、不要换屏重试——要操作它只能上 display 0（属「虚拟屏做不到」的例外，且主人手指在屏上时会被拒），或改用文件/配置/会话记录等非屏幕通道取证 |
 
 ## 九、只读冒烟（验证通道是否可用）
 

@@ -235,24 +235,67 @@ node tools/check-wake-words.mjs
 - **`allowVoice` 与 `voiceAllowed` 会短暂不一致**: 前者是设置页存的, 后者是服务读到的; 改完许可要发
   一条 `ACTION_REFRESH` 才同步, 所以 `op=status` 把两个都报出来。
 
-## 十、这一块改了什么
+## 十、叫醒之后做什么 + 那两句命令（批次 4.4 / 4.5，2026-10-05）
+
+### 「叫醒之后」是一个设置，不是一个写死的动作
+
+命中那一下原本写死三件（震动 / 通知 / 唤起）。现在设置页那一段多了两行：
+
+| 行 | 是什么 |
+|---|---|
+| **叫醒之后** | 只叫醒（缺省，与改动之前一致）/ 顺带切到视频模式 / 顺带切回手机模式 |
+| **叫醒时震动** | 命中那一下震 200 ms；关掉只剩那一声短提示音（界面照旧叫起来） |
+
+后两条**不在服务里切模式**：`WakeWordService.afterHit()` 只往收件箱写一句规范命令
+（`VoiceCommands.VIDEO` / `VoiceCommands.PHONE`），由宿主插件那张表去认并执行 —— 命令词表只有
+一份。插件按 `seq` 顺序读，所以这条命令一定比主人随后说的那句话先落地：切模式发生在投递之前。
+
+改完这两个值会发一条 `ACTION_REFRESH`，正在跑的服务立刻读新的（不必重启监听）。
+
+### 命令词表在宿主那一侧
+
+主人说的哪几句话是**命令**、哪几句是"要投进会话的话"，由 `host-plugin/index.mjs` 的
+`VOICE_COMMANDS` 一张表说了算（可行性稿 2.7：改词表不必重下关键词表、也不必重建 APK）：
+
+| 模式 | 说法（整句归一化之后相等才算） |
+|---|---|
+| `video` | 打开视频模式 / 进入视频模式 / 切到视频模式 / 换成视频模式 / 视频模式 |
+| `phone` | 回到手机模式 / 退出视频模式 / 关闭视频模式 / 关掉视频模式 / 手机模式 |
+
+- **归一化只吃空白与标点**（说出来的句子末尾会带句号），还认大小写；其余一个字都不许差
+- **整句相等，不做包含匹配**：`"视频模式怎么改"` 是一句要进会话的话，表认错了人主人就会发现自己的
+  问题没了。这一条有 `tools/check-voice-commands.mjs` 里的反例钉着
+- 命中之后**不进会话**（既不插正在跑的那一轮，也不开新对话，更不理会 `wake` 记号）：它是对这台手机
+  说的，不是对助手说的一句话。`lw_voice op=inbox` 把"投递了几条"与"吃掉了几条命令"分开报，
+  `op=say` 遇到命令句会直接说"这是一句命令，切成了没成"
+- 表里认不出来的说法照旧当普通一句话投进会话 —— 宁可多一句对话，也不要因为"猜它想切模式"而吃掉
+  主人真正说的一句
+
+### 三个触发口现在都在
+
+`lw_mode`（模型自己调）/ 唤醒词命中（`onHit`）/ 浮标菜单那两个模式项 —— 后两个**都走这一张表**，
+所以不会有两份实现（`tools/check-voice-commands.mjs` 拿 Kotlin 那两个规范句子与插件那张表对着核）。
+
+## 十一、这一块改了什么
 
 ```
-host-plugin/index.mjs                             lw_wakeword 工具、模型清单 (重钉到自建 Release)、镜像优先、装完清另一套; voiceDeliver 认 wake 记号开新对话
-app/src/main/java/.../wake/WakeWordService.kt     前台服务、两层 (唤醒词一直守 / 常驻语音按命中开)、命中之后的七件事、闲置超时、半双工闸
+host-plugin/index.mjs                             lw_wakeword 工具、模型清单 (重钉到自建 Release)、镜像优先、装完清另一套; voiceDeliver 认 wake 记号开新对话; VOICE_COMMANDS 那张命令表 + applyMode (与 lw_mode 共用); startBallPhase 推"正在想"
+app/src/main/java/.../wake/WakeWordService.kt     前台服务、两层 (唤醒词一直守 / 常驻语音按命中开)、命中之后那几件事、闲置超时、半双工闸、ACTION_LISTEN_NOW (浮标点一下) 与 afterHit (叫醒之后那两句命令)
 app/src/main/java/.../voice/SpeechSegmenter.kt    silero VAD 切段、abandon() 丢半句话、静音窗 0.8 s
 app/src/main/java/.../voice/VoiceState.kt         capturing 的含义收窄成"常驻语音在跑"
 app/src/main/java/.../voice/VoiceInbox.kt         投递队列, 头一句带 wake 记号
+app/src/main/java/.../voice/VoiceCommands.kt      两个规范命令句 (与插件那张表对着核)
 app/src/main/java/.../wake/WakeWordModel.kt       按前缀找模型、符号表核对
 app/src/main/java/.../wake/WakeWordDownload.kt    设置页那个按钮背后的下载 (逐文件 sha256 + 进度 + 清理)
 app/src/main/java/.../wake/WakeWordWords.kt       「词=带音调数字拼音」转 token 行
 app/src/main/java/.../tool/LwSpeech.kt            端侧识别; warmUp() 只加载不出字 (命中时预热)
-app/src/main/java/.../tool/LwWakeWord.kt          通道方法 wakeword 的四个动作; 两个许可 (allow / allowVoice / setAllow / ensure / refresh)
+app/src/main/java/.../tool/LwWakeWord.kt          通道方法 wakeword 的四个动作; 两个许可 + onHit / vibrate; speakNow (浮标点一下那条路)
 app/src/main/java/.../channel/LwModes.kt          视频模式给常驻语音许可 (不再直接起整条链), 手机模式收回
 app/src/main/java/.../channel/PrivilegedBridge.kt 一行: "wakeword" 进方法表
-app/src/main/java/.../ui/SettingsScreen.kt        「唤醒词」那一段 (状态 / 下载 / 改词 / 两个许可开关)
+app/src/main/java/.../ui/SettingsScreen.kt        「唤醒词」那一段 (状态 / 下载 / 改词 / 两个许可 / 叫醒之后 / 震动) 与「浮标」那一段
 app/src/main/java/.../ui/HostScreen.kt            输入框上沿那个麦克风 (JS 桥 + 注入的脚本, 只在常驻语音跑时出现)
-app/src/main/java/.../MainActivity.kt             启动时照着许可把监听恢复起来 (LwWakeWord.ensure)
+app/src/main/java/.../MainActivity.kt             启动时照着许可把监听恢复起来 (LwWakeWord.ensure) 并按存盘开关放球 (LwOverlay.ensure)
 app/src/main/AndroidManifest.xml                  一个前台服务声明
+tools/check-voice-commands.mjs                    命令表两份实现不许漂 (8 条判据)
 docs/wake-word.md                                 本文
 ```

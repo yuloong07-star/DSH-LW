@@ -35,6 +35,7 @@ import io.github.miuzarte.littlewhale.tool.LwSpeech
 import io.github.miuzarte.littlewhale.tool.LwWakeWord
 import io.github.miuzarte.littlewhale.voice.AudioCapture
 import io.github.miuzarte.littlewhale.voice.SpeechSegmenter
+import io.github.miuzarte.littlewhale.voice.VoiceCommands
 import io.github.miuzarte.littlewhale.voice.VoiceInbox
 import io.github.miuzarte.littlewhale.voice.VoiceState
 import java.io.File
@@ -49,7 +50,7 @@ internal object WakeWordState {
     @Volatile
     var listening: Boolean = false
 
-    /** 现在守着的那几个词, 显示名那一半 (素云 / 小爱同学 …) */
+    /** 现在守着的那几个词, 显示名那一半 (大肥鱼大肥鱼 / 小爱同学 …) */
     @Volatile
     var keywords: List<String> = emptyList()
 
@@ -91,7 +92,7 @@ internal object WakeWordState {
 /**
  * 一直听着麦克风: 唤醒词在那一路音频上等着, 命中之后才把常驻语音铺开
  *
- * 这是「喊一声素云」的落点, 也是 2.0.0「一直听」的落点, **它是两层, 不是一层** —— 这一层分工
+ * 这是「喊一声唤醒词」的落点, 也是 2.0.0「一直听」的落点, **它是两层, 不是一层** —— 这一层分工
  * 是 2026-10-05 定下来的状态机 (见 `docs/wake-voice-states.md`):
  *
  * 1. **唤醒词那一路一直在守** (低功耗守门人): `KeywordSpotter` 与采集, 从服务起到服务停, 它是
@@ -147,6 +148,15 @@ class WakeWordService : Service() {
     private var score = DEFAULT_SCORE.toFloat()
     private var onWake = WAKE_TO_APP
     private var vibrateMs = DEFAULT_VIBRATE_MS
+
+    /**
+     * 命中之后除了叫醒还要做什么 (批次 4.4)
+     *
+     * 三个值由设置页那个「叫醒之后」定 ([LwWakeWord.onHit]): 只叫醒 ([LwWakeWord.HIT_WAKE], 缺省)、
+     * 顺带切到视频模式、顺带切回手机模式。后两条在这里**只写一句命令进收件箱**, 真正切模式的是宿主
+     * 插件那张命令表 —— 命令词表只有一份, 见 [io.github.miuzarte.littlewhale.voice.VoiceCommands]
+     */
+    private var onHit = LwWakeWord.HIT_WAKE
 
     /**
      * 主人允许不允许常驻语音**留着** (那个默认关的许可)
@@ -213,9 +223,16 @@ class WakeWordService : Service() {
             runCatching { announce(listeningText()) }
             return START_STICKY
         }
-        // 设置页刚改过许可: 不重启服务, 只把新值读进来 —— 打开"允许常驻语音"时顺手把它铺开,
-        // 关掉时把已经在跑的那半条收回来 (两个方向都要管, 否则关掉之后它还在吃麦克风)
+        // 浮标上点一下 (批次 4.2): 开一次"讲一句话"的窗口, 与命中走同一条路, 只是没有那个词
+        if (intent?.action == ACTION_LISTEN_NOW) {
+            listenNow()
+            return START_STICKY
+        }
+        // 设置页刚改过许可或"叫醒之后": 不重启服务, 只把新值读进来 —— 打开"允许常驻语音"时顺手把它
+        // 铺开, 关掉时把已经在跑的那半条收回来 (两个方向都要管, 否则关掉之后它还在吃麦克风)
         if (intent?.action == ACTION_REFRESH) {
+            onHit = LwWakeWord.onHit(this)
+            vibrateMs = if (LwWakeWord.vibrate(this)) DEFAULT_VIBRATE_MS else 0
             val wanted = LwWakeWord.allowVoice(this)
             if (wanted == voiceResidency) return START_STICKY
             voiceResidency = wanted
@@ -237,6 +254,7 @@ class WakeWordService : Service() {
         score = intent.getDoubleExtra(EXTRA_SCORE, DEFAULT_SCORE).toFloat()
         onWake = intent.getStringExtra(EXTRA_ON_WAKE) ?: WAKE_TO_APP
         vibrateMs = intent.getIntExtra(EXTRA_VIBRATE_MS, DEFAULT_VIBRATE_MS)
+        onHit = intent.getStringExtra(EXTRA_ON_HIT) ?: LwWakeWord.onHit(this)
         voiceResidency = intent.getBooleanExtra(EXTRA_VOICE, false)
         // 服务重复起来时是"换一套参数重新开始", 不是再开一路: 先收掉上一个循环
         stopListening()
@@ -647,9 +665,9 @@ class WakeWordService : Service() {
     /**
      * 听到了一次
      *
-     * 七件事都做, 顺序是"先让人知道, 再叫起来": 震动与那一声短提示音是当场的手感, 通知是事后看得
-     * 见的记录, **开常驻语音**是"唤醒之后才轮到它"那一步, 预热识别器是给随后那句话省时间, 唤起
-     * 才是这个功能的目的, 任何一步失败都不该把监听带走, 所以各自 runCatching
+     * 顺序是"先让人知道, 再叫起来": 震动与那一声短提示音是当场的手感, 通知是事后看得见的记录,
+     * **开常驻语音**是"唤醒之后才轮到它"那一步, 唤起才是这个功能的目的, 任何一步失败都不该把监听
+     * 带走, 所以各自 runCatching
      */
     private fun hit(keyword: String) {
         WakeWordState.hits += 1
@@ -657,24 +675,72 @@ class WakeWordService : Service() {
         WakeWordState.lastHitAt = System.currentTimeMillis()
         Log.i(TAG, "heard $keyword (${WakeWordState.hits} so far)")
         if (vibrateMs > 0) runCatching { buzz(vibrateMs.toLong()) }
-        // 那一声短提示音要占住"半双工"那一小段: 不占的话它会被麦克风录进去, 而主人紧接着说的
-        // 第一句话就带着一声"嘀"进识别器, 占着的那一百多毫秒里采集照跑、只是 VAD 那边作废
-        runCatching {
-            VoiceState.speaking = true
-            try {
-                beep(BEEP_MS)
-            } finally {
-                VoiceState.speaking = false
-            }
-        }
         runCatching { announce(heardText(keyword)) }
-        // 唤醒词是常驻语音的开门条件 (状态机那条 ②), 而**这一句的机会永远给**: 命中之后头一句话要
-        // 开一个新对话, 要把那句话认出来就得把切段与出字铺开, 所以这里不看那个许可 —— 许可管的是
-        // "这一路留不留着" (sticky), 不是"能不能听到一句话", 写成"关着就不开"会让这个功能自相矛盾:
-        // 喊醒了却听不见你说什么, 预热识别器在 openVoice 里做 (开了门才有意义)
-        wakeWindow = true
-        runCatching { openVoice(sticky = false) }
+        runCatching { openForOneSentence() }
         runCatching { wake(keyword) }
+        runCatching { afterHit() }
+    }
+
+    /**
+     * 一次唤醒 (或球上点一下) 要的那一句话
+     *
+     * 三件事都要做, 而理由各不相同:
+     *
+     * - **那一声短提示音占住半双工那一小段**: 不占的话它会被麦克风录进去, 而主人紧接着说的第一句
+     *   话就带着一声"嘀"进识别器 (占着的那一百多毫秒里采集照跑、只是 VAD 那边作废)
+     * - **[openVoice] 是开门**: 唤醒词是常驻语音的开门条件 (状态机那条 ②), 而**这一句的机会永远给**:
+     *   命中之后头一句话要开一个新对话, 要把那句话认出来就得把切段与出字铺开, 所以这里不看那个
+     *   许可 —— 许可管的是"这一路留不留着" (sticky), 不是"能不能听到一句话"
+     * - **`wakeWindow` 只给头一句**: 一句话被 VAD 切成两段时两段都带记号就会开出两个对话
+     */
+    private fun openForOneSentence() {
+        VoiceState.speaking = true
+        try {
+            beep(BEEP_MS)
+        } finally {
+            VoiceState.speaking = false
+        }
+        wakeWindow = true
+        openVoice(sticky = false)
+    }
+
+    /**
+     * 手动让它听一句 (浮标上点一下)
+     *
+     * 与 [hit] 同一条开门路, 只是没有"听到某个词"这件事: 不震动、不报"听到", 而它同样给一句话的
+     * 机会、同样开一个新对话 —— 球与唤醒词在主人看来是同一件事: "我要说话了"
+     */
+    private fun listenNow() {
+        if (!listening) {
+            VoiceState.lastError = "the wake word service is not listening yet, so there is nothing to" +
+                " open the voice chain on"
+            Log.w(TAG, VoiceState.lastError!!)
+            return
+        }
+        runCatching { openForOneSentence() }
+        runCatching { announce(listeningText()) }
+    }
+
+    /**
+     * 命中之后除了叫醒还要做的 ([onHit], 批次 4.4)
+     *
+     * 后两条**不是在这里切模式**, 而是把一句规范命令写进收件箱 ([VoiceCommands]): 命令词表只有一份,
+     * 在宿主插件里 (可行性稿 2.7), 而插件是按 seq 顺序读的 —— 这条命令比主人随后说的那句话先落进
+     * 文件, 所以"切模式"一定发生在那一句话被投进会话之前
+     */
+    private fun afterHit() {
+        val line = when (onHit) {
+            LwWakeWord.HIT_VIDEO -> VoiceCommands.VIDEO
+            LwWakeWord.HIT_PHONE -> VoiceCommands.PHONE
+            else -> return
+        }
+        val seq = VoiceInbox.append(this, line)
+        if (seq == null) {
+            VoiceState.lastError = "the hit asked for \"$line\" but the voice inbox is not writable"
+            Log.w(TAG, VoiceState.lastError!!)
+            return
+        }
+        Log.i(TAG, "the hit also asked for \"$line\" (#$seq)")
     }
 
     /** 听到之后把谁叫起来: 浮窗优先, 浮窗起不来就回到应用 */
@@ -909,6 +975,10 @@ class WakeWordService : Service() {
 
         /** 设置页改过许可之后来这一条: 服务不重启, 只把新值读进来 */
         const val ACTION_REFRESH = "io.github.miuzarte.littlewhale.wake.REFRESH"
+
+        /** 浮标上点一下那条路: 不经过唤醒词, 直接开一次"讲一句话"的窗口 (批次 4.2) */
+        const val ACTION_LISTEN_NOW = "io.github.miuzarte.littlewhale.wake.LISTEN_NOW"
+        const val EXTRA_ON_HIT = "onHit"
         const val EXTRA_MODEL_DIR = "modelDir"
         const val EXTRA_KEYWORDS_FILE = "keywordsFile"
         const val EXTRA_THRESHOLD = "threshold"

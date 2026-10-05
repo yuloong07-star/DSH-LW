@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import androidx.core.content.ContextCompat
+import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.util.Capability
 import io.github.miuzarte.littlewhale.util.PermissionGate
 import io.github.miuzarte.littlewhale.voice.VoiceInbox
@@ -58,6 +59,23 @@ internal object LwWakeWord {
     private const val ALLOW_WAKE_KEY = "wake-allow"
     private const val ALLOW_VOICE_KEY = "wake-allow-voice"
 
+    /**
+     * 命中之后干什么 (批次 4.4): 只叫醒 / 顺带切到视频模式 / 顺带切回手机模式
+     *
+     * 这三个值就是设置页那一个下拉的东西。**"切模式"那两条不是在这里做**, 而是往收件箱写一句
+     * 命令 ([VoiceCommands]): 命令词表只有一份, 在宿主插件里 (见那个文件的注释)
+     */
+    private const val ON_HIT_KEY = "wake-on-hit"
+
+    /** 命中时震不震一下 (缺省开) */
+    private const val VIBRATE_KEY = "wake-vibrate"
+
+    /** 命中之后只叫醒 (缺省: 与改动之前的行为一致) */
+    const val HIT_WAKE = "wake"
+
+    const val HIT_VIDEO = "video"
+    const val HIT_PHONE = "phone"
+
     /** 这一个能力的名字, 与设置页里那条一致 */
     private val microphone = Capability(
         name = "麦克风",
@@ -95,7 +113,7 @@ internal object LwWakeWord {
         ?.takeIf { it.isNotBlank() }
         ?: WakeWordWords.DEFAULT
 
-    /** 现在的词表里那几个显示名 (素云 / 大肥鱼大肥鱼 …), 没有词表就是空的 */
+    /** 现在的词表里那几个显示名 (大肥鱼大肥鱼 / 小爱同学 …), 没有词表就是空的 */
     internal fun names(context: Context): List<String> {
         val file = keywordsFile(directory(context))
         if (!file.isFile) return emptyList()
@@ -124,6 +142,28 @@ internal object LwWakeWord {
         prefs(context).edit()
             .putBoolean(ALLOW_WAKE_KEY, wake)
             .putBoolean(ALLOW_VOICE_KEY, voice)
+            .apply()
+    }
+
+    /** 命中之后干什么: [HIT_WAKE] / [HIT_VIDEO] / [HIT_PHONE], 认不出的值一律当"只叫醒" */
+    internal fun onHit(context: Context): String = when (val asked = prefs(context).getString(ON_HIT_KEY, HIT_WAKE)) {
+        HIT_VIDEO, HIT_PHONE -> asked
+        else -> HIT_WAKE
+    }
+
+    /** 命中时震一下没有 (缺省开) */
+    internal fun vibrate(context: Context): Boolean = prefs(context).getBoolean(VIBRATE_KEY, true)
+
+    /**
+     * 记下"命中之后干什么"与震不震
+     *
+     * 与那两个许可一样, **这里只写偏好**: 服务那边会在收到 `ACTION_REFRESH` 时自己读一遍
+     * ([refresh]), 所以改完不必重启监听
+     */
+    internal fun setHit(context: Context, action: String, vibrate: Boolean) {
+        prefs(context).edit()
+            .putString(ON_HIT_KEY, if (action == HIT_VIDEO || action == HIT_PHONE) action else HIT_WAKE)
+            .putBoolean(VIBRATE_KEY, vibrate)
             .apply()
     }
 
@@ -194,6 +234,9 @@ internal object LwWakeWord {
             // 的麦克风"这件事在旧调用方那里读起来不变
             put("allowWake", allow(context))
             put("allowVoice", allowVoice(context))
+            // 命中之后干什么 (批次 4.4): 只叫醒 / 切到视频模式 / 切回手机模式, 外加震不震
+            put("onHit", onHit(context))
+            put("vibrate", vibrate(context))
             // 服务那侧读到的许可 (刚改完许可时可能与上面那个短暂不一致, 这一条是"它现在按哪个在跑")
             put("voiceAllowed", WakeWordState.voiceAllowed)
             put("voiceActive", WakeWordState.voiceActive)
@@ -234,6 +277,8 @@ internal object LwWakeWord {
                         "microphone permission" to (refusal ?: "granted"),
                         "allowed to wake" to allow(context).toString(),
                         "allowed always-listening voice" to allowVoice(context).toString(),
+                        "after a hit" to onHit(context),
+                        "buzz on a hit" to vibrate(context).toString(),
                         "listening" to WakeWordState.listening.toString(),
                         "always-listening voice running" to WakeWordState.voiceActive.toString(),
                         "hits" to WakeWordState.hits.toString(),
@@ -257,7 +302,7 @@ internal object LwWakeWord {
     /**
      * 写词表
      *
-     * 每一行都是 token 序列加 `@显示名`, 例如 `s ù y ún @素云`。逐行核对模型那张符号表, 有对不上
+     * 每一行都是 token 序列加 `@显示名`, 例如 `d à f éi y ú @大肥鱼`。逐行核对模型那张符号表, 有对不上
      * 的就整批不写 (半张词表比没有词表更难看: 有的词会触发, 有的永不触发, 而人说不出为什么)
      */
     private fun keywords(context: Context, request: JsonObject): JsonObject {
@@ -283,7 +328,7 @@ internal object LwWakeWord {
         val malformed = asked.filterNot { it.contains('@') }
         if (malformed.isNotEmpty()) {
             throw IllegalArgumentException(
-                "each line has to end with @ its display name, for example `s ù y ún @素云`;" +
+                "each line has to end with @ its display name, for example `d à f éi y ú @大肥鱼`;" +
                     " these do not: ${malformed.joinToString(" | ")}",
             )
         }
@@ -343,7 +388,16 @@ internal object LwWakeWord {
                     WakeWordService.WAKE_TO_APP
                 },
             )
-            putExtra(WakeWordService.EXTRA_VIBRATE_MS, request.int("vibrateMs", DEFAULT_VIBRATE_MS))
+            // 命中时震不震: 设置页那个开关就是它的缺省值, 通道那条路仍可以点名覆盖 (vibrateMs=0 就是不震)
+            putExtra(
+                WakeWordService.EXTRA_VIBRATE_MS,
+                request.int("vibrateMs", if (vibrate(context)) DEFAULT_VIBRATE_MS else 0),
+            )
+            // 命中之后干什么 (批次 4.4): 缺省取设置页存的那个
+            putExtra(
+                WakeWordService.EXTRA_ON_HIT,
+                if (request.contains("onHit")) request.string("onHit") else onHit(context),
+            )
             // 常驻语音那一个许可: 走通道那条路时由调用方点名 (缺省取设置页存的), 而 [listen] 那条
             // 路只读设置页存的 —— 界面上那个开关不许绕过许可直接把常驻打开
             putExtra(WakeWordService.EXTRA_VOICE, request.bool("voice", allowVoice(context)))
@@ -424,6 +478,35 @@ internal object LwWakeWord {
             .setAction(WakeWordService.ACTION_REFRESH)
         runCatching { ContextCompat.startForegroundService(context, intent) }
             .onFailure { Log.w("LwWakeWord", "the listener did not take the new permissions: ${it.message}") }
+    }
+
+    /**
+     * 手动让它听一句话 (浮标上点一下那条路, 批次 4.2)
+     *
+     * 回 null = 已经发出去了; 否则是**拒绝的理由**, 调用方原样说给主人听 —— 点了一下却什么都不发生
+     * 是最不能接受的那种失败, 所以缺模型 / 缺权限 / 正在念回答这三种情形各有各的说法
+     *
+     * 服务没起时先把监听起起来: 两条 `startForegroundService` 是按顺序送到同一个服务实例上的
+     * (`onStartCommand` 在主线程序贯执行), 所以"先起服务、再让它听"不会撞在一起, 而 `listen()`
+     * 抛出来的那一句 (缺权限 / 缺模型) 就是拒绝的理由
+     */
+    internal fun speakNow(context: Context): String? {
+        PermissionGate.refusal(context, microphone)?.let { return it }
+        val ready = WakeWordDownload.readyCount(context) == WakeWordDownload.files.size
+        if (!ready) return context.getString(R.string.ball_speak_no_model)
+        if (VoiceState.speaking) return context.getString(R.string.ball_speak_speaking)
+        if (!WakeWordState.listening) {
+            val failure = runCatching { listen(context) }.exceptionOrNull()
+            if (failure != null) return failure.message ?: failure.toString()
+        }
+        val intent = Intent(context, WakeWordService::class.java)
+            .setAction(WakeWordService.ACTION_LISTEN_NOW)
+        return try {
+            ContextCompat.startForegroundService(context, intent)
+            null
+        } catch (error: Throwable) {
+            context.getString(R.string.ball_speak_failed, error.message ?: error.toString())
+        }
     }
 
     /** 与 sherpa-onnx 自己的缺省值一致 */

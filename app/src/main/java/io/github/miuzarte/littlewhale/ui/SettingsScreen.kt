@@ -53,6 +53,10 @@ import io.github.miuzarte.littlewhale.channel.ScreenshotBudget
 import io.github.miuzarte.littlewhale.constants.UiSpacing
 import io.github.miuzarte.littlewhale.host.DshHost
 import io.github.miuzarte.littlewhale.host.HostSettings
+import io.github.miuzarte.littlewhale.host.HostStatus
+import io.github.miuzarte.littlewhale.overlay.BallGeometry
+import io.github.miuzarte.littlewhale.overlay.BallSpot
+import io.github.miuzarte.littlewhale.overlay.OverlayState
 import io.github.miuzarte.littlewhale.scaffolds.ArrowSlider
 import io.github.miuzarte.littlewhale.scaffolds.LazyColumn
 import io.github.miuzarte.littlewhale.scaffolds.SectionSmallTitle
@@ -60,6 +64,7 @@ import io.github.miuzarte.littlewhale.scaffolds.SuperTextField
 import io.github.miuzarte.littlewhale.theme.MonetKeyColorOptions
 import io.github.miuzarte.littlewhale.theme.ThemeSettings
 import io.github.miuzarte.littlewhale.theme.ThemeStore
+import io.github.miuzarte.littlewhale.tool.LwOverlay
 import io.github.miuzarte.littlewhale.tool.LwSpeak
 import io.github.miuzarte.littlewhale.tool.LwTts
 import io.github.miuzarte.littlewhale.tool.LwWakeWord
@@ -297,6 +302,13 @@ fun SettingsScreen() {
                 SectionSmallTitle(stringResource(R.string.settings_section_wake))
                 Card {
                     WakeItems()
+                }
+            }
+
+            item {
+                SectionSmallTitle(stringResource(R.string.settings_section_ball))
+                Card {
+                    BallItems()
                 }
             }
 
@@ -864,6 +876,73 @@ private fun SpeakItems() {
 private fun voiceLabel(voice: Voice): String = "${voice.name} (${voice.locale.toLanguageTag()})"
 
 /**
+ * 浮标: 一颗球, 点一下说话
+ *
+ * 这一段的落点是**一颗球在不在屏幕上**, 而不是"那段代码跑没跑": 球是那块常驻的 overlay 窗, 而它的
+ * 开关是存盘的 ([BallSpot.on]) —— 开关管"下一次应用起来要不要把它放出来", 服务管"它现在在不在",
+ * 所以状态那一行必须说三件事: 缺权限 / 球在(停在哪边) / 球不在
+ *
+ * 缺权限时**不替人打开开关**: 屏幕上什么都不会出现, 而状态那一行直说缺哪一条 (与别的段同一条纪律)
+ *
+ * 每秒看一眼: 球的位置是拖动那一侧写进偏好的, 而权限可能在系统设置里被改掉, 不轮询界面就是死的
+ */
+@Composable
+private fun BallItems() {
+    val context = LocalContext.current
+    var on by remember { mutableStateOf(BallSpot.on(context)) }
+    var permission by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
+    var showing by remember { mutableStateOf(OverlayState.showing) }
+    var edge by remember { mutableStateOf(BallSpot.read(context)?.first ?: BallGeometry.EDGE_RIGHT) }
+    var hostUp by remember { mutableStateOf(DshHost.status is HostStatus.Running) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            permission = Settings.canDrawOverlays(context)
+            showing = OverlayState.showing
+            edge = BallSpot.read(context)?.first ?: BallGeometry.EDGE_RIGHT
+            hostUp = DshHost.status is HostStatus.Running
+            delay(POLL_MS)
+        }
+    }
+    Column(modifier = Modifier.fillMaxWidth().padding(UiSpacing.Large)) {
+        Text(
+            text = when {
+                !permission -> stringResource(R.string.settings_ball_permission)
+                showing -> stringResource(
+                    R.string.settings_ball_state_up,
+                    stringResource(
+                        if (edge == BallGeometry.EDGE_LEFT) R.string.ball_dock_left else R.string.ball_dock_right,
+                    ),
+                )
+
+                else -> stringResource(R.string.settings_ball_state_down)
+            },
+        )
+        if (showing && !hostUp) {
+            Text(
+                text = stringResource(R.string.settings_ball_missing_host),
+                modifier = Modifier.padding(top = UiSpacing.Medium),
+            )
+        }
+        // 球没起来时把上一次的原因摊开说 (系统拒了那块窗 / 没有窗口管理器): 失败不许静默
+        if (!showing) {
+            OverlayState.lastError?.let { reason ->
+                Text(text = reason, modifier = Modifier.padding(top = UiSpacing.Medium))
+            }
+        }
+    }
+    SwitchPreference(
+        title = stringResource(R.string.settings_ball_on),
+        summary = stringResource(R.string.settings_ball_on_summary),
+        checked = on,
+        onCheckedChange = { wanted ->
+            on = wanted
+            LwOverlay.setOn(context, wanted)
+            showing = OverlayState.showing
+        },
+    )
+}
+
+/**
  * 唤醒词: 词表、模型与那两个许可
  *
  * 四件事分四段说清, 因为它们的处置完全不同: **词表**是用户自己写的 (写错时 sherpa-onnx 会把整行
@@ -889,6 +968,8 @@ private fun WakeItems() {
     var names by remember { mutableStateOf(LwWakeWord.names(context)) }
     var allowWake by remember { mutableStateOf(LwWakeWord.allow(context)) }
     var allowVoice by remember { mutableStateOf(LwWakeWord.allowVoice(context)) }
+    var onHit by remember { mutableStateOf(LwWakeWord.onHit(context)) }
+    var vibrate by remember { mutableStateOf(LwWakeWord.vibrate(context)) }
     var listening by remember { mutableStateOf(WakeWordState.listening) }
     var voiceActive by remember { mutableStateOf(WakeWordState.voiceActive) }
     var hits by remember { mutableStateOf(WakeWordState.hits) }
@@ -906,6 +987,8 @@ private fun WakeItems() {
         while (true) {
             allowWake = LwWakeWord.allow(context)
             allowVoice = LwWakeWord.allowVoice(context)
+            onHit = LwWakeWord.onHit(context)
+            vibrate = LwWakeWord.vibrate(context)
             listening = WakeWordState.listening
             voiceActive = WakeWordState.voiceActive
             hits = WakeWordState.hits
@@ -979,6 +1062,34 @@ private fun WakeItems() {
             allowVoice = wanted
             note = null
             // 改完得告诉正在跑的那个服务: 否则"我打开了它却要等下次重启"是个说不通的中间态
+            LwWakeWord.refresh(context)
+        },
+    )
+    // 第三个设置: **命中之后干什么** (批次 4.4)。两条"切模式"走的是与说出来一样的那条命令路 ——
+    // 命令词表只有一份, 在宿主插件里 (可行性稿 2.7), 这里再写一遍就成了第二份实现
+    val hitActions = listOf(LwWakeWord.HIT_WAKE, LwWakeWord.HIT_VIDEO, LwWakeWord.HIT_PHONE)
+    OverlayDropdownPreference(
+        title = stringResource(R.string.settings_wake_action),
+        summary = stringResource(R.string.settings_wake_action_summary),
+        items = listOf(
+            stringResource(R.string.settings_wake_action_wake),
+            stringResource(R.string.settings_wake_action_video),
+            stringResource(R.string.settings_wake_action_phone),
+        ),
+        selectedIndex = hitActions.indexOf(onHit).coerceAtLeast(0),
+        onSelectedIndexChange = { index ->
+            onHit = hitActions[index.coerceIn(0, hitActions.lastIndex)]
+            LwWakeWord.setHit(context, onHit, vibrate)
+            LwWakeWord.refresh(context)
+        },
+    )
+    SwitchPreference(
+        title = stringResource(R.string.settings_wake_vibrate),
+        summary = stringResource(R.string.settings_wake_vibrate_summary),
+        checked = vibrate,
+        onCheckedChange = { wanted ->
+            vibrate = wanted
+            LwWakeWord.setHit(context, onHit, wanted)
             LwWakeWord.refresh(context)
         },
     )

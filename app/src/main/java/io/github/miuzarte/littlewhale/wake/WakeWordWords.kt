@@ -44,7 +44,7 @@ internal object WakeWordWords {
         .map { line(it, symbols) }
 
     /**
-     * 一对 `词=拼音` -> `s ù y ún @素云`
+     * 一对 `词=拼音` -> `d à f éi y ú @大肥鱼`
      *
      * 对不上的 token 直接抛: 半张能用的词表比没有词表更难查 (有的词会触发, 有的永不触发, 而人说不出
      * 为什么)

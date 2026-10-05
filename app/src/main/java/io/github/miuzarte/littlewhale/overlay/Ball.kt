@@ -1,0 +1,416 @@
+package io.github.miuzarte.littlewhale.overlay
+
+import android.animation.ValueAnimator
+import android.content.Context
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
+import android.view.ViewConfiguration
+import android.view.animation.DecelerateInterpolator
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.TextView
+import io.github.miuzarte.littlewhale.R
+import kotlin.math.abs
+
+/**
+ * 球上那三个字的三种可能
+ *
+ * 三个词都是「正在 X」三个字 (主人 2026-10-05 点过名: 状态词就写「正在听」这一档), 12 sp 下正好画得
+ * 进 48 dp 的球 —— 这是"状态提示"落在最小面积上的办法 (颜色只是它的第二种说法, 不是唯一的那种:
+ * 颜色认不出来的人也要读得懂)
+ */
+internal enum class BallWord {
+    SPEAKING,
+    THINKING,
+    LISTENING,
+}
+
+/** 那三个字怎么说: 与设置页、菜单、通知栏说的是同一份文案 */
+internal fun BallWord.label(context: Context): String = when (this) {
+    BallWord.SPEAKING -> context.getString(R.string.ball_state_speaking)
+    BallWord.THINKING -> context.getString(R.string.ball_state_thinking)
+    BallWord.LISTENING -> context.getString(R.string.ball_state_listening)
+}
+
+/** 每种状态描边的颜色: 只用来描一圈边, 认字那一半永远在 */
+internal fun BallWord.ring(): Int = when (this) {
+    BallWord.SPEAKING -> RING_SPEAKING
+    BallWord.THINKING -> RING_THINKING
+    BallWord.LISTENING -> RING_LISTENING
+}
+
+private val RING_SPEAKING = 0xFFB388FF.toInt()
+private val RING_THINKING = 0xFFFFC24D.toInt()
+private val RING_LISTENING = 0xFF6EF3B0.toInt()
+
+/**
+ * 球现在该说哪两个字
+ *
+ * 优先级是**在念 > 在想 > 在听**: 喇叭正在说话时那条链整个哑着 (半双工那一道闸), 所以"在念"比
+ * "在听"更贴近事实; "在想"是宿主那一侧的事 (一条轮次在跑), 而它比"在听"要紧 —— 主人在等的是回答
+ *
+ * 纯函数, 没有设备也能量 (见 BallStatusTest)
+ */
+internal object BallStatus {
+    fun wordFor(speaking: Boolean, thinking: Boolean, listening: Boolean): BallWord? = when {
+        speaking -> BallWord.SPEAKING
+        thinking -> BallWord.THINKING
+        listening -> BallWord.LISTENING
+        else -> null
+    }
+}
+
+/**
+ * 位置与钳制那几个算式
+ *
+ * 三个约定照着开源那一份 (Petterpx/FloatingX, Apache-2.0, 1.5k star 的悬浮窗组件 —— 它把"边缘吸附
+ * + 半隐藏 + 回弹"这套做成了公开 API, 设备上那套系统助手没露出来时以它为准):
+ *
+ * - **半隐是比例, 不是像素**: 它叫 `FxHalfHide`, 按窗口宽度算 (demo 用 `0.3`) —— 见 [HALF_HIDE]
+ * - **吸附取"剩余距离最近"的那条边**, 不是"球心过了中线就算换边" —— 见 [snapX]
+ * - **拖动过程中允许暂时越界, 松手回弹** (`rebound`) —— 硬钳在边上会让人觉得"手被挡了一下", 见 [dragX]
+ *
+ * 抽出来是为了能单测: 吸附、越界、键盘、侧边半隐那四种边界没有设备也可以量 (见 BallGeometryTest),
+ * 而它们恰恰是最容易在真机上"看着差不多"却差一个球的地方
+ */
+internal object BallGeometry {
+
+    /** 贴着哪一边: 存盘记的是这个, 不是 x —— 换分辨率之后 x 要按新宽度重算, 边与高度是不变的意图 */
+    const val EDGE_LEFT = "left"
+    const val EDGE_RIGHT = "right"
+
+    /**
+     * 半隐比例: 贴边时藏起来的那一份球宽 (0 = 全露, 1 = 全藏)
+     *
+     * 0.3 是开源那份 demo 用的数: 48 dp 的球藏掉 14 dp, 还剩 34 dp —— 空闲时那个字 (20 sp) 照旧
+     * 看得见, 而它在画面里占的地方一下子小了很多
+     */
+    const val HALF_HIDE = 0.3f
+
+    /** 松手之后贴哪一边: 比两边的剩余距离, 近的那条 (参考那套的 `nearestEdge`) */
+    fun snapX(x: Int, screenWidth: Int, ball: Int): Int {
+        val limit = (screenWidth - ball).coerceAtLeast(0)
+        return if (x <= limit - x) 0 else limit
+    }
+
+    /** 存盘那条边 + 这一屏的宽度 = 这一屏该有的 x */
+    fun xForEdge(edge: String, screenWidth: Int, ball: Int): Int =
+        if (edge == EDGE_LEFT) 0 else (screenWidth - ball).coerceAtLeast(0)
+
+    /** 吸附之后落到了哪一边 (写存盘用) */
+    fun edgeFor(x: Int, screenWidth: Int, ball: Int): String =
+        if (snapX(x, screenWidth, ball) == 0) EDGE_LEFT else EDGE_RIGHT
+
+    /** 纵向不许出屏 */
+    fun clampY(y: Int, screenHeight: Int, ball: Int): Int =
+        y.coerceIn(0, (screenHeight - ball).coerceAtLeast(0))
+
+    /**
+     * 键盘起来时把球抬到键盘上沿之上
+     *
+     * [imeBottom] 为 0 就是"没有键盘 / 这一屏拿不到那个 inset", 那时原样返回 —— 拿不到 inset 时
+     * 与其猜一个高度, 不如什么都不动 (猜错的表现是球跳到半空中)
+     */
+    fun clampAboveIme(y: Int, imeBottom: Int, screenHeight: Int, ball: Int): Int {
+        if (imeBottom <= 0) return y
+        val highest = (screenHeight - imeBottom - ball).coerceAtLeast(0)
+        return if (y > highest) highest else y
+    }
+
+    /** 半隐时球该在的 x: 贴右边就往右挪出去, 贴左边就往左挪 */
+    fun peekX(restX: Int, edge: String, ball: Int, fraction: Float = HALF_HIDE): Int {
+        val hidden = (ball * fraction).toInt()
+        return if (edge == EDGE_LEFT) restX - hidden else restX + hidden
+    }
+
+    /**
+     * 拖动中的位置: 允许推出去到半隐的位置, 松手再回弹 ([snapX] + 半隐那一步会把它收回去)
+     *
+     * 上下不分那一档 (贴边只贴左右), 所以 y 仍然按 [clampY] 硬钳
+     */
+    fun dragX(x: Int, screenWidth: Int, ball: Int, fraction: Float = HALF_HIDE): Int {
+        val hidden = (ball * fraction).toInt()
+        return x.coerceIn(-hidden, (screenWidth - ball + hidden).coerceAtLeast(0))
+    }
+}
+
+/**
+ * 球停在哪: 「贴哪边 + y」两个数, 只有拖完那一下才写
+ *
+ * 那一个 `ball-on` 是**存盘的开关** (「浮标一直在」), 它与"服务在不在跑"是两件事: 开关说的是
+ * "下一次应用起来要不要把球放出来", 服务说的是"它现在在不在" (见 OverlayService)
+ */
+internal object BallSpot {
+
+    /** 与设置页那些偏好同一个文件: 这一批的键都在这里, 换名字要两处一起换 */
+    private const val STORE = "littlewhale"
+    private const val KEY_ON = "ball-on"
+    private const val KEY_EDGE = "ball-edge"
+    private const val KEY_X = "ball-x"
+    private const val KEY_Y = "ball-y"
+    private const val KEY_HINT = "ball-hint"
+
+    fun on(context: Context): Boolean = prefs(context).getBoolean(KEY_ON, false)
+
+    fun setOn(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean(KEY_ON, on).apply()
+    }
+
+    /** 手势提示只给一次: 球一直挂着, 每次都弹就成了噪音 */
+    fun hintShown(context: Context): Boolean = prefs(context).getBoolean(KEY_HINT, false)
+
+    fun markHint(context: Context) {
+        prefs(context).edit().putBoolean(KEY_HINT, true).apply()
+    }
+
+    /** 存过的那一处, 没存过就是 null (调用方按"贴右、中下"那个缺省摆) */
+    fun read(context: Context): Pair<String, Int>? {
+        val store = prefs(context)
+        if (!store.contains(KEY_Y)) return null
+        val edge = store.getString(KEY_EDGE, BallGeometry.EDGE_RIGHT) ?: BallGeometry.EDGE_RIGHT
+        return edge to store.getInt(KEY_Y, 0)
+    }
+
+    /** 拖完那一下写一次; [x] 与 [edge] 一起存是为了对账 (真正算位置的是边 + y) */
+    fun write(context: Context, edge: String, x: Int, y: Int) {
+        prefs(context).edit()
+            .putString(KEY_EDGE, edge)
+            .putInt(KEY_X, x)
+            .putInt(KEY_Y, y)
+            .apply()
+    }
+
+    private fun prefs(context: Context) = context.getSharedPreferences(STORE, Context.MODE_PRIVATE)
+}
+
+/**
+ * 那颗球: 一个不吃焦的小圆点, 样子照着那套系统助手那颗球做
+ *
+ * 视觉取的是"一颗蓝紫渐变的柔光球 + 白色标" (那种一眼认得出是助手的圆形按钮), 而**动态**是照着
+ * 设备自己那套词表来的 —— `floating_ball_idle_to_edge` (闲置贴边半藏)、闲置那一档很淡的不透明度、
+ * 单击 / 长按 / 横向拖三种手势各有分工。落在代码里是五件事:
+ *
+ * 1. **点一下 = 说话, 长按 = 菜单, 拖 = 挪地方**。三者靠触摸斜率分开 (动了超过 [ViewConfiguration]
+ *    那个阈值就是拖, 按住超过长按时间是菜单), 所以同一个 48 dp 的球什么都干得了
+ * 2. **按下有反馈**: 按下去缩到 0.94, 拖动时放大到 1.06 —— 手指按住的那一下要有回应, 不是一块
+ *    点不动的图
+ * 3. **它不获焦** (窗口那一侧给的 `FLAG_NOT_FOCUSABLE`), 所以手指落在球外面照旧给底下的应用 ——
+ *    球只吃掉自己那 48 dp
+ * 4. 空闲时画一个字 ([IDLE_LABEL]), 有状态时画三个字 (正在听 / 正在想 / 正在念), 换词是淡入淡出 ——
+ *    状态变化是这颗球唯一"说话"的机会, 直接跳字会让人以为是闪了一下
+ * 5. **侧边半藏由窗口那一侧做** (见 OverlayService 的 `peek` / `unpeek`): 球自己的位置不是一个
+ *    view 属性, 挪窗只能改窗口坐标, 所以这里只把"按下了"这件事告诉它
+ */
+internal class BallView(context: Context, private val listener: Listener) : FrameLayout(context) {
+
+    internal interface Listener {
+        /** 手指刚落在球上: 半藏着的球要立刻滑出来 (晚一步就变成"拖不动") */
+        fun onPressStart()
+
+        /** 点一下: 说话 */
+        fun onTap()
+
+        /** 长按: 菜单 */
+        fun onLongPress()
+
+        /** 拖动中: [dx] / [dy] 是相对按下那一点的位移 (原始坐标), 窗口位置由调用方算 */
+        fun onDragTo(dx: Float, dy: Float)
+
+        /** 松手: 该吸附了 */
+        fun onDrop()
+    }
+
+    private val label = TextView(context).apply {
+        gravity = Gravity.CENTER
+        setTextColor(TEXT)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, LABEL_SP)
+        // 球底下是什么说不准 (别人的界面、白底、照片), 所以字自己带一点影子
+        setShadowLayer(3f, 0f, 1f, Color.argb(170, 0, 0, 0))
+    }
+
+    /** 空闲时球上画的是应用自己那个标 (应用名与通知栏那个图标是同一个), 不写任何名字 */
+    private val glyph = ImageView(context).apply {
+        setImageResource(R.drawable.ic_notification)
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        val pad = dp(GLYPH_PADDING_DP)
+        setPadding(pad, pad, pad, pad)
+    }
+
+    /** 蓝紫渐变那颗球: 底色是渐变, 描边跟着状态换 */
+    private val circle = GradientDrawable().apply {
+        shape = GradientDrawable.OVAL
+        gradientType = GradientDrawable.LINEAR_GRADIENT
+        orientation = GradientDrawable.Orientation.TL_BR
+        colors = intArrayOf(FILL_FROM, FILL_TO)
+        setStroke(dp(STROKE_DP), NEUTRAL)
+    }
+
+    private var fill: ValueAnimator? = null
+
+    private val slop = ViewConfiguration.get(context).scaledTouchSlop
+
+    private var downX = 0f
+    private var downY = 0f
+    private var dragging = false
+    private var longFired = false
+
+    private val press = Runnable {
+        longFired = true
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        listener.onLongPress()
+    }
+
+    /** 现在画的是哪三个字, null = 空闲 */
+    var word: BallWord? = null
+        private set
+
+    init {
+        background = circle
+        clipToOutline = true
+        addView(glyph, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        addView(label, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        show(null, animate = false)
+    }
+
+    /**
+     * 窗口那一侧给的是 WRAP_CONTENT, 所以尺寸由这里说了算: 一个正方形
+     *
+     * 为什么不让文字自己撑: 空闲那一个字与状态那三个字宽度不同, 那样球会随状态忽大忽小
+     */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val size = dp(BALL_SIZE_DP)
+        setMeasuredDimension(size, size)
+    }
+
+    /**
+     * 换状态: 空闲画那个标, 有状态画三个字, 描边一起换
+     *
+     * 同一个值时什么都不做 (心跳 400 ms 一次, 不必每次都重画), 而换字那一下是淡入淡出:
+     * 先淡到 0 再换字再淡回来, 总共 [FADE_MS] —— 比"啪一下换个字"稳
+     */
+    fun show(next: BallWord?, animate: Boolean = true) {
+        val changed = next != word
+        word = next
+        circle.setStroke(dp(STROKE_DP), next?.ring() ?: NEUTRAL)
+        val text = next?.label(context).orEmpty()
+        val size = if (next == null) LABEL_SP else WORD_SP
+        if (!changed && label.text.isNotEmpty()) return
+        if (!animate) {
+            apply(next, text, size)
+            return
+        }
+        label.animate().cancel()
+        label.animate().alpha(0f).setDuration(FADE_MS / 2).withEndAction {
+            apply(next, text, size)
+            label.animate().alpha(1f).setDuration(FADE_MS / 2).start()
+        }.start()
+    }
+
+    /** 那两个字与应用标互斥: 有状态就把标收起来, 闲着就把标放回来 */
+    private fun apply(next: BallWord?, text: String, size: Float) {
+        glyph.visibility = if (next == null) VISIBLE else GONE
+        label.visibility = if (next == null) GONE else VISIBLE
+        label.text = text
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
+        label.alpha = 1f
+    }
+
+    /** 按下 / 拖动那两档尺寸: 手指按住要有回应, 拖起来要像"拿起来了" */
+    private fun scaleTo(target: Float) {
+        fill?.cancel()
+        fill = ValueAnimator.ofFloat(scaleX, target).setDuration(SCALE_MS).apply {
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animator ->
+                val value = animator.animatedValue as Float
+                scaleX = value
+                scaleY = value
+            }
+            start()
+        }
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = event.rawX
+                downY = event.rawY
+                dragging = false
+                longFired = false
+                listener.onPressStart()
+                scaleTo(PRESS_SCALE)
+                postDelayed(press, ViewConfiguration.getLongPressTimeout().toLong())
+                return true
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.rawX - downX
+                val dy = event.rawY - downY
+                // 一动就撤掉长按: 否则"按住再拖"到时间也会弹菜单
+                if (!dragging && (abs(dx) > slop || abs(dy) > slop)) {
+                    dragging = true
+                    removeCallbacks(press)
+                    scaleTo(DRAG_SCALE)
+                }
+                if (dragging) listener.onDragTo(dx, dy)
+                return true
+            }
+
+            MotionEvent.ACTION_UP -> {
+                removeCallbacks(press)
+                scaleTo(1f)
+                if (dragging) {
+                    dragging = false
+                    listener.onDrop()
+                } else if (!longFired) {
+                    listener.onTap()
+                }
+                return true
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                removeCallbacks(press)
+                scaleTo(1f)
+                if (dragging) {
+                    dragging = false
+                    listener.onDrop()
+                }
+                return true
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    companion object {
+        /** D16 定的直径 (约 48 dp) */
+        const val BALL_SIZE_DP = 48
+
+        private const val LABEL_SP = 20f
+
+        /**
+         * 状态词那 12 sp
+         *
+         * 三个汉字按 1 em 宽算就是 36 dp, 48 dp 的球里还剩两边各 4 dp —— 再多一档 (13 sp) 就会
+         * 顶到描边上, 而少一档又要在 vivo 那块 3 倍密度的屏上才看得出来偏小
+         */
+        private const val WORD_SP = 12f
+
+        private const val STROKE_DP = 2
+        private const val GLYPH_PADDING_DP = 12
+        private const val PRESS_SCALE = 0.94f
+        private const val DRAG_SCALE = 1.06f
+        private const val SCALE_MS = 120L
+        private const val FADE_MS = 240L
+
+        /** 蓝紫渐变: 那颗球的身份色, 不随状态变 —— 状态只动描边与那三个字 */
+        private val FILL_FROM = 0xFF3D7BFF.toInt()
+        private val FILL_TO = 0xFF8B5CFF.toInt()
+        private val TEXT = 0xFFFFFFFF.toInt()
+        private val NEUTRAL = 0x66FFFFFF
+    }
+}

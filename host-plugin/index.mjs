@@ -104,6 +104,13 @@ export function apply(ctx) {
     warn(ctx, `reading replies aloud was not started: ${error?.message ?? error}`)
   }
 
+  // 浮标上那三个字里的「正在想」(批次 4): 一轮在跑就推 thinking, 跑完推 idle —— 只有宿主知道这件事
+  try {
+    startBallPhase(ctx)
+  } catch (error) {
+    warn(ctx, `the ball phase was not started: ${error?.message ?? error}`)
+  }
+
   // 语音输入是 dsh 里可选的一套 (voice-input bundle 带的那个客户端录音按钮): 服务在才注册
   // 本机的转写 provider, 不在就什么都不做 —— 一个可选能力不该让 lw_* 那堆工具跟着挂
   try {
@@ -254,6 +261,26 @@ async function putCameraAway() {
   }
 }
 
+/**
+ * 切模式的**唯一一条实现**: 换提示词 + 该起的相机起来 / 该收的收回去
+ *
+ * 两个调用方共用它, 所以相机那一半只有一份: 模型调 `lw_mode`, 与主人说了一句命令句
+ * ([matchVoiceCommand] 那一路)。**顺序是刻意的** —— 先把相机那边做好, 再报"模式已切", 否则那句
+ * "切好了"会在相机还没起来的时候就说出去
+ *
+ * 不碰任何虚拟屏: 视频模式现在不建屏, 也没有屏要收
+ */
+async function applyMode(mode) {
+  const answer = await call('mode', { mode })
+  const lines = []
+  if (answer.switched === true && answer.mode === 'video') lines.push(await bringUpCamera())
+  // 常驻语音那一个许可的说明排在这里, 是因为它就是"视频模式是说话为主"的那一半
+  if (answer.listening) lines.push(answer.listening)
+  if (answer.switched === true && answer.mode === 'phone') lines.push(await putCameraAway())
+  if (answer.teardown) lines.push(answer.teardown)
+  return { answer, lines }
+}
+
 const TOOLS = [
   defineTool({
     name: 'lw_probe',
@@ -297,26 +324,11 @@ const TOOLS = [
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args) {
-      const answer = await call('mode', { mode: args.mode })
-      // 切到视频模式顺带把相机起来: 这一步本来要模型自己走一遍, 放到这里就成了一次调用 ——
-      // 主人说"看看这是什么"之后不用再等一轮
-      const brought = answer.switched === true && answer.mode === 'video'
-        ? await bringUpCamera()
-        : null
-      // 切回手机模式顺带收工: 摄像头还回去 (小窗一起收, 这一趟抓的帧也删掉), 常驻语音链由 app 那
-      // 一侧停 (它才能停那个前台服务), 那边报回来的句子在 answer.teardown 里。**不碰任何虚拟屏** ——
-      // 视频模式现在不建屏, 也没有屏要收
-      const closed = answer.switched === true && answer.mode === 'phone'
-        ? await putCameraAway()
-        : null
+      const { answer, lines } = await applyMode(args.mode)
       if (answer.switched === false) return answer.detail
       if (answer.modes) return `modes: ${answer.modes}\nactive: ${answer.active}`
       if (answer.switched === true) {
-        return `mode -> ${answer.mode} (${answer.name}); ${answer.detail}`
-          + (brought ? `\n${brought}` : '')
-          + (answer.listening ? `\n${answer.listening}` : '')
-          + (closed ? `\n${closed}` : '')
-          + (answer.teardown ? `\n${answer.teardown}` : '')
+        return [`mode -> ${answer.mode} (${answer.name}); ${answer.detail}`, ...lines].join('\n')
       }
       return `mode: ${answer.mode} (${answer.name})\n`
         + `prompt file: ${answer.promptWritten ? 'written' : 'missing'} (${answer.promptFile})`
@@ -1791,7 +1803,10 @@ const TOOLS = [
       + 'into sentences with a silero VAD (3 s of silence ends one, 15 s at most each) and '
       + 'transcribes each sentence on-device, then drops it into a queue the host sends into the '
       + 'conversation as a `voice`-sourced message (steering into a running turn when there is one, '
-      + 'creating a session when there is none). op=inbox reports that queue, where the reader has '
+      + 'creating a session when there is none). A line that matches a command sentence is different: '
+      + 'it is executed here as a mode switch and never delivered (for example 打开视频模式, 回到手机模式 '
+      + '- see VOICE_COMMANDS). op=inbox counts those apart from the delivered ones, and op=say says so '
+      + 'when a line was taken that way. op=inbox reports that queue, where the reader has '
       + 'got to and how the last few deliveries landed; op=clean shows what a piece of markdown '
       + 'would sound like when read aloud (code blocks, tables and links are stripped); op=read '
       + 'speaks a line right now through the same cleaning and the same engine the automatic reading '
@@ -1815,7 +1830,17 @@ const TOOLS = [
     async execute(args) {
       if (args.op === 'say') {
         if (!args.text) throw new Error('op=say needs text=<the line to deliver>')
-        const outcome = await voiceDeliver(ctx, { seq: 0, text: args.text, source: 'voice', at: Date.now() })
+        // **工具里要用 hostCtx**: `TOOLS` 那张表是模块级的, `apply(ctx)` 里那个形参在它里面看不见 ——
+        // 写成 `ctx` 就是 `ctx is not defined` (2026-10-05 本批走工具那一层时抓到的, 而那之前它只会在
+        // 模型真调 op=say 时才炸)
+        if (hostCtx === null) throw new Error('the plugin was never applied, so there is no context to deliver with')
+        const outcome = await voiceDeliver(hostCtx, { seq: 0, text: args.text, source: 'voice', at: Date.now() })
+        // 命令句会被吃掉 (批次 4.5): 这时没有会话可报, 报的是"它把那句话当成了命令, 以及切成了没成"
+        if (outcome.command === true) {
+          return `that was a command, not a line for the conversation: mode -> ${outcome.mode},`
+            + ` ${outcome.switched ? 'switched' : 'NOT switched'}`
+            + (outcome.detail ? `\n${outcome.detail}` : '')
+        }
         return `delivered to ${String(voiceDelivery.sessionId)}: `
           + (outcome.running ? 'steered into the running turn' : 'queued for the next turn')
       }
@@ -1850,6 +1875,10 @@ const TOOLS = [
             `${voiceReading.count} reply(ies) read aloud`
               + `${voiceReading.skipped ? `, ${voiceReading.skipped} skipped because read-aloud is off` : ''}`
               + `${voiceReading.error ? `, last problem: ${voiceReading.error}` : ''}`,
+            `${voiceCommands.count} spoken command(s)`
+              + `${voiceCommands.last ? `, last was "${voiceCommands.last.said}" -> ${voiceCommands.last.mode}`
+                + ` (${voiceCommands.last.switched ? 'switched' : 'not switched'})` : ''}`
+              + `${voiceCommands.error ? `, last problem: ${voiceCommands.error}` : ''}`,
             ...lines.map((line) => `  #${line.seq} ${line.text}`),
           ],
           {
@@ -1858,6 +1887,7 @@ const TOOLS = [
             queued: lines,
             delivery: { ...voiceDelivery },
             reading: { ...voiceReading },
+            commands: { ...voiceCommands },
           },
         )
       }
@@ -1867,26 +1897,31 @@ const TOOLS = [
   defineTool({
     name: 'lw_overlay',
     description:
-      'Float the dsh GUI over other apps as a system overlay window, which is what makes its input '
-      + 'box reachable without leaving whatever app the person is in. The window is the same GUI as '
-      + 'a second client of the same host - same sessions, same cookies - so the composer, the '
-      + 'voice input button and the read-aloud button all work inside it. It has a title bar that '
-      + 'drags it, a 收起 button that leaves only that bar, an 应用 button that brings the full app '
-      + 'forward and a × that closes it. op=show puts it up (default: full width, 45% of the screen, '
-      + 'near the bottom, all of which width/height/x/y can override in pixels); op=hide closes it; '
-      + 'op=state says whether the overlay permission is granted, whether a window is up and what '
-      + 'page it is on. Because the window takes focus so a keyboard can type into it, touches '
-      + 'outside it no longer pass through - keep it small.',
+      'Float a small ball over other apps, so this phone\'s assistant is one tap away from anywhere. '
+      + 'The ball does not take focus, so taps outside it still reach the app underneath, and it is '
+      + 'dragged to an edge where it tucks itself half out of the screen and stays dim until '
+      + 'something happens (the way the system\'s own assistant ball behaves). Its face says what it '
+      + 'is doing: 正在听 while the always-listening chain is running, 正在想 while a turn is running '
+      + 'here on the host, 正在念 while a reply is being read aloud, and the app icon when it is idle. '
+      + 'Tap it to speak (that goes into the always-listening chain, not the page microphone), hold '
+      + 'it for the menu (keyboard strip, always-listening voice, the two modes, back to the app, '
+      + 'close the ball) and drag it to dock it. '
+      + 'op=show puts the ball up - expand=true opens the keyboard strip as well, and that strip IS '
+      + 'focusable, so while it is open touches outside it no longer pass through; op=expand and '
+      + 'op=collapse open and close that strip; op=hide takes the ball away (and clears the stored '
+      + '"keep it on screen" flag); op=state reports the permission, whether the ball is up, where it '
+      + 'is docked, which word it is showing, the active mode and the last problem. op=phase is the '
+      + 'host pushing its own turn state and is not something the model calls.',
     parameters: {
       op: {
         type: 'string',
         required: true,
-        description: 'show, hide or state',
+        description: 'show, expand, collapse, hide, state, or phase (host-side push)',
       },
-      width: { type: 'number', description: 'Window width in pixels (op=show)' },
-      height: { type: 'number', description: 'Window height in pixels (op=show)' },
-      x: { type: 'number', description: 'Distance from the left edge in pixels (op=show)' },
-      y: { type: 'number', description: 'Distance from the top edge in pixels (op=show)' },
+      expand: {
+        type: 'boolean',
+        description: 'For op=show: also open the keyboard strip (it takes focus while open)',
+      },
     },
     output: {
       schema: { type: 'string' },
@@ -1894,19 +1929,24 @@ const TOOLS = [
     },
     async execute(args) {
       const request = { op: args.op }
-      for (const key of ['width', 'height', 'x', 'y']) {
-        if (args[key] !== undefined) request[key] = args[key]
-      }
+      if (args.expand !== undefined) request.expand = args.expand
       const answer = await call('overlay', request)
-      if (args.op === 'show') {
-        return `the window is up at ${answer.x},${answer.y} sized ${answer.width}x${answer.height},`
-          + ` showing ${answer.url}`
+      if (args.op === 'show' || args.op === 'expand') {
+        return `the ball is up${answer.expanded ? ', with the keyboard strip open' : ''}:`
+          + ` docked at ${answer.x},${answer.y}`
+          + (answer.word ? `, showing ${answer.word}` : '')
+          + (answer.mode ? `, mode ${answer.mode}` : '')
+          + (answer.url ? '' : ' (no GUI address yet, so the strip cannot open)')
       }
-      if (args.op === 'hide') return answer.detail
+      if (args.op === 'hide' || args.op === 'collapse') return answer.detail
       return [
         `overlay permission: ${answer.permission ? 'granted' : 'not granted'}`,
-        `window: ${answer.showing ? `up on ${answer.url}` : 'not up'}`,
+        `ball: ${answer.showing ? `up at ${answer.x},${answer.y}${answer.expanded ? ' (strip open)' : ''}` : 'not up'}`
+          + `, remembered: ${answer.remembered ? 'yes' : 'no'}`,
+        `showing: ${answer.word || 'idle'}${answer.phase === 'thinking' ? ', a turn is running' : ''}`,
+        `mode: ${answer.mode}`,
         `host: ${answer.host}`,
+        answer.said ? `last said: ${answer.said}` : '',
         answer.page ? `last problem: ${answer.page}` : '',
       ].filter(Boolean).join('\n')
     },
@@ -1921,11 +1961,14 @@ const TOOLS = [
       + 'separate stage: the keyword spotter guards the word the whole time, and a hit opens '
       + 'cutting + recognition (silero VAD + SenseVoice). Turning the wake word on never turns that '
       + 'second stage on - a hit does. **A hit always buys one sentence**: the chain opens, what you '
-      + 'say goes into a new conversation, and then it closes again (20 s without a word is the idle '
+      + 'say goes into a new conversation, and then it closes again (10 s without a word is the idle '
       + 'limit, and that is when the 240 MB model goes back). What voice=true / the app\'s own setting '
       + 'page changes is whether the chain STAYS resident after that first sentence instead of '
       + 'closing. A hit also makes that first recognised sentence open a NEW conversation rather than '
-      + 'steering into whatever is running. '
+      + 'steering into whatever is running. The app\'s settings page also decides what a hit does '
+      + 'beyond waking - just wake, or also switch to video mode / back to phone mode (those two go '
+      + 'out as command sentences the host executes, so they are never delivered) - and whether it '
+      + 'buzzes at all. '
       + 'op=status reports the model, the words being watched for, whether the microphone '
       + 'permission is granted, whether the listener is up, how many times it has fired, and '
       + 'whether that second stage is allowed and running; '
@@ -1960,7 +2003,7 @@ const TOOLS = [
         items: { type: 'string' },
         description:
           'For op=keywords: raw keyword lines in the model\'s own token form, for example'
-          + ' "s ù y ún @素云" (the model\'s own keywords.txt shows this form). Use this only when the'
+          + ' "d à f éi y ú @大肥鱼" (the model\'s own keywords.txt shows this form). Use this only when the'
           + ' pinyin route cannot say what you mean',
       },
       threshold: {
@@ -3436,6 +3479,88 @@ async function voiceInboxState() {
   return { inbox, queued, cursor }
 }
 
+/* ── 说出来的那几句命令 ────────────────────────────────────────────────────── */
+
+/**
+ * 主人说的哪几句话是**命令**, 而不是要投进会话的话 (批次 4.5)
+ *
+ * 两级设计 (可行性稿 2.7): 短唤醒词只做"有人在叫我", 紧随其后的那一句交给常驻 ASR, 由文本里解析意图
+ * —— **所以命令词表在宿主这一侧**: 改它不必重下关键词表, 也不必重建 APK (推一个文件就行), 这正是
+ * 当初选 host 侧那张表而不是 app 侧那张的理由
+ *
+ * 只有两句, 因为这一批要的只有"一句话全开"那一件事: `video` 是"提示词换成视频那份 + 常驻语音许可
+ * 靠上 + 摄像头起来", `phone` 是收工那一条。`say` 里那几行是说法上的变体 —— 识别出来的句子不会被
+ * 人念得一模一样, 而 `say` 里**没有列出来的**说法照旧当普通一句话投进会话 (宁可多一句对话, 也
+ * 不要因为"猜它想切模式"而吃掉主人真正说的一句)
+ *
+ * 应用那一侧只保留两个规范句子 (`voice/VoiceCommands.kt`): 浮标菜单与「叫醒之后」那个开关写的
+ * 就是它们, 而 `tools/check-voice-commands.mjs` 拿两份源码对着核, 两份不许漂
+ */
+const VOICE_COMMANDS = [
+  {
+    mode: 'video',
+    say: ['打开视频模式', '进入视频模式', '切到视频模式', '换成视频模式', '视频模式'],
+  },
+  {
+    mode: 'phone',
+    say: ['回到手机模式', '退出视频模式', '关闭视频模式', '关掉视频模式', '手机模式'],
+  },
+]
+
+/** 空白与标点会被吃掉 (说出来的句子末尾会带句号), 其余一个字都不许差 */
+function normalizeCommand(text) {
+  return String(text ?? '')
+    .replace(/[\s，。！？、,.!?;；:：'"“”「」『』]/g, '')
+    .toLowerCase()
+}
+
+/**
+ * 整句相等才算命令
+ *
+ * **不做包含匹配**是这一处最容易写错的地方: "视频模式怎么改" 里就含着那四个字, 而它是一句要投进
+ * 会话的话 —— 命令词表认错了人, 主人会看到自己的问题没了
+ */
+function matchVoiceCommand(text) {
+  const said = normalizeCommand(text)
+  if (said === '') return null
+  for (const command of VOICE_COMMANDS) {
+    if (command.say.some((one) => normalizeCommand(one) === said)) return command
+  }
+  return null
+}
+
+/** 被当成命令吃掉的句子: 几条、最近一条是什么、成没成 (lw_voice 会念它) */
+const voiceCommands = { count: 0, last: null, error: null }
+
+/**
+ * 执行一句命令: 走 [applyMode], 不投会话
+ *
+ * **失败也把游标前移**: 认出"这是一句命令"这件事已经做对了, 而"切模式没成"是一句要报出来的结果,
+ * 不是一条要反复重投的句子 (那条队列每 150 ms 读一次, 抛异常会把它变成每 150 ms 重试一次)
+ */
+async function runVoiceCommand(command, line) {
+  try {
+    const { answer, lines } = await applyMode(command.mode)
+    const switched = answer.switched === true
+    voiceCommands.count += 1
+    voiceCommands.error = switched ? null : `"${line.text}" did not switch the mode: ${answer.detail}`
+    voiceCommands.last = { at: Date.now(), said: line.text, mode: answer.mode ?? command.mode, switched }
+    return {
+      command: true,
+      switched,
+      mode: answer.mode ?? command.mode,
+      said: line.text,
+      detail: switched ? lines.join('\n') : String(answer.detail ?? ''),
+    }
+  } catch (error) {
+    const reason = error?.message ?? String(error)
+    voiceCommands.count += 1
+    voiceCommands.error = `running "${line.text}" failed: ${reason}`
+    voiceCommands.last = { at: Date.now(), said: line.text, mode: command.mode, switched: false }
+    return { command: true, switched: false, mode: command.mode, said: line.text, detail: reason }
+  }
+}
+
 /* ── 语音投递: 一句话怎么变成会话里的一条消息 ─────────────────────────────── */
 
 /** 投递的去向与结果, 给 lw_voice 看: 投了几条、投给谁、是插进去的还是排上的、最近一次为什么失败 */
@@ -3519,6 +3644,16 @@ async function voiceTargetSession(ctx, controller, signal) {
  * **flush 之后才算投出去**: 游标只在投递成功之后前移, 中途崩了下次会重投, 而不是静默丢掉
  */
 async function voiceDeliver(ctx, line) {
+  // 先看它是不是一句命令 (批次 4.5): 是的话走 applyMode, 不进会话 —— 所以这一句既不插正在跑的那
+  // 一轮, 也不开新对话, 更不理会 `line.wake`。命令是"对这台手机说的", 不是"对助手说的一句话"
+  const command = matchVoiceCommand(line.text)
+  if (command !== null) {
+    const outcome = await runVoiceCommand(command, line)
+    console.log(
+      `littlewhale-channel: voice line #${line.seq} was a command -> ${outcome.mode} (${outcome.switched ? 'switched' : 'not switched'})`,
+    )
+    return outcome
+  }
   const controller = ctx.get('sessionController')
   if (!controller) {
     throw new Error('this profile has no session controller, so a spoken line has nowhere to go')
@@ -3634,8 +3769,41 @@ function startReadAloud(ctx) {
   })
 }
 
-/** Register the provider the page's voice input button resolves to */
-function registerVoiceInput(ctx) {
+/* ── 浮标上那个「正在想」 ──────────────────────────────────────────────────── */
+
+/**
+ * 一轮在跑就把浮标推成 thinking, 跑完推回 idle (批次 4)
+ *
+ * **为什么这件事得由宿主做**: 「正在听」「正在念」在应用那一侧 (`VoiceState`), 而"模型正在干活"
+ * 只有宿主知道 —— 应用那侧没有第二条路看得出这件事。所以就一个记号 (`overlay op=phase`), 浮标
+ * 400 ms 读一次
+ *
+ * `turn/start` / `turn/end` 两个事件成对: 用一个集合记正在跑的会话, 空 → 非空推 thinking,
+ * 回到空推 idle —— 这样两个会话同时跑时不会一个结束就把另一个的"正在想"抹掉。子代理的轮次跳过
+ * (那是模型自己在用的, 不是主人在等的那一轮)
+ *
+ * 推不出去只记日志: 没装应用 / 没放浮标时它本来就是个没人看的字段, 而不是一条要报给模型的错误
+ */
+function startBallPhase(ctx) {
+  const running = new Set()
+  const push = (phase) => {
+    void call('overlay', { op: 'phase', phase }).catch(() => {})
+  }
+  ctx.on('session/event', (session, event) => {
+    if (session.meta?.origin === 'subagent') return
+    if (event.type === 'turn/start') {
+      const wasEmpty = running.size === 0
+      running.add(session.id)
+      if (wasEmpty) push('thinking')
+      return
+    }
+    if (event.type !== 'turn/end') return
+    running.delete(session.id)
+    if (running.size === 0) push('idle')
+  })
+}
+
+/** Register the provider the page's voice input button resolves to */function registerVoiceInput(ctx) {
   const speech = ctx.speechToText
   if (!speech || typeof speech.register !== 'function') return
   speech.register({

@@ -362,14 +362,19 @@ lw_voice op=inbox   →  delivery.sessionId 与命中之前那个不一样
   `voiceDeliver` 认它开新对话、通知栏与胶囊按两条链分开说、`LwModes` 改成给许可
 - 第六节那四个延迟数 (0.8 s / 预热 / 150 ms / 提示音占位) 全部实装
 - 半双工 A 收干净: `SpeechSegmenter.abandon()` + `halfDuplex` 里那一下 + 通知栏那句"正在念回答, 先不听"
-- 验证: `:app:compileDebugKotlin --rerun-tasks` 干净通过; `node --check` 与 `check-host-plugin.mjs`
-  通过 (55 个工具)
+- **批次 4 (浮标与唤醒词接线)**: 非获焦小球 + 球上说话 (`ACTION_LISTEN_NOW`, 与命中同一条开门路) +
+  命中动作可配置 (叫醒之后 / 叫醒时震动) + 命令句"一句话全开" —— 球那半在
+  `docs/floating-input.md` 第七节, 命中动作与命令表在 `docs/wake-word.md` 第十/十一节
+- 验证: `:app:compileDebugKotlin` 干净通过; `node --check` 与 `check-host-plugin.mjs` 通过 (55 个工具);
+  `check-voice-commands.mjs` 8 条、`check-voice-inbox.mjs` 14 条、`check-wake-words.mjs` 6 条全过;
+  单测 42/42 (其中 `overlay.BallTest` 22 条是批次 4 新加的)
 
 **还没做的**:
 
-- **真机验证**: 上面那些判据 (1-6) 一条都还没在设备上跑过 —— 代码是编译过的, 不是验过的
+- **真机验证**: 上面那些判据 (1-6) 一条都还没在设备上跑过 —— 代码是编译过的, 不是验过的;
+  批次 4 的触摸类判据 (球的拖动 / 半隐 / 窗外穿透 / 键盘避让) 更是只有真机能算数
 - **APK 还没出**: 按纪律, 构建要先问过主人才动 (`:app:assembleDebug`)
-- 插件那半条 (150 ms 轮询 + `wake` 记号) 可以直接推设备验, 不必重建 APK
+- 插件那半条 (150 ms 轮询 + `wake` 记号 + 命令表) 可以直接推设备验, 不必重建 APK
 
 **没做也不打算做的**:
 
