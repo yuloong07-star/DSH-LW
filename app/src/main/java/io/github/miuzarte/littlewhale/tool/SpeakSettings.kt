@@ -27,6 +27,11 @@ object SpeakSettings {
     private const val FOLLOW_KEY = "speak-rate-follows-system"
     private const val RATE_KEY = "speak-rate"
     private const val VOICE_KEY = "speak-voice"
+    private const val ENGINE_KEY = "speak-engine"
+    private const val MODEL_KEY = "speak-model"
+
+    /** 两条引擎: 系统的那个即时但只有它的音色; 自带的能换音色但慢一截 */
+    enum class Engine { SYSTEM, ON_DEVICE }
 
     /** 语速的两端与吸附点, 与 `lw_speak` 的 rate 参数同一套范围 */
     val range: ClosedFloatingPointRange<Float> = 0.5f..2.0f
@@ -48,6 +53,17 @@ object SpeakSettings {
     var voice: String? by mutableStateOf(null)
         private set
 
+    /** 用哪条引擎念: 默认系统那条 (自带那条的首字延迟是几百毫秒到一秒) */
+    var engine: Engine by mutableStateOf(Engine.SYSTEM)
+        private set
+
+    /** 自带那条用的音色目录名 (工作区 `voices/<这个名字>/`), null = 还没选 */
+    var model: String? by mutableStateOf(null)
+        private set
+
+    /** 两条条件都满足才走自带那条: 选了它、而且真的挑了一个音色 */
+    fun usesOnDevice(): Boolean = engine == Engine.ON_DEVICE && model != null
+
     /** 出字那一刻要的那个数: null 表示"别动引擎的语速, 让它用系统那个" */
     fun effectiveRate(): Float? = if (followsSystem) null else rate
 
@@ -57,6 +73,25 @@ object SpeakSettings {
         followsSystem = stored.getBoolean(FOLLOW_KEY, true)
         rate = stored.getFloat(RATE_KEY, 1f).coerceIn(range.start, range.endInclusive)
         voice = stored.getString(VOICE_KEY, null)
+        engine = runCatching { Engine.valueOf(stored.getString(ENGINE_KEY, null).orEmpty()) }
+            .getOrDefault(Engine.SYSTEM)
+        model = stored.getString(MODEL_KEY, null)
+    }
+
+    /** 换引擎: 挑自带那条但还没有音色时也收下 (设置页会提示去导入), 真正生效看 usesOnDevice */
+    fun setEngine(context: Context, value: Engine) {
+        engine = value
+        preferences(context).edit().putString(ENGINE_KEY, value.name).apply()
+    }
+
+    /** 挑一个自带音色 (目录名), 顺手把引擎切到自带那条 —— 挑音色这个动作本身就说明要用它 */
+    fun setModel(context: Context, name: String?) {
+        model = name
+        if (name != null) engine = Engine.ON_DEVICE
+        preferences(context).edit().apply {
+            if (name == null) remove(MODEL_KEY) else putString(MODEL_KEY, name)
+            putString(ENGINE_KEY, engine.name)
+        }.apply()
     }
 
     fun setFollowsSystem(context: Context, value: Boolean) {

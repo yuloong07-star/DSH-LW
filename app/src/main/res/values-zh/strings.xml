@@ -95,7 +95,17 @@
     <string name="settings_speak_voice_default">用引擎自带的音色</string>
     <string name="settings_speak_voice_current">正在用</string>
     <string name="settings_speak_voice_pick">点它用这个</string>
-    <string name="settings_speak_system">系统文字转语音设置</string>
+    <string name="settings_speak_engine_system">系统文字转语音引擎</string>
+    <string name="settings_speak_engine_on_device">自己导入的音色（本机模型）</string>
+    <string name="settings_speak_engine_on_device_pick">正在用；在下面挑一个音色</string>
+    <string name="settings_speak_engine_on_device_summary">用 voices 目录里的 sherpa-onnx 模型念；起头慢一截，但声音是自己的</string>
+    <string name="settings_speak_engine_on_device_using">正在用 %1$s 念</string>
+    <string name="settings_speak_models">本机音色</string>
+    <string name="settings_speak_models_scanning">正在扫描...</string>
+    <string name="settings_speak_models_none">%1$s 下什么都没找到；把模型目录拷进去再点一下重扫</string>
+    <string name="settings_speak_models_usable">%1$s 模型；点它用它念</string>
+    <string name="settings_speak_models_directory">模型放在哪</string>
+    <string name="settings_speak_models_directory_summary">%1$s\n一个目录算一个音色；点一下重扫</string>    <string name="settings_speak_system">系统文字转语音设置</string>
     <string name="settings_speak_system_summary">换引擎、下语音包、调它自己的语速都在那一页; 本应用只能在这条引擎给出的音色里挑</string>
     <string name="settings_speak_preview">试听</string>
     <string name="settings_speak_previewing">正在念...</string>

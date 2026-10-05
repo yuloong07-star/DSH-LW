@@ -51,6 +51,7 @@ import io.github.miuzarte.littlewhale.theme.MonetKeyColorOptions
 import io.github.miuzarte.littlewhale.theme.ThemeSettings
 import io.github.miuzarte.littlewhale.theme.ThemeStore
 import io.github.miuzarte.littlewhale.tool.LwSpeak
+import io.github.miuzarte.littlewhale.tool.LwTts
 import io.github.miuzarte.littlewhale.tool.SpeakSettings
 import io.github.miuzarte.littlewhale.util.Grant
 import io.github.miuzarte.littlewhale.util.PermissionCatalog
@@ -690,43 +691,112 @@ private fun SpeakItems() {
         inputValueRange = SpeakSettings.range,
         onInputConfirm = { raw -> raw.toFloatOrNull()?.let { SpeakSettings.setRate(context, it) } },
     )
-    val listed = voices
-    when {
-        listed == null -> ArrowPreference(
-            title = stringResource(R.string.settings_speak_voice),
-            summary = stringResource(R.string.settings_speak_voice_unknown),
-            onClick = {
-                scope.launch {
-                    voices = withContext(Dispatchers.IO) { LwSpeak.chineseVoices(context) }
-                }
-            },
-        )
 
-        listed.isEmpty() -> ArrowPreference(
-            title = stringResource(R.string.settings_speak_voice),
-            summary = stringResource(R.string.settings_speak_voice_none),
-            onClick = { openTtsSettings(context) },
-        )
-
-        else -> {
-            // 引擎自带的那个也列出来: 选过别的之后要能回到它
-            ArrowPreference(
-                title = stringResource(R.string.settings_speak_voice_default),
-                summary = stringResource(
-                    if (SpeakSettings.voice == null) R.string.settings_speak_voice_current
-                    else R.string.settings_speak_voice_pick,
-                ),
-                onClick = { SpeakSettings.setVoice(context, null) },
+    // 引擎两条: 系统那条即时但只有它自己的音色; 自带那条能换音色 (主人自己放模型) 但慢一截
+    val onDevice = SpeakSettings.engine == SpeakSettings.Engine.ON_DEVICE
+    ArrowPreference(
+        title = stringResource(R.string.settings_speak_engine_system),
+        summary = stringResource(
+            if (!onDevice) R.string.settings_speak_voice_current else R.string.settings_speak_voice_pick,
+        ),
+        onClick = { SpeakSettings.setEngine(context, SpeakSettings.Engine.SYSTEM) },
+    )
+    ArrowPreference(
+        title = stringResource(R.string.settings_speak_engine_on_device),
+        summary = when {
+            onDevice && SpeakSettings.model != null -> stringResource(
+                R.string.settings_speak_engine_on_device_using,
+                SpeakSettings.model.orEmpty(),
             )
-            listed.forEach { voice ->
+
+            onDevice -> stringResource(R.string.settings_speak_engine_on_device_pick)
+
+            else -> stringResource(R.string.settings_speak_engine_on_device_summary)
+        },
+        onClick = { SpeakSettings.setEngine(context, SpeakSettings.Engine.ON_DEVICE) },
+    )
+
+    if (onDevice) {
+        // 自己放进来的音色: 目录里有什么就列什么, 用不了的连原因一起列出来
+        var models by remember { mutableStateOf<List<LwTts.Voice>?>(null) }
+        val rescan: () -> Unit = {
+            scope.launch { models = withContext(Dispatchers.IO) { LwTts.list(context) } }
+        }
+        LaunchedEffect(Unit) { rescan() }
+        val listed = models
+        when {
+            listed == null -> ArrowPreference(
+                title = stringResource(R.string.settings_speak_models),
+                summary = stringResource(R.string.settings_speak_models_scanning),
+                onClick = rescan,
+            )
+
+            listed.isEmpty() -> ArrowPreference(
+                title = stringResource(R.string.settings_speak_models),
+                summary = stringResource(R.string.settings_speak_models_none, LwTts.root(context).absolutePath),
+                onClick = rescan,
+            )
+
+            else -> listed.forEach { voice ->
                 ArrowPreference(
-                    title = voiceLabel(voice),
+                    title = voice.name,
+                    summary = when {
+                        !voice.usable -> voice.problem.orEmpty()
+                        SpeakSettings.model == voice.name -> stringResource(R.string.settings_speak_voice_current)
+                        else -> stringResource(
+                            R.string.settings_speak_models_usable,
+                            voice.family?.label.orEmpty(),
+                        )
+                    },
+                    onClick = { if (voice.usable) SpeakSettings.setModel(context, voice.name) },
+                )
+            }
+        }
+        // 目录路径要显示出来: 不然没人知道该把模型拷到哪, 也没法自己核对
+        ArrowPreference(
+            title = stringResource(R.string.settings_speak_models_directory),
+            summary = stringResource(R.string.settings_speak_models_directory_summary, LwTts.root(context).absolutePath),
+            onClick = rescan,
+        )
+    } else {
+        val listed = voices
+        when {
+            listed == null -> ArrowPreference(
+                title = stringResource(R.string.settings_speak_voice),
+                summary = stringResource(R.string.settings_speak_voice_unknown),
+                onClick = {
+                    scope.launch {
+                        voices = withContext(Dispatchers.IO) { LwSpeak.chineseVoices(context) }
+                    }
+                },
+            )
+
+            listed.isEmpty() -> ArrowPreference(
+                title = stringResource(R.string.settings_speak_voice),
+                summary = stringResource(R.string.settings_speak_voice_none),
+                onClick = { openTtsSettings(context) },
+            )
+
+            else -> {
+                // 引擎自带的那个也列出来: 选过别的之后要能回到它
+                ArrowPreference(
+                    title = stringResource(R.string.settings_speak_voice_default),
                     summary = stringResource(
-                        if (SpeakSettings.voice == voice.name) R.string.settings_speak_voice_current
+                        if (SpeakSettings.voice == null) R.string.settings_speak_voice_current
                         else R.string.settings_speak_voice_pick,
                     ),
-                    onClick = { SpeakSettings.setVoice(context, voice.name) },
+                    onClick = { SpeakSettings.setVoice(context, null) },
                 )
+                listed.forEach { voice ->
+                    ArrowPreference(
+                        title = voiceLabel(voice),
+                        summary = stringResource(
+                            if (SpeakSettings.voice == LwSpeak.voiceKey(voice)) R.string.settings_speak_voice_current
+                            else R.string.settings_speak_voice_pick,
+                        ),
+                        onClick = { SpeakSettings.setVoice(context, LwSpeak.voiceKey(voice)) },
+                    )
+                }
             }
         }
     }

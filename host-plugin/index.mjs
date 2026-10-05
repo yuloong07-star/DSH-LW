@@ -1534,18 +1534,29 @@ const TOOLS = [
       if (args.rate !== undefined) request.rate = args.rate
       const answer = await call('speak', request)
       if (args.op === 'status') {
+        const onDevice = answer.readingWith === 'on-device'
         return [
-          `engine ${answer.engine}`,
+          `reading with: ${onDevice
+            ? `the on-device voice ${answer.onDeviceModel}`
+            : 'the system engine'}`,
+          `rate: ${answer.rateFollowsSystem ? 'whatever the system says' : `${answer.rate} x`}`
+            + `, voice: ${answer.selectedVoice}`,
+          `system engine ${answer.engine}`,
           `voices ${answer.voices}, Chinese: ${answer.chinese}`,
           answer.chineseVoices
             ? `Chinese voices: ${answer.chineseVoices}`
             : 'no Chinese voice is listed by the engine',
+          answer.onDeviceVoices
+            ? `on-device voices: ${answer.onDeviceVoices}`
+            : `on-device voices: none imported under ${answer.voicesDirectory}`,
           `speaking right now: ${answer.speaking ? 'yes' : 'no'} (${answer.utterances} utterances so far)`,
         ].join('\n')
       }
       if (args.op === 'speak') {
         if (!answer.spoken) return `the engine did not report finishing: ${answer.detail}`
-        return `the engine took ${answer.characters} characters`
+        // 自带那条要报出用的是哪个音色目录, 系统那条没有这一项
+        const withVoice = answer.readingWith === 'on-device' ? ` with the on-device voice ${answer.voice}` : ''
+        return `the engine took ${answer.characters} characters` + withVoice
           + (answer.pieces > 1 ? ` in ${answer.pieces} pieces` : '')
           + ' and reported it finished'
       }
@@ -1601,8 +1612,10 @@ const TOOLS = [
         }
         if (args.op === 'clean') return spoken
         const answer = await call('speak', { op: 'speak', text: spoken })
+        // 自带那条引擎会回报用的是哪个音色目录; 系统那条没有这一项
+        const via = answer.readingWith === 'on-device' ? ` with the on-device voice ${answer.voice}` : ''
         return answer.spoken
-          ? `said ${answer.characters} characters (from ${args.text.length} of markdown)`
+          ? `said ${answer.characters} characters${via} (from ${args.text.length} of markdown)`
           : `the engine did not report finishing: ${answer.detail}`
       }
       if (args.op === 'inbox') {

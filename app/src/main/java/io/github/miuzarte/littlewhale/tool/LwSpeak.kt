@@ -82,6 +82,17 @@ internal object LwSpeak {
             put("rateFollowsSystem", SpeakSettings.followsSystem)
             put("rate", SpeakSettings.rate.toDouble())
             put("selectedVoice", SpeakSettings.voice ?: "the engine's own default")
+            // 朗读用的是哪条引擎: 系统那条还是自带那条 (自带那条的音色是主人自己放进来的目录)
+            // **键名不能叫 engine**: 那个键上面已经用来报系统引擎的包名了
+            put("readingWith", if (SpeakSettings.usesOnDevice()) "on-device" else "system")
+            put("onDeviceModel", SpeakSettings.model ?: "")
+            put(
+                "onDeviceVoices",
+                LwTts.list(context).joinToString(", ") { voice ->
+                    if (voice.usable) "${voice.name} (${voice.family?.label})" else "${voice.name} (unusable: ${voice.problem})"
+                },
+            )
+            put("voicesDirectory", LwTts.root(context).absolutePath)
             put(
                 "chinese",
                 when (chinese) {
@@ -108,6 +119,15 @@ internal object LwSpeak {
     internal fun chineseVoices(context: Context): List<Voice>? =
         runCatching { chineseVoices(engine(context)?.voices) }.getOrNull()
 
+    /**
+     * 一个音色在设置里的身份
+     *
+     * **不能只用 `Voice.name`**: 这台设备的引擎把三个中文音色都叫 `zh` (只差 locale), 只用名字的话
+     * 三个都会显示"正在用", 选了也分不出是哪一个 (2026-10-05 在真机上就是这么露出来的)。所以名字
+     * 与地区一起存
+     */
+    internal fun voiceKey(voice: Voice): String = "${voice.name}@${voice.locale.toLanguageTag()}"
+
     private fun chineseVoices(voices: Set<Voice>?): List<Voice>? =
         voices
             ?.filter { it.locale.language == "zho" || it.locale.language == "zh" }
@@ -123,6 +143,33 @@ internal object LwSpeak {
         val text = request.string("text").trim()
         if (text.isEmpty()) {
             unavailable("speaking", "the text is empty")
+        }
+        // 自带那条先问: 设置页选了它、而且真的挑了一个音色目录, 就整段交给它 (它自己按句切)
+        if (SpeakSettings.usesOnDevice()) {
+            val wanted = SpeakSettings.model
+            val voice = LwTts.list(context).firstOrNull { it.name == wanted }
+            if (voice == null) {
+                unavailable(
+                    "speaking with the on-device voice \"$wanted\"",
+                    "that voice is not in ${LwTts.root(context).absolutePath} any more; import one or switch back to the system engine",
+                )
+            }
+            if (!voice.usable) {
+                unavailable("speaking with the on-device voice \"$voice.name\"", voice.problem.orEmpty())
+            }
+            val asked = request.numberOrNull("rate")?.toFloat()
+            val speed = (asked ?: SpeakSettings.rate).coerceIn(0.5f, 2.0f)
+            val answer = LwTts.speak(context, voice, text, speed)
+            val failed = !answer.startsWith("said ")
+            return buildJsonObject {
+                put("spoken", !failed)
+                put("readingWith", "on-device")
+                put("voice", voice.name)
+                put("rate", speed.toDouble())
+                put("text", text)
+                put("characters", text.length)
+                put("detail", answer)
+            }
         }
         val tts = engine(context)
         val chinese = tts.setLanguage(Locale.CHINESE)
@@ -140,14 +187,14 @@ internal object LwSpeak {
         val asked = request.numberOrNull("rate")?.toFloat()
         val chosen = asked?.coerceIn(0.5f, 2.0f) ?: SpeakSettings.effectiveRate()
         if (chosen != null) runCatching { tts.setSpeechRate(chosen) }
-        // 音色同理由设置页定; 认的是 Voice.name, 找不到就退回引擎默认 (不报错, 只留一行日志)
-        SpeakSettings.voice?.let { name ->
-            val wanted = runCatching { tts.voices }.getOrNull()?.firstOrNull { it.name == name }
+        // 音色同理由设置页定; 存的是"名字@地区" (名字单独用会撞车), 找不到就退回引擎默认
+        SpeakSettings.voice?.let { stored ->
+            val wanted = runCatching { tts.voices }.getOrNull()?.firstOrNull { voiceKey(it) == stored }
             if (wanted != null) {
                 runCatching { tts.voice = wanted }
-                    .onFailure { Log.w(TAG, "the engine would not take the voice $name", it) }
+                    .onFailure { Log.w(TAG, "the engine would not take the voice $stored", it) }
             } else {
-                Log.w(TAG, "the engine no longer lists the voice $name, using its own default")
+                Log.w(TAG, "the engine no longer lists the voice $stored, using its own default")
             }
         }
         val pieces = chunk(text, TextToSpeech.getMaxSpeechInputLength())
@@ -281,8 +328,8 @@ internal object LwSpeak {
         }
     }
 
-    /** 按句号换行切到引擎能吃的长度; 切不出好位置就硬切 */
-    private fun chunk(text: String, limit: Int): List<String> {
+    /** 按句号换行切到引擎能吃的长度; 切不出好位置就硬切 —— 系统那条与自带那条都靠它切长文本 */
+    internal fun chunk(text: String, limit: Int): List<String> {
         val safe = if (limit <= 0) 4000 else limit
         if (text.length <= safe) return listOf(text)
         val pieces = mutableListOf<String>()
