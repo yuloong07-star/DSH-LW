@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.speech.tts.Voice
 import android.widget.Toast
 import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.AnimatedVisibility
@@ -49,6 +50,8 @@ import io.github.miuzarte.littlewhale.scaffolds.SectionSmallTitle
 import io.github.miuzarte.littlewhale.theme.MonetKeyColorOptions
 import io.github.miuzarte.littlewhale.theme.ThemeSettings
 import io.github.miuzarte.littlewhale.theme.ThemeStore
+import io.github.miuzarte.littlewhale.tool.LwSpeak
+import io.github.miuzarte.littlewhale.tool.SpeakSettings
 import io.github.miuzarte.littlewhale.util.Grant
 import io.github.miuzarte.littlewhale.util.PermissionCatalog
 import io.github.miuzarte.littlewhale.util.PermissionGate
@@ -268,6 +271,13 @@ fun SettingsScreen() {
                 SectionSmallTitle(stringResource(R.string.settings_section_ocr))
                 Card {
                     OcrItems()
+                }
+            }
+
+            item {
+                SectionSmallTitle(stringResource(R.string.settings_section_speak))
+                Card {
+                    SpeakItems()
                 }
             }
 
@@ -622,6 +632,156 @@ private fun ScreenshotItems() {
             raw.toIntOrNull()?.let { ScreenshotBudget.setBytes(context, it) }
         },
     )
+}
+
+/**
+ * 朗读: 音色与语速
+ *
+ * 这两件事与"引擎是谁、要不要下语音包"是两半账: **引擎与语音包只能去系统的「文字转语音输出」那
+ * 一页换** (应用改不了别人家的引擎), 而"用这条引擎的哪个中文音色"与"多快"应用这一侧就能定 ——
+ * 于是这里直接调, 那一页留一个跳转
+ *
+ * 音色那一串是**引擎报上来的**, 不是这一页写死的字符串, 所以名字跟着引擎走; 引擎还没起来时
+ * 只显示一句"还没就绪", 不假装列了一张空表
+ *
+ * 语速默认**跟随系统**: 跟随的时候我们一个数都不设, 系统里调的就是生效的。拖一下滑块 = 要一个
+ * 具体的数, 于是自动改成不跟随 (拖动这个动作本身就是"我要自己定")
+ */
+@Composable
+private fun SpeakItems() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var voices by remember { mutableStateOf<List<Voice>?>(null) }
+    var speaking by remember { mutableStateOf(false) }
+    // 引擎初始化要几百毫秒, 不能在组合里做: 放到 IO 上, 回来了再画音色那一段
+    LaunchedEffect(Unit) {
+        voices = withContext(Dispatchers.IO) { LwSpeak.chineseVoices(context) }
+    }
+    SwitchPreference(
+        title = stringResource(R.string.settings_speak_follow),
+        summary = stringResource(R.string.settings_speak_follow_summary),
+        checked = SpeakSettings.followsSystem,
+        onCheckedChange = { SpeakSettings.setFollowsSystem(context, it) },
+    )
+    ArrowSlider(
+        title = stringResource(R.string.settings_speak_rate),
+        summary = if (SpeakSettings.followsSystem) {
+            stringResource(R.string.settings_speak_rate_following)
+        } else {
+            stringResource(R.string.settings_speak_rate_summary, SpeakSettings.rate)
+        },
+        value = SpeakSettings.rate,
+        onValueChange = { SpeakSettings.setRate(context, it) },
+        valueRange = SpeakSettings.range,
+        // 连续滑动: 吸附点只帮着停到好看的那几个数上, 中间的值照样给
+        steps = 0,
+        showKeyPoints = true,
+        keyPoints = SpeakSettings.keyPoints,
+        magnetThreshold = SpeakSettings.MAGNET,
+        displayFormatter = { "%.2f x".format(it) },
+        // 打字给的是精确倍数: 耳朵认的那个数常常落在两个吸附点之间
+        inputSummary = stringResource(
+            R.string.settings_speak_rate_dialog,
+            SpeakSettings.range.start,
+            SpeakSettings.range.endInclusive,
+        ),
+        inputLabel = "x",
+        inputInitialValue = "%.2f".format(SpeakSettings.rate),
+        inputValueRange = SpeakSettings.range,
+        onInputConfirm = { raw -> raw.toFloatOrNull()?.let { SpeakSettings.setRate(context, it) } },
+    )
+    val listed = voices
+    when {
+        listed == null -> ArrowPreference(
+            title = stringResource(R.string.settings_speak_voice),
+            summary = stringResource(R.string.settings_speak_voice_unknown),
+            onClick = {
+                scope.launch {
+                    voices = withContext(Dispatchers.IO) { LwSpeak.chineseVoices(context) }
+                }
+            },
+        )
+
+        listed.isEmpty() -> ArrowPreference(
+            title = stringResource(R.string.settings_speak_voice),
+            summary = stringResource(R.string.settings_speak_voice_none),
+            onClick = { openTtsSettings(context) },
+        )
+
+        else -> {
+            // 引擎自带的那个也列出来: 选过别的之后要能回到它
+            ArrowPreference(
+                title = stringResource(R.string.settings_speak_voice_default),
+                summary = stringResource(
+                    if (SpeakSettings.voice == null) R.string.settings_speak_voice_current
+                    else R.string.settings_speak_voice_pick,
+                ),
+                onClick = { SpeakSettings.setVoice(context, null) },
+            )
+            listed.forEach { voice ->
+                ArrowPreference(
+                    title = voiceLabel(voice),
+                    summary = stringResource(
+                        if (SpeakSettings.voice == voice.name) R.string.settings_speak_voice_current
+                        else R.string.settings_speak_voice_pick,
+                    ),
+                    onClick = { SpeakSettings.setVoice(context, voice.name) },
+                )
+            }
+        }
+    }
+    // 引擎与语音包只能去系统那一页: 这里给的是跳转, 而不是一个做不到的下拉
+    ArrowPreference(
+        title = stringResource(R.string.settings_speak_system),
+        summary = stringResource(R.string.settings_speak_system_summary),
+        onClick = { openTtsSettings(context) },
+    )
+    // 试听: 音色与语速是耳朵判断的东西, 看一眼数字没有意义
+    ArrowPreference(
+        title = stringResource(if (speaking) R.string.settings_speak_previewing else R.string.settings_speak_preview),
+        summary = stringResource(R.string.settings_speak_preview_summary),
+        onClick = {
+            if (speaking) return@ArrowPreference
+            speaking = true
+            scope.launch {
+                withContext(Dispatchers.IO) { runCatching { LwSpeak.preview(context) } }
+                speaking = false
+            }
+        },
+    )
+}
+
+/** 音色在列表里的样子: 名字加地区, 因为同一个引擎常有 zh-CN 与 zh-TW 两条 */
+private fun voiceLabel(voice: Voice): String = "${voice.name} (${voice.locale.toLanguageTag()})"
+
+/**
+ * 系统那个「文字转语音输出」页
+ *
+ * 用字面值而不是 `Settings.ACTION_TTS_SETTINGS`: 与全屏通知那一页同一个理由 —— 那个常量在某些
+ * 编译 SDK 上取不到, 而这一页本身是各 ROM 都有的
+ */
+private const val TTS_SETTINGS = "com.android.settings.TTS_SETTINGS"
+
+/**
+ * 跳去系统的「文字转语音输出」
+ *
+ * 与通知那两条同一个写法: 个别 ROM 上这一页没有接收者 (`startActivity` 会抛, 而这是点击换来的
+ * 崩溃), 所以退到应用详情页
+ */
+private fun openTtsSettings(context: Context) {
+    val opened = runCatching {
+        context.startActivity(
+            Intent(TTS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }.isSuccess
+    if (!opened) {
+        context.startActivity(
+            Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", context.packageName, null),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }
 }
 
 /**

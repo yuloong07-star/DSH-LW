@@ -72,6 +72,14 @@ internal fun JsonObject.int(key: String, fallback: Int): Int =
 internal fun JsonObject.number(key: String, fallback: Double): Double =
     this[key]?.jsonPrimitive?.doubleOrNull ?: fallback
 
+/**
+ * 一个可能没有的浮点参数
+ *
+ * "没给"与"给了个 0"是两件事: 前者该让默认那一层接管 (见 `lw_speak` 的 rate), 后者是一个真值
+ */
+internal fun JsonObject.numberOrNull(key: String): Double? =
+    this[key]?.jsonPrimitive?.doubleOrNull
+
 /** 一个布尔参数, 没有就用默认值 */
 internal fun JsonObject.bool(key: String, fallback: Boolean): Boolean =
     this[key]?.jsonPrimitive?.booleanOrNull ?: fallback

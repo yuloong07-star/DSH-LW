@@ -12,6 +12,7 @@ import io.github.miuzarte.littlewhale.channel.PreviewControl
 import io.github.miuzarte.littlewhale.channel.ScreenshotBudget
 import io.github.miuzarte.littlewhale.host.DshHostService
 import io.github.miuzarte.littlewhale.theme.ThemeStore
+import io.github.miuzarte.littlewhale.tool.SpeakSettings
 import io.github.miuzarte.littlewhale.ui.LittleWhaleApp
 import io.github.miuzarte.littlewhale.util.PermissionRequests
 
@@ -56,6 +57,8 @@ class MainActivity : ComponentActivity() {
         PreviewControl.initialize(this)
         // 截图缩到多少像素, 桥在第一次截图时就要用上
         ScreenshotBudget.initialize(this)
+        // 朗读的音色与语速: 回答落定就念那条链要用, 而设置页也要在画之前知道选的是哪个
+        SpeakSettings.initialize(this)
         // OCR 的模型是懒加载的 (第一次调它才建 session), 这里只把 context 挂上去
         LwOcr.attach(this)
         // 能启动哪些应用要问 PackageManager, 同样只挂 context

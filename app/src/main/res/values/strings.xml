@@ -82,6 +82,26 @@
     <string name="settings_ocr_probe">Self check</string>
     <string name="settings_ocr_probe_busy">Checking...</string>
 
+    <string name="settings_section_speak">Reading aloud</string>
+    <string name="settings_speak_follow">Follow the system speech rate</string>
+    <string name="settings_speak_follow_summary">On: the rate set on the system\'s text-to-speech page is what you hear. Turning this off, or dragging the slider below, makes this app set its own</string>
+    <string name="settings_speak_rate">Speech rate</string>
+    <string name="settings_speak_rate_summary">%1$.2f x</string>
+    <string name="settings_speak_rate_dialog">In multiples, from %1$s to %2$s x</string>
+    <string name="settings_speak_rate_following">Following the system setting; drag this to choose one here</string>
+    <string name="settings_speak_voice">Voice</string>
+    <string name="settings_speak_voice_unknown">The engine has not come up yet; tap to try again</string>
+    <string name="settings_speak_voice_none">This engine lists no Chinese voice, so only the system page can help</string>
+    <string name="settings_speak_voice_default">Use the engine\'s own voice</string>
+    <string name="settings_speak_voice_current">In use</string>
+    <string name="settings_speak_voice_pick">Tap to use this one</string>
+    <string name="settings_speak_system">System text-to-speech settings</string>
+    <string name="settings_speak_system_summary">Where the engine itself, its voice packs and its own rate live; this app can only pick among the voices that engine offers</string>
+    <string name="settings_speak_preview">Listen</string>
+    <string name="settings_speak_previewing">Speaking...</string>
+    <string name="settings_speak_preview_summary">Says one line with the voice and rate above, so the choice can be judged by ear</string>
+    <string name="settings_speak_sample">This is how a reply will be read aloud.</string>
+
     <string name="settings_section_workspace">Workspace</string>
     <string name="settings_workspace_grant">Grant all files access</string>
     <string name="settings_workspace_grant_summary">All files access is what lets the host read and write /sdcard by real path; without it the workspace stays inside the app sandbox\nCurrently: %1$s</string>

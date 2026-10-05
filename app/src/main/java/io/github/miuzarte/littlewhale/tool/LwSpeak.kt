@@ -4,7 +4,10 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
+import android.speech.tts.Voice
 import android.speech.tts.UtteranceProgressListener
+import android.util.Log
+import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.voice.VoiceState
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
@@ -32,6 +35,11 @@ internal object LwSpeak {
     private const val SPEAK_BUDGET_PER_CHAR_MS = 250L
     private const val MAX_WAIT_MS = 120_000L
 
+    /** 设置页最多列几个中文音色: 有的引擎能列出几十个, 全铺开会把这一页撑得没法看 */
+    private const val MAX_VOICES = 8
+
+    private const val TAG = "LwSpeak"
+
     /** 正在等的那一条: 只有它的完成/出错才算这一次念完了 */
     private class Utterance(val id: String, val latch: CountDownLatch)
 
@@ -55,7 +63,7 @@ internal object LwSpeak {
         else -> throw IllegalArgumentException("op has to be status, speak, stop or release, not \"$op\"")
     }
 
-    /** 引擎现在什么样: 有没有引擎、默认是哪一个、中文音色能不能用 */
+    /** 引擎现在什么样: 有没有引擎、默认是哪一个、中文音色能不能用、以及这一侧选了什么 */
     private fun status(context: Context): JsonObject {
         val attempt = runCatching { engine(context) }
         val tts = attempt.getOrNull()
@@ -66,12 +74,14 @@ internal object LwSpeak {
             put("voices", voices?.size ?: 0)
             put(
                 "chineseVoices",
-                voices
-                    ?.filter { it.locale.language == "zho" || it.locale.language == "zh" }
-                    ?.take(6)
+                chineseVoices(voices)
                     ?.joinToString(", ") { it.name }
                     .orEmpty(),
             )
+            // 设置页里选的那两样: 语速跟不跟随系统、以及选了哪个音色
+            put("rateFollowsSystem", SpeakSettings.followsSystem)
+            put("rate", SpeakSettings.rate.toDouble())
+            put("selectedVoice", SpeakSettings.voice ?: "the engine's own default")
             put(
                 "chinese",
                 when (chinese) {
@@ -89,6 +99,25 @@ internal object LwSpeak {
         }
     }
 
+    /**
+     * 设置页要的那几个中文音色
+     *
+     * 只给中文的: 这个应用念的一律是中文回答, 把英文音色列出来只会让人选错。引擎没起来时回 null
+     * (调用方据此说"引擎还没就绪"而不是"没有音色")
+     */
+    internal fun chineseVoices(context: Context): List<Voice>? =
+        runCatching { chineseVoices(engine(context)?.voices) }.getOrNull()
+
+    private fun chineseVoices(voices: Set<Voice>?): List<Voice>? =
+        voices
+            ?.filter { it.locale.language == "zho" || it.locale.language == "zh" }
+            ?.sortedBy { it.name }
+            ?.take(MAX_VOICES)
+
+    /** 设置页那个「试听」: 用当前设置念一句, 让人当场听见音色与语速 */
+    internal fun preview(context: Context): JsonObject =
+        speak(context, buildJsonObject { put("op", "speak"); put("text", context.getString(R.string.settings_speak_sample)) })
+
     /** 念一段: 太长就按句切, 只等最后一片念完 */
     private fun speak(context: Context, request: JsonObject): JsonObject {
         val text = request.string("text").trim()
@@ -104,8 +133,22 @@ internal object LwSpeak {
                     " download a voice pack in the system's text-to-speech settings",
             )
         }
-        runCatching {
-            tts.setSpeechRate(request.number("rate", 1.0).toFloat().coerceIn(0.5f, 2.0f))
+        // 语速的优先级: 这次调用点名要的 > 设置页里选的 > **什么都不动**
+        //
+        // 最后那一档是必须的: 原来写死 `rate ?: 1.0` 就等于每次出声都把系统里调好的语速按回 1.0,
+        // 而"系统的设置是用户的"。所以没点名、设置页又选了跟随系统时, 这里一个数都不设
+        val asked = request.numberOrNull("rate")?.toFloat()
+        val chosen = asked?.coerceIn(0.5f, 2.0f) ?: SpeakSettings.effectiveRate()
+        if (chosen != null) runCatching { tts.setSpeechRate(chosen) }
+        // 音色同理由设置页定; 认的是 Voice.name, 找不到就退回引擎默认 (不报错, 只留一行日志)
+        SpeakSettings.voice?.let { name ->
+            val wanted = runCatching { tts.voices }.getOrNull()?.firstOrNull { it.name == name }
+            if (wanted != null) {
+                runCatching { tts.voice = wanted }
+                    .onFailure { Log.w(TAG, "the engine would not take the voice $name", it) }
+            } else {
+                Log.w(TAG, "the engine no longer lists the voice $name, using its own default")
+            }
         }
         val pieces = chunk(text, TextToSpeech.getMaxSpeechInputLength())
         val latch = CountDownLatch(1)

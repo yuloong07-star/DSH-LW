@@ -82,6 +82,26 @@
     <string name="settings_ocr_probe">自检</string>
     <string name="settings_ocr_probe_busy">自检...</string>
 
+    <string name="settings_section_speak">朗读</string>
+    <string name="settings_speak_follow">语速跟随系统</string>
+    <string name="settings_speak_follow_summary">开着时念出来的就是系统「文字转语音输出」里那个语速; 关掉它 (或者直接拖下面那个滑块) 才由本应用自己定</string>
+    <string name="settings_speak_rate">语速</string>
+    <string name="settings_speak_rate_summary">%1$.2f 倍</string>
+    <string name="settings_speak_rate_dialog">单位是倍数, %1$s 到 %2$s 之间</string>
+    <string name="settings_speak_rate_following">正跟随系统; 拖动这里就改成自己定</string>
+    <string name="settings_speak_voice">音色</string>
+    <string name="settings_speak_voice_unknown">引擎还没起来, 点一下重试</string>
+    <string name="settings_speak_voice_none">这条引擎没有列出中文音色, 只能去系统那一页换</string>
+    <string name="settings_speak_voice_default">用引擎自带的音色</string>
+    <string name="settings_speak_voice_current">正在用</string>
+    <string name="settings_speak_voice_pick">点它用这个</string>
+    <string name="settings_speak_system">系统文字转语音设置</string>
+    <string name="settings_speak_system_summary">换引擎、下语音包、调它自己的语速都在那一页; 本应用只能在这条引擎给出的音色里挑</string>
+    <string name="settings_speak_preview">试听</string>
+    <string name="settings_speak_previewing">正在念...</string>
+    <string name="settings_speak_preview_summary">用上面选的音色与语速念一句, 好让耳朵来定</string>
+    <string name="settings_speak_sample">回答会以这个样子念出来。</string>
+
     <string name="settings_section_workspace">工作区</string>
     <string name="settings_workspace_grant">授权所有文件访问</string>
     <string name="settings_workspace_grant_summary">所有文件访问权限是 host 能按真实路径读写 /sdcard 的前提, 未授权时工作区只能在应用的沙盒目录中\n当前: %1$s</string>
