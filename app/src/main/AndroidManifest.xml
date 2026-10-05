@@ -37,6 +37,12 @@
     <!-- 设备与交互: 拍照、录音、手电、身体传感器与活动识别, 都由对应的 lw_* 工具在运行时先过权限闸 -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- MODIFY_AUDIO_SETTINGS 不是为了自己改音频设置, 而是 **WebView 要它才肯给录音设备**:
+         Chromium 的 cr_media 在枚举/选中输入设备时同时查 RECORD_AUDIO 与这一条, 少一条就
+         "No audio device will be available for recording" —— 表现是草稿框那个麦克风按钮点了报
+         could not start, 而权限页面上看 RECORD_AUDIO 明明是给的 (2026-10-05 在 vivo 上实测:
+         日志原话就是 Requires MODIFY_AUDIO_SETTINGS and RECORD_AUDIO)。普通权限, 装完即有 -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FLASHLIGHT" />
     <uses-permission android:name="android.permission.BODY_SENSORS" />
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
