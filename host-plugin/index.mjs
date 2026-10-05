@@ -65,6 +65,7 @@ export const name = 'littlewhale-channel'
 export const inject = ['tools', 'agents', 'sessions']
 
 export function apply(ctx) {
+  hostCtx = ctx
   for (const tool of TOOLS) ctx.tools.register(tool)
 
   // Answer every approval request with a grant, so nothing on the screen waits for a person
@@ -175,39 +176,66 @@ const NOTE = {
   description: 'One short sentence, in your own words, saying what this step is doing and why',
 }
 
-/**
- * 把视频模式要的那块屏与相机起来, 回一句人话
- *
- * 这是**切换模式的一部分**, 不是新能力: 用的还是 `create` / `screen` / `launch` 那三个桥调用,
- * 只是把"认屏 → 建屏 → 开相机"三步并成一次 —— 主人说一句"看看这是什么", 少等两轮往返
- *
- * 屏按固定形状建 (720x1280 / dpi 320): 相机是竖屏应用, 建一块竖屏的屏它才会铺满, 而**建屏时就把
- * 形状定对**是这里唯一要紧的事 (应用不因为屏换了形状就重排)。已经有一块叫 `video` 的屏就沿用
- */
+/** 视频模式那块虚拟屏的形状: 相机是竖屏应用, 建屏时就把形状定对, 它才铺得满 */
 const VIDEO_SCREEN = { name: 'video', width: 720, height: 1280, dpi: 320 }
 
 /** 这台设备上相机可能叫什么: 先按包名试, 都不行就把判断交回给模型 */
 const CAMERA_PACKAGES = ['com.android.camera', 'com.vivo.camera', 'com.android.camera2']
 
+/**
+ * 插件上下文
+ *
+ * 工具定义在一个模块级的数组里, 而附件通路 (`ctx.attachments`) 只在 `apply(ctx)` 那里拿得到 ——
+ * 所以 apply 的时候留一份, 供 `lw_look` 把截图帧当附件直接交给模型
+ */
+let hostCtx = null
+
+/** 把几张 PNG 变成工具结果里的图: 少了这一步, 模型要自己一张张 read_image (每张一次往返) */
+async function attachPictures(paths) {
+  const attachments = hostCtx?.get?.('attachments')
+  if (!attachments?.saveImage) return { images: [], note: 'no attachment store on this host' }
+  const images = []
+  for (const path of paths) {
+    const data = await readFile(path)
+    images.push(await attachments.saveImage({
+      data,
+      mediaType: 'image/png',
+      // 名字只为了在界面上看得出是哪一帧, 取路径最后一段就够
+      name: String(path).split('/').pop(),
+    }))
+  }
+  return { images, note: null }
+}
+
+/**
+ * 视频模式那块屏: 有就沿用, 没有就建一块 (照固定形状 —— 相机是竖屏应用, 建屏时形状定对才铺得满)
+ * @returns displayId (拿不到就是 undefined) 与几句人话
+ */
+async function ensureVideoScreen() {
+  const screens = await call('screen')
+  const all = Array.isArray(screens?.screens) ? screens.screens : []
+  const mine = all.find((screen) => screen?.name === VIDEO_SCREEN.name)
+  if (mine?.displayId !== undefined) {
+    return { displayId: mine.displayId, lines: [`reusing the ${VIDEO_SCREEN.name} screen on displayId ${mine.displayId}`] }
+  }
+  const created = await call('create', VIDEO_SCREEN)
+  return created?.displayId !== undefined
+    ? {
+        displayId: created.displayId,
+        lines: [`virtual screen ready on displayId ${created.displayId} (${VIDEO_SCREEN.width}x${VIDEO_SCREEN.height})`],
+      }
+    : { displayId: undefined, lines: [`the virtual screen did not come up: ${created?.detail ?? JSON.stringify(created)}`] }
+}
+
+/** 把视频模式要的那块屏与相机起来, 回一句人话 (切模式那一步用) */
 async function bringUpCamera() {
   const lines = []
   try {
-    const screens = await call('screen')
-    const all = Array.isArray(screens?.screens) ? screens.screens : []
-    const mine = all.find((screen) => screen?.name === VIDEO_SCREEN.name)
-    let displayId = mine?.displayId
-    if (displayId === undefined) {
-      const created = await call('create', VIDEO_SCREEN)
-      displayId = created?.displayId
-      lines.push(created?.created
-        ? `virtual screen ready on displayId ${displayId} (${VIDEO_SCREEN.width}x${VIDEO_SCREEN.height})`
-        : `the virtual screen did not come up: ${created?.detail ?? JSON.stringify(created)}`)
-    } else {
-      lines.push(`reusing the ${VIDEO_SCREEN.name} screen on displayId ${displayId}`)
-    }
-    if (displayId === undefined) return lines.join('\n')
+    const brought = await ensureVideoScreen()
+    lines.push(...brought.lines)
+    if (brought.displayId === undefined) return lines.join('\n')
     for (const camera of CAMERA_PACKAGES) {
-      const launched = await call('launch', { displayId, package: camera })
+      const launched = await call('launch', { displayId: brought.displayId, package: camera })
       if (launched?.launched !== false) {
         lines.push(`camera ${camera} is in front on that screen`)
         return lines.join('\n')
@@ -274,6 +302,95 @@ const TOOLS = [
       }
       return `mode: ${answer.mode} (${answer.name})\n`
         + `prompt file: ${answer.promptWritten ? 'written' : 'missing'} (${answer.promptFile})`
+    },
+  }),
+  defineTool({
+    name: 'lw_look',
+    description:
+      'Look through the camera in ONE call: makes sure the video screen with the camera on it is up, '
+      + 'captures frames, and hands you the pictures themselves — no separate read_image step for each '
+      + 'one. In video mode use this instead of lw_screen + lw_ui + lw_screenshot. A first look is frames '
+      + '4 (the default); if that leaves you unsure, look ONE more time with frames 9 and sheet true — '
+      + 'that is the second and last group. If the second look still does not settle it, say what you '
+      + 'cannot see and ask for a single adjustment; never guess, and never ask for a third group. '
+      + 'frames 12 is for something that is moving, not for a first look.',
+    parameters: {
+      frames: {
+        type: 'integer',
+        description: 'How many frames: 4 for a first look (the default), 9 for the second and last'
+          + ' group, up to 12 only when the user asks about something moving',
+      },
+      sheet: {
+        type: 'boolean',
+        description: 'Also lay the frames out as ONE grid picture, to see where the picture moved'
+          + ' between them. Not for reading small text or measuring positions',
+      },
+      quality: {
+        type: 'string',
+        description: 'low, medium (the default) or high; high costs about twice the pixels of medium',
+      },
+      note: NOTE,
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          text: { type: 'string', required: true },
+          // 每一张的 attachment ref (store 给的那个对象): render 里原样包成图块
+          // additionalProperties 必须显式写出来 —— dsh-tools 在 defineTool 那一刻就编译 schema,
+          // 少了它整份插件 import 就失败 (手机上表现成"1 entry did not activate")
+          images: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        },
+      },
+      render: (_args, value) => {
+        const blocks = [{ type: 'text', text: value.text }]
+        for (const image of Array.isArray(value.images) ? value.images : []) {
+          blocks.push({ type: 'image', attachment: image })
+        }
+        return blocks
+      },
+    },
+    async execute(args) {
+      const frames = Math.max(1, Math.min(12, args?.frames ?? 4))
+      const brought = await ensureVideoScreen()
+      if (brought.displayId === undefined) {
+        return { text: `no picture: ${brought.lines.join('; ')}`, images: [] }
+      }
+      const shot = await call('screenshot', {
+        displayId: brought.displayId,
+        count: frames,
+        sheet: args?.sheet === true,
+        quality: args?.quality ?? 'medium',
+        note: args?.note,
+      })
+      const text = [...brought.lines, formatScreenshot(shot)].join('\n')
+      // 帧的路径: 单张在 path, 连拍在 shots 里 (元素可能是字符串也可能是带 path 的对象)
+      const paths = []
+      if (Array.isArray(shot?.shots)) {
+        for (const item of shot.shots) {
+          const path = typeof item === 'string' ? item : item?.path ?? item?.file
+          if (typeof path === 'string' && path) paths.push(path)
+        }
+      }
+      if (typeof shot?.path === 'string' && shot.path) paths.push(shot.path)
+      if (!paths.length) return { text, images: [] }
+      try {
+        const { images, note } = await attachPictures(paths)
+        return {
+          text: images.length
+            ? `${text}\n${images.length} picture(s) are in this result already.`
+            : `${text}\n(the pictures are at those paths; read them with read_image${note ? `: ${note}` : ''})`,
+          images,
+        }
+      } catch (error) {
+        // 附件通路出问题时**退回老路**: 说清路径让模型自己读, 不假装图已经给出去了
+        return {
+          text: `${text}\n(the pictures could not be attached to this result: ${error?.message ?? error};`
+            + ' read them with read_image)',
+          images: [],
+        }
+      }
     },
   }),
 

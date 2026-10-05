@@ -3,6 +3,7 @@ package io.github.miuzarte.littlewhale.channel
 import android.content.Context
 import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.host.DshHost
+import io.github.miuzarte.littlewhale.tool.LwWakeWord
 import java.io.File
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -68,6 +69,17 @@ internal object LwModes {
                     target.outputStream().use { output -> input.copyTo(output) }
                 }
                 written += name
+            }
+        }
+        // 语音输入那个脚本也放一份: 主人 (或 mode.sh) 要在设备上直接开那条链时用它
+        val script = File(directory, "voice-input.sh")
+        if (!script.isFile || script.length() == 0L) {
+            runCatching {
+                context.assets.open("$MODES_DIR/voice-input.sh").use { input ->
+                    script.outputStream().use { output -> input.copyTo(output) }
+                }
+                script.setExecutable(true)
+                written += "voice-input.sh"
             }
         }
         return written
@@ -139,11 +151,21 @@ internal object LwModes {
         }
         target.writeText(source.readText())
         File(modesDir(context), ACTIVE).writeText(mode)
+        // 视频模式是"说话为主"的: 进这个模式就把常驻语音链开上 (batch 1/2 那条: 一个采集 + VAD +
+        // 端侧转写), 不然用户对着手机说话没人听。**只有进视频模式才自动开**, 手机模式不动它 ——
+        // 那条链本来也可能已经被主人自己开着
+        val listening = if (mode == VIDEO) runCatching {
+            LwWakeWord.dispatch(context, buildJsonObject { put("op", "start") })
+        }.getOrElse { error ->
+            buildJsonObject { put("listening", false); put("detail", error.message ?: error.toString()) }
+        }
+        else null
         return buildJsonObject {
             put("switched", true)
             put("mode", mode)
             put("name", context.getString(NAMES.getValue(mode)))
             put("characters", target.length())
+            listening?.let { put("listening", it.toString()) }
             put(
                 "detail",
                 "$mode is in place: the next model step of a session on the custom-mode assistant reads it",
