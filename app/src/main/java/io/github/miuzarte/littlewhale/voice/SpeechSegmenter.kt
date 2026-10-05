@@ -19,9 +19,21 @@ import java.util.Arrays
  * | 数 | 值 | 说的是什么 |
  * | :-- | :-- | :-- |
  * | [MIN_SPEECH_SECONDS] | 0.25 s | 短于这个的响声不算一句话 (咳嗽 / 关门 / 敲桌子) |
- * | [MIN_SILENCE_SECONDS] | 3.0 s | 静音这么久就把当前这段收尾交出去 |
+ * | [MIN_SILENCE_SECONDS] | 0.8 s | 静音这么久就把当前这段收尾交出去, **这一个数就是"说话结束到发出去"的那段等待** |
  * | [MAX_SPEECH_SECONDS] | 15.0 s | 一句话说到这个长度被强制切断 —— 一直说下去不能永远不成段 |
  * | [THRESHOLD] | 0.5 | silero 自己的判决阈值, 与 sherpa-onnx 的缺省一致 |
+ *
+ * [MIN_SILENCE_SECONDS] 为什么从 3.0 改成 0.8 (主人 2026-10-05 定, 说"等待太长"): 它同时定两件事,
+ * 而两件都是浪费 —— 一是**等够它才交段**, 二是**段尾就落在"最后一段人声 + 它"**, 所以它多长,
+ * 主人就多等多久, 而喂给 SenseVoice 的那段音频里也就白带多少静音 (16 kHz 下 1 s 就是 16000 个样本)
+ * 判据在 sherpa 自己那份 `voice-activity-detector.cc` 的非语音分支:
+ *
+ * ```cpp
+ * int32_t end = buffer_.Tail() - model_->MinSilenceDurationSamples();
+ * ```
+ *
+ * 0.8 s 是全国通话类应用的常见端点判定值; 说话中间停顿长的人会被切成两段, 真机上真被切了就把它
+ * 调回 1.0-1.2 s —— 这一处改一行, 别把数抄到第二个地方去
  *
  * 喂给 `Vad` 的**必须是整窗口** ([WINDOW_SIZE] = 512, 16 kHz 下 32 ms): 采集那一侧交来的是
  * 100 ms 一帧, 所以这里自己攒够一个窗口再喂, 不拿帧长去赌原生那一侧的缓冲行为
@@ -83,6 +95,25 @@ internal class SpeechSegmenter private constructor(
         runCatching { vad.release() }
     }
 
+    /**
+     * 把手里的半句话**丢掉**, 不交出去
+     *
+     * 这是半双工 (A) 要的那一下: 喇叭一开始说话, 采集就整个闭嘴 —— 但 VAD 手里可能正攒着主人那半句
+     * 没说完的话, 留着它, 几秒之后 TTS 结束, 新音频接上去就切成"前半句 + 后半句"拼起来的一段,
+     * 而那一段会被当成主人刚说的话; 用 [flush] 交出去更糟, 那等于把半句话送进会话
+     *
+     * `Vad.reset()` 就是为这个准备的 (与 `Vad.flush()` 并列, AAR 里两个都有): 它把识别器状态、缓冲区
+     * 与手里那段一起作废, 所以交出来的段数为零 —— 与 `flush()` 是"把剩下的交出去"正相反
+     * 一次丢掉之后下一次说话从干净的一段开始, 代价是那半句真的没了 (A 这个走法就是这个代价)
+     *
+     * **只能在采集线程上调** (与 [accept] 同一个线程): `speaking` 是另一个线程写的, 而 VAD 本身
+     * 不是线程安全的
+     */
+    fun abandon() {
+        filled = 0
+        runCatching { vad.reset() }
+    }
+
     /** VAD 说一段说完了: 取出来交出去, 再弹掉 —— 不弹的话下一轮还会读到同一段 */
     private fun drain() {
         while (!vad.empty()) {
@@ -104,9 +135,9 @@ internal class SpeechSegmenter private constructor(
         /** 与 sherpa-onnx 自己的缺省一致 */
         const val THRESHOLD = 0.5f
 
-        /** 主人 2026-10-05 定的三条 */
+        /** 主人 2026-10-05 定的三条, 另加 silero 自己的判决阈值 */
         const val MIN_SPEECH_SECONDS = 0.25f
-        const val MIN_SILENCE_SECONDS = 3.0f
+        const val MIN_SILENCE_SECONDS = 0.8f
         const val MAX_SPEECH_SECONDS = 15.0f
 
         const val MODEL_FILE = "silero_vad.onnx"

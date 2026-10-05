@@ -81,6 +81,22 @@ check('空正文不算一句', (await api.voiceReadNew(inbox)).map((item) => ite
 const state = await api.voiceInboxState()
 check('状态里的游标', state.cursor, 6)
 
+// 9. `wake` 记号 (2026-10-05 加的: 唤醒词命中之后的头一句要开一个新对话)
+//
+// 它只有三种来源, 而三种都要对: 应用那侧**只有 true 才写这个键** (见 VoiceInbox.append), 所以
+// 老版本写的行根本没有它, 而两种读起来必须是同一个意思 —— 多一个真的记号, 少一个假的记号,
+// 那条链就会要么开不出新对话, 要么把每一句都开成新对话
+const marked = (seq, text, wake) =>
+  `${JSON.stringify(wake === undefined
+    ? { seq, at: 1759600000000 + seq, text, source: 'voice' }
+    : { seq, at: 1759600000000 + seq, text, source: 'voice', wake })}\n`
+await api.voiceCursorStore(inbox, 9)
+await writeFile(inbox, marked(10, '喊完之后的第一句', true) + marked(11, '接着说的第二句'))
+const two = await api.voiceReadNew(inbox)
+check('记号跟着那一行出来', two.map((item) => item.wake), [true, false])
+check('没有这个键的行读成 false', two[1].wake, false)
+check('两句还是一句一行', two.map((item) => item.text), ['喊完之后的第一句', '接着说的第二句'])
+
 rmSync(home, { recursive: true, force: true })
 console.log(failures === 0 ? `\n投递队列的 ${checks} 条判据全过` : `\n${failures} / ${checks} 条判据不过`)
 process.exit(failures === 0 ? 0 : 1)

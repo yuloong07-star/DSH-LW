@@ -3,6 +3,7 @@ package io.github.miuzarte.littlewhale.ui
 import android.app.DownloadManager
 import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Environment
 import android.os.Message
@@ -82,7 +83,9 @@ import io.github.miuzarte.littlewhale.host.DshHost
 import io.github.miuzarte.littlewhale.host.HostStatus
 import io.github.miuzarte.littlewhale.tool.LwSpeak
 import io.github.miuzarte.littlewhale.tool.LwWakeWord
+import androidx.core.content.ContextCompat
 import io.github.miuzarte.littlewhale.wake.WakeWordDownload
+import io.github.miuzarte.littlewhale.wake.WakeWordService
 import io.github.miuzarte.littlewhale.wake.WakeWordState
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.DropdownEntry
@@ -930,9 +933,16 @@ private const val WAKE_BRIDGE = "LittleWhale"
  */
 private class WakeBridge(private val context: Context) {
 
-    /** 现在什么样: 听不听、命中几次、看的是哪几个词 —— 一句 JSON, 页面照着画 */
+    /**
+     * 现在什么样: **常驻语音在不在跑**、命中几次、看的是哪几个词 —— 一句 JSON, 页面照着画
+     *
+     * 这里给的是 `voice`, 不是 `listening`: 那个胶囊对应的是"常驻语音正在吃麦克风", 所以只有常驻
+     * 语音真的在跑时才该出现, 纯唤醒词守着的时候 (`listening = true, voice = false`) 它**不出来** ——
+     * 那是常态, 不该在会话界面上一直挂一个"正在听"的徽标 (主人 2026-10-05 定的两条链分开说)
+     */
     @JavascriptInterface
     fun state(): String = JSONObject().apply {
+        put("voice", WakeWordState.voiceActive)
         put("listening", WakeWordState.listening)
         put("hits", WakeWordState.hits)
         put("words", LwWakeWord.names(context).joinToString(", "))
@@ -941,10 +951,18 @@ private class WakeBridge(private val context: Context) {
         put("stop", context.getString(R.string.wake_badge_stop))
     }.toString()
 
-    /** 点一下就是关掉它: 服务停掉, 麦克风与通知栏那条常驻一起收 */
+    /**
+     * 点一下就是把常驻语音关掉
+     *
+     * **只关常驻那半条, 不关唤醒词**: 那才是这个胶囊代表的那件事 (它只在常驻语音跑的时候出现),
+     * 而唤醒词继续守着 —— 想再要一次"开口说话", 喊一声就回来了, 整件事收工是通知栏那个「停止」,
+     * 那个按钮关的是服务, 与这里分工不同
+     */
     @JavascriptInterface
     fun stop(): String {
-        LwWakeWord.hush(context)
+        val intent = Intent(context, WakeWordService::class.java)
+            .setAction(WakeWordService.ACTION_STOP_VOICE)
+        runCatching { ContextCompat.startForegroundService(context, intent) }
         return state()
     }
 }
@@ -952,9 +970,10 @@ private class WakeBridge(private val context: Context) {
 /**
  * 输入框上沿那个麦克风指示器
  *
- * 状态只有一条: **在听的时候才出来**, 用跳动的波形表示"麦克风开着", 点一下关掉 (上面的 [WakeBridge])
- * —— 一直开着的麦克风必须有一眼看得见、一下就关得掉的地方, 通知栏那一条是后台时看的, 这一条是看着
- * 会话时看的
+ * 状态只有一条: **常驻语音在跑的时候才出来**, 用跳动的波形表示"麦克风正在被吃", 点一下把常驻语音
+ * 关掉 (上面的 [WakeBridge]) —— 一直开着的麦克风必须有一眼看得见、一下就关得掉的地方, 通知栏那一条
+ * 是后台时看的, 这一条是看着会话时看的, **纯唤醒词守着时它不出现**: 那是常驻状态, 一直挂着只会让人
+ * 以为麦克风在被吃
  *
  * 位置是**算出来的**: 找到页面里那个输入框 (textarea 或 contenteditable), 贴在它上沿的左上角; 找不到
  * 就退回右下角一个固定位置。所以不碰输入框自己的控件 (发送键那些还在原地), 也不依赖 dsh 的类名 ——
@@ -1035,10 +1054,9 @@ private const val WAKE_BADGE_JS = """
     badge.style.right = '12px'
     badge.style.bottom = '96px'
   }
-  function draw(state, listening) {
+  function draw(state, live) {
     var badge = document.getElementById(ID)
     if (!badge) return
-    var live = listening || (state && state.listening)
     if (!live) {
       badge.style.opacity = '0'
       badge.style.pointerEvents = 'none'
@@ -1051,30 +1069,31 @@ private const val WAKE_BADGE_JS = """
     text.textContent = (state && state.label ? state.label : '') + (state && state.hits > 0 ? ' ' + state.hits : '')
     badge.title = (state && state.words ? state.words + ' - ' : '') + (state && state.stop ? state.stop : '')
   }
-  function bars(listening) {
+  function bars(live) {
     var badge = document.getElementById(ID)
     if (!badge) return
     var all = badge.querySelectorAll('i')
     for (var i = 0; i < all.length; i++) {
       var height = 3
-      if (listening) height = 4 + Math.round(9 * (0.5 + 0.5 * Math.sin(phase + i * 1.7)))
+      if (live) height = 4 + Math.round(9 * (0.5 + 0.5 * Math.sin(phase + i * 1.7)))
       all[i].style.height = height + 'px'
     }
   }
+  function on() { return !!(last && last.voice) }
   function refresh() {
     build()
     var state = null
     try { state = JSON.parse(window.LittleWhale.state()) } catch (error) {}
     last = state
-    draw(state, state && state.listening)
-    bars(state && state.listening)
+    draw(state, on())
+    bars(on())
   }
   // 问 app 一秒一次足够 (它那侧要读一次词表与四个文件的大小), 而波形按 220ms 跳 —— 状态缓存在这里,
   // 不是每一帧都过一次桥
   refresh()
   setInterval(function () {
     phase += 0.9
-    bars(last && last.listening)
+    bars(on())
   }, TICK)
   setInterval(refresh, POLL)
 })()

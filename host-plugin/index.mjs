@@ -176,12 +176,6 @@ const NOTE = {
   description: 'One short sentence, in your own words, saying what this step is doing and why',
 }
 
-/** 视频模式那块虚拟屏的形状: 相机是竖屏应用, 建屏时就把形状定对, 它才铺得满 */
-const VIDEO_SCREEN = { name: 'video', width: 720, height: 1280, dpi: 320 }
-
-/** 这台设备上相机可能叫什么: 先按包名试, 都不行就把判断交回给模型 */
-const CAMERA_PACKAGES = ['com.android.camera', 'com.vivo.camera', 'com.android.camera2']
-
 /**
  * 插件上下文
  *
@@ -190,7 +184,13 @@ const CAMERA_PACKAGES = ['com.android.camera', 'com.vivo.camera', 'com.android.c
  */
 let hostCtx = null
 
-/** 把几张 PNG 变成工具结果里的图: 少了这一步, 模型要自己一张张 read_image (每张一次往返) */
+/**
+ * 把几张帧变成工具结果里的图: 少了这一步, 模型要自己一张张 read_image (每张一次往返)
+ *
+ * **声明的类型要与字节一致**: 附件库拿声明的类型与字节比对, 对不上直接拒 (`IMAGE_TYPE_MISMATCH`),
+ * 那时工具只会退成"给你路径, 自己 read_image" —— 而相机交出来的是 JPEG, 截屏那条路交出来的是 PNG,
+ * 所以类型按字节认, 不写死
+ */
 async function attachPictures(paths) {
   const attachments = hostCtx?.get?.('attachments')
   if (!attachments?.saveImage) return { images: [], note: 'no attachment store on this host' }
@@ -199,7 +199,7 @@ async function attachPictures(paths) {
     const data = await readFile(path)
     images.push(await attachments.saveImage({
       data,
-      mediaType: 'image/png',
+      mediaType: pictureType(data, path),
       // 名字只为了在界面上看得出是哪一帧, 取路径最后一段就够
       name: String(path).split('/').pop(),
     }))
@@ -208,45 +208,50 @@ async function attachPictures(paths) {
 }
 
 /**
- * 视频模式那块屏: 有就沿用, 没有就建一块 (照固定形状 —— 相机是竖屏应用, 建屏时形状定对才铺得满)
- * @returns displayId (拿不到就是 undefined) 与几句人话
+ * 这张图的字节到底是什么格式
+ *
+ * 只看头几个字节: 相机那条路给的是 JPEG (`FF D8`), 旧那条截屏链路给的是 PNG (`89 50 4E 47`)。认不
+ * 出来就抛 —— 附件库本来也会拒, 而这里的报错能带上路径, 排起来省一步
  */
-async function ensureVideoScreen() {
-  const screens = await call('screen')
-  const all = Array.isArray(screens?.screens) ? screens.screens : []
-  const mine = all.find((screen) => screen?.name === VIDEO_SCREEN.name)
-  if (mine?.displayId !== undefined) {
-    return { displayId: mine.displayId, lines: [`reusing the ${VIDEO_SCREEN.name} screen on displayId ${mine.displayId}`] }
-  }
-  const created = await call('create', VIDEO_SCREEN)
-  return created?.displayId !== undefined
-    ? {
-        displayId: created.displayId,
-        lines: [`virtual screen ready on displayId ${created.displayId} (${VIDEO_SCREEN.width}x${VIDEO_SCREEN.height})`],
-      }
-    : { displayId: undefined, lines: [`the virtual screen did not come up: ${created?.detail ?? JSON.stringify(created)}`] }
+function pictureType(data, path) {
+  if (data[0] === 0xff && data[1] === 0xd8) return 'image/jpeg'
+  if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return 'image/png'
+  throw new Error(`${path} is neither a JPEG nor a PNG picture`)
 }
 
-/** 把视频模式要的那块屏与相机起来, 回一句人话 (切模式那一步用) */
+/**
+ * 视频模式的相机: 起来
+ *
+ * 相机开在**我们自己进程**里 (通道方法 `camera`), 预览画在手机上一块悬浮小窗上, 抓帧走 ImageReader
+ * —— 不借虚拟屏、不起相机应用、也不截屏。旧那条路 (建一块虚拟屏 → launch 相机应用 → lw_screenshot
+ * 截屏) 的代码与它建的屏都已经摘掉了, 这里只剩这一条
+ */
 async function bringUpCamera() {
   const lines = []
   try {
-    const brought = await ensureVideoScreen()
-    lines.push(...brought.lines)
-    if (brought.displayId === undefined) return lines.join('\n')
-    for (const camera of CAMERA_PACKAGES) {
-      const launched = await call('launch', { displayId: brought.displayId, package: camera })
-      if (launched?.launched !== false) {
-        lines.push(`camera ${camera} is in front on that screen`)
-        return lines.join('\n')
-      }
-      lines.push(`${camera}: ${launched?.detail ?? 'not started'}`)
-    }
-    lines.push('no camera package started; find the one this device ships and use lw_launch')
+    const opened = await call('camera', { op: 'open' })
+    lines.push(
+      `camera: ${opened?.shot ?? '?'} stills on the ${opened?.lens ?? '?'} camera, preview `
+        + `${opened?.preview ?? '?'}, window `
+        + (opened?.window ? 'up' : 'not up'),
+    )
+    if (opened?.lastError) lines.push(`last problem: ${opened.lastError}`)
+    // 预览面起不来不影响抓帧, 但那是"人看不见画面", 要说出来 —— 静默地黑着屏幕比报一句更糟
+    if (opened?.previewError) lines.push(`preview: ${opened.previewError}`)
   } catch (error) {
     lines.push(`bringing the camera up failed: ${error?.message ?? error}`)
   }
   return lines.join('\n')
+}
+
+/** 视频模式收工: 把摄像头还回去 (小窗一起收, 这一趟抓的帧也删掉) */
+async function putCameraAway() {
+  try {
+    const closed = await call('camera', { op: 'close', clean: true })
+    return `camera: ${closed?.text ?? 'closed'}`
+  } catch (error) {
+    return `closing the camera failed: ${error?.message ?? error}`
+  }
 }
 
 const TOOLS = [
@@ -270,12 +275,16 @@ const TOOLS = [
     name: 'lw_mode',
     description:
       'Switch which mode this phone assistant is in. "phone" is the usual one: operate the phone '
-      + 'through the lw_* tools. "video" points the camera at what is in front of the user and '
-      + 'answers what it is, in one to three sentences. A switch replaces the assistant\'s prompt '
+      + 'through the lw_* tools. "video" points this phone\'s own camera at what is in front of the '
+      + 'user (it runs inside the app, previewing in a small floating window) and answers what it '
+      + 'is, in one to three sentences. A switch replaces the assistant\'s prompt '
       + 'text, so it takes effect on the NEXT model step rather than this one: call it, say the mode '
-      + 'changed, and stop there. Call it with "video" when the user asks to look at something, and '
-      + 'with "phone" when the video work is over (they said to quit video mode, close the camera or '
-      + 'stop looking). mode "status" reports which one is active right now.',
+      + 'changed, and stop there. Both directions also put the phone back in order themselves, so '
+      + 'neither has to be undone by hand: "video" opens that camera and starts the always-listening '
+      + 'voice chain, while "phone" closes the camera again and stops that chain. Call it with '
+      + '"video" when the user asks to look at something, and with "phone" when the video work is '
+      + 'over (they said to quit video mode, close the camera or stop looking). mode "status" '
+      + 'reports which one is active right now.',
     parameters: {
       mode: {
         type: 'string',
@@ -289,16 +298,25 @@ const TOOLS = [
     },
     async execute(args) {
       const answer = await call('mode', { mode: args.mode })
-      // 切到视频模式顺带把屏与相机起来: 这一步本来要模型自己走三次 (认屏 / 建屏 / 开相机),
-      // 放到这里就成了一次调用 —— 主人说"看看这是什么"之后不用等三轮
+      // 切到视频模式顺带把相机起来: 这一步本来要模型自己走一遍, 放到这里就成了一次调用 ——
+      // 主人说"看看这是什么"之后不用再等一轮
       const brought = answer.switched === true && answer.mode === 'video'
         ? await bringUpCamera()
+        : null
+      // 切回手机模式顺带收工: 摄像头还回去 (小窗一起收, 这一趟抓的帧也删掉), 常驻语音链由 app 那
+      // 一侧停 (它才能停那个前台服务), 那边报回来的句子在 answer.teardown 里。**不碰任何虚拟屏** ——
+      // 视频模式现在不建屏, 也没有屏要收
+      const closed = answer.switched === true && answer.mode === 'phone'
+        ? await putCameraAway()
         : null
       if (answer.switched === false) return answer.detail
       if (answer.modes) return `modes: ${answer.modes}\nactive: ${answer.active}`
       if (answer.switched === true) {
         return `mode -> ${answer.mode} (${answer.name}); ${answer.detail}`
           + (brought ? `\n${brought}` : '')
+          + (answer.listening ? `\n${answer.listening}` : '')
+          + (closed ? `\n${closed}` : '')
+          + (answer.teardown ? `\n${answer.teardown}` : '')
       }
       return `mode: ${answer.mode} (${answer.name})\n`
         + `prompt file: ${answer.promptWritten ? 'written' : 'missing'} (${answer.promptFile})`
@@ -307,12 +325,14 @@ const TOOLS = [
   defineTool({
     name: 'lw_look',
     description:
-      'Look through the camera in ONE call: makes sure the video screen with the camera on it is up, '
-      + 'captures frames, and hands you the pictures themselves — no separate read_image step for each '
-      + 'one. In video mode use this instead of lw_screen + lw_ui + lw_screenshot. A first look is frames '
-      + '4 (the default); if that leaves you unsure, look ONE more time with frames 9 and sheet true — '
-      + 'that is the second and last group. If the second look still does not settle it, say what you '
-      + 'cannot see and ask for a single adjustment; never guess, and never ask for a third group. '
+      'Look through the camera in ONE call: opens this phone\'s own camera inside the app if it is not '
+      + 'up yet, takes frames straight off it (no screen is created, no camera app is launched, no '
+      + 'screenshot is taken), and hands you the pictures themselves — no separate read_image step for '
+      + 'each one. In video mode use this instead of lw_screen + lw_ui + lw_screenshot. Either camera '
+      + 'works and the choice sticks (see the lens parameter). A first look is '
+      + 'frames 4 (the default); if that leaves you unsure, look ONE more time with frames 9 — that is '
+      + 'the second and last group. If the second look still does not settle it, say what you cannot '
+      + 'see and ask for a single adjustment; never guess, and never ask for a third group. '
       + 'frames 12 is for something that is moving, not for a first look.',
     parameters: {
       frames: {
@@ -320,14 +340,12 @@ const TOOLS = [
         description: 'How many frames: 4 for a first look (the default), 9 for the second and last'
           + ' group, up to 12 only when the user asks about something moving',
       },
-      sheet: {
-        type: 'boolean',
-        description: 'Also lay the frames out as ONE grid picture, to see where the picture moved'
-          + ' between them. Not for reading small text or measuring positions',
-      },
-      quality: {
+      lens: {
         type: 'string',
-        description: 'low, medium (the default) or high; high costs about twice the pixels of medium',
+        description: '"front" when the user wants to be seen (a selfie, "look at me", "what do I look '
+          + 'like"): it is the camera pointing at the user. "back" (the default) for what is in front '
+          + 'of the phone. The choice sticks across looks, so name it whenever the user changes which '
+          + 'way the phone is pointing',
       },
       note: NOTE,
     },
@@ -353,27 +371,19 @@ const TOOLS = [
     },
     async execute(args) {
       const frames = Math.max(1, Math.min(12, args?.frames ?? 4))
-      const brought = await ensureVideoScreen()
-      if (brought.displayId === undefined) {
-        return { text: `no picture: ${brought.lines.join('; ')}`, images: [] }
-      }
-      const shot = await call('screenshot', {
-        displayId: brought.displayId,
-        count: frames,
-        sheet: args?.sheet === true,
-        quality: args?.quality ?? 'medium',
-        note: args?.note,
-      })
-      const text = [...brought.lines, formatScreenshot(shot)].join('\n')
-      // 帧的路径: 单张在 path, 连拍在 shots 里 (元素可能是字符串也可能是带 path 的对象)
-      const paths = []
-      if (Array.isArray(shot?.shots)) {
-        for (const item of shot.shots) {
-          const path = typeof item === 'string' ? item : item?.path ?? item?.file
-          if (typeof path === 'string' && path) paths.push(path)
-        }
-      }
-      if (typeof shot?.path === 'string' && shot.path) paths.push(shot.path)
+      // 视频模式看的**就是我们自己开的那台摄像头**: 预览画在手机上一块小窗里, 抓帧走 ImageReader
+      // (2026-10-05 起不再借虚拟屏与相机应用 —— 那条路要起一个别人的进程、再截屏、再把 PNG 读回来,
+      // 而这条路一次 capture 是两百多毫秒, 而且相机就握在自己手里)
+      //
+      // `lens` 原样交给应用那一侧: 换一头要收一次再开一次 (前后摄是两个设备), 而那件事只有它知道
+      const request = { op: 'snapshot', count: frames }
+      if (args?.lens) request.lens = String(args.lens).trim().toLowerCase()
+      const shot = await call('camera', request)
+      const paths = Array.isArray(shot?.paths)
+        ? shot.paths.filter((path) => typeof path === 'string' && path)
+        : []
+      const text = `camera: ${shot?.lens ?? '?'} lens, ${shot?.shot ?? '?'},`
+        + ` ${paths.length} frame(s) in ${shot?.elapsedMs ?? '?'}ms`
       if (!paths.length) return { text, images: [] }
       try {
         const { images, note } = await attachPictures(paths)
@@ -1835,7 +1845,8 @@ const TOOLS = [
               + `${state.cursor === null ? 'nothing yet' : state.cursor}`,
             `${voiceDelivery.lines} delivered`
               + ` (${voiceDelivery.steered} steered, ${voiceDelivery.queued} queued)`
-              + `${voiceDelivery.sessionId ? `, last to ${voiceDelivery.sessionId}` : ''}`,
+              + `${voiceDelivery.sessionId ? `, last to ${voiceDelivery.sessionId}` : ''}`
+              + `${voiceDelivery.opened ? `, ${voiceDelivery.opened} opened a new conversation` : ''}`,
             `${voiceReading.count} reply(ies) read aloud`
               + `${voiceReading.skipped ? `, ${voiceReading.skipped} skipped because read-aloud is off` : ''}`
               + `${voiceReading.error ? `, last problem: ${voiceReading.error}` : ''}`,
@@ -1906,8 +1917,18 @@ const TOOLS = [
       'Listen for a wake word on this phone, so the agent can be called by voice instead of by '
       + 'typing. The listening runs in the app itself with sherpa-onnx keyword spotting - a 3.3M '
       + 'parameter zipformer, 16 kHz mono, nothing leaves the device and no API key is involved. '
+      + 'The wake word is a low-power gatekeeper and the always-listening voice chain is a second, '
+      + 'separate stage: the keyword spotter guards the word the whole time, and a hit opens '
+      + 'cutting + recognition (silero VAD + SenseVoice). Turning the wake word on never turns that '
+      + 'second stage on - a hit does. **A hit always buys one sentence**: the chain opens, what you '
+      + 'say goes into a new conversation, and then it closes again (20 s without a word is the idle '
+      + 'limit, and that is when the 240 MB model goes back). What voice=true / the app\'s own setting '
+      + 'page changes is whether the chain STAYS resident after that first sentence instead of '
+      + 'closing. A hit also makes that first recognised sentence open a NEW conversation rather than '
+      + 'steering into whatever is running. '
       + 'op=status reports the model, the words being watched for, whether the microphone '
-      + 'permission is granted, whether the listener is up and how many times it has fired; '
+      + 'permission is granted, whether the listener is up, how many times it has fired, and '
+      + 'whether that second stage is allowed and running; '
       + 'op=prepare downloads the model once (about 5.3 MB, four files, each checked against a '
       + 'pinned sha256) and writes the default word 大肥鱼大肥鱼; '
       + 'op=keywords replaces the word table (each word is given as 词=拼音, for example '
@@ -1955,6 +1976,14 @@ const TOOLS = [
         description:
           'For op=start: "app" brings the app forward, "overlay" floats the GUI window (default app)',
       },
+      voice: {
+        type: 'boolean',
+        description:
+          'For op=start: whether the always-listening voice chain may STAY resident after a hit'
+          + ' (cutting + recognition kept open). Defaults to whatever the app\'s own setting page'
+          + ' holds, and its own default is off. A hit always opens that chain for one sentence'
+          + ' either way - this only decides whether it closes again afterwards',
+      },
       vibrateMs: {
         type: 'integer',
         description: 'For op=start: how long to buzz on a hit (default 200, 0 for silent)',
@@ -1975,6 +2004,9 @@ const TOOLS = [
           `microphone permission: ${info.permission ? 'granted' : `not granted - ${info.permission}`}`,
           `listener: ${info.listening ? 'up' : 'not running'}, ${info.hits} hit(s)`
             + (info.lastKeyword ? `, last was ${info.lastKeyword} at ${new Date(info.lastHitAt).toLocaleString()}` : ''),
+          `always-listening voice: ${info.voiceActive ? 'running' : 'not running'}`
+            + ` (allowed by the setting: ${info.allowVoice ? 'yes' : 'no'},`
+            + ` the listener is running with: ${info.voiceAllowed ? 'yes' : 'no'})`,
           info.unknownTokens
             ? `these tokens are not in the model's table, so their lines would be dropped silently:`
               + ` ${info.unknownTokens}`
@@ -2001,12 +2033,18 @@ const TOOLS = [
       }
       if (args.op === 'start') {
         const request = { op: 'start' }
-        for (const key of ['threshold', 'score', 'onWake', 'vibrateMs']) {
+        for (const key of ['threshold', 'score', 'onWake', 'vibrateMs', 'voice']) {
           if (args[key] !== undefined) request[key] = args[key]
         }
         const answer = await call('wakeword', request)
         return `listening for ${answer.keywords}; the microphone is on until op=stop, and a hit`
-          + ' shows up in op=status'
+          + ' shows up in op=status. A hit always buys one sentence (it opens the cutting +'
+          + ' recognition chain and what you say goes into a new conversation). Always-listening voice'
+          + ' is '
+          + (answer.voiceAllowed
+            ? 'also set to stay resident, so the chain is kept open after that sentence'
+            : 'not set to stay resident, so the chain closes again after that sentence; pass'
+              + ' voice=true (or turn it on in the app\'s own setting page) to keep it open')
       }
       if (args.op === 'stop') {
         const answer = await call('wakeword', { op: 'stop' })
@@ -3222,8 +3260,15 @@ function voiceInboxPath() {
   return home ? join(home, 'voice', 'inbox.jsonl') : null
 }
 
-/** 轮询那个队列的间隔: 半秒对说话这件事足够快, 而它只是一次 stat */
-const VOICE_POLL_MS = 500
+/**
+ * 轮询那个队列的间隔
+ *
+ * 一次 tick 只是一次 `stat` (内容没变时连文件都不读, 见 voiceUnchanged), 所以这里可以很密。
+ * 500 ms 是"半秒对说话这件事足够快"的估计, 但它落在**主人说完到那句话真的进会话**这段等待里 ——
+ * 而那段等待的另一半 (VAD 等静音) 已经从 3.0 s 收到 0.8 s, 这里不收就显得不成比例。150 ms 时
+ * 最坏多等 150 ms, 而平均只多等 75 ms
+ */
+const VOICE_POLL_MS = 150
 
 function voiceCursorPath(inbox) {
   return join(dirname(inbox), 'inbox.cursor')
@@ -3307,7 +3352,15 @@ async function voiceReadNew(inbox) {
     const seq = Number(record?.seq)
     const said = typeof record?.text === 'string' ? record.text.trim() : ''
     if (!Number.isFinite(seq) || seq <= since || !said) continue
-    fresh.push({ seq, text: said, source: record.source ?? 'voice', at: Number(record.at) || 0 })
+    // `wake` 是"这一句开一个新对话"那个记号 (应用那侧只有唤醒词命中之后的头一句带它, 见
+    // VoiceInbox.append)。老版本写的行没有这个键, 读起来与 false 是一回事
+    fresh.push({
+      seq,
+      text: said,
+      source: record.source ?? 'voice',
+      at: Number(record.at) || 0,
+      wake: record.wake === true,
+    })
   }
   // 留一条"还没确认投出去"的记号, 见 voiceUnchanged: 它让失败的那句话下一次还被读出来
   voiceCursor.unread = fresh.length > 0
@@ -3386,7 +3439,16 @@ async function voiceInboxState() {
 /* ── 语音投递: 一句话怎么变成会话里的一条消息 ─────────────────────────────── */
 
 /** 投递的去向与结果, 给 lw_voice 看: 投了几条、投给谁、是插进去的还是排上的、最近一次为什么失败 */
-const voiceDelivery = { lines: 0, sessionId: null, steered: 0, queued: 0, last: null, error: null }
+const voiceDelivery = {
+  lines: 0,
+  sessionId: null,
+  steered: 0,
+  queued: 0,
+  /** 其中几条是唤醒词开的**新对话** (应用那侧带了 `wake: true`) */
+  opened: 0,
+  last: null,
+  error: null,
+}
 
 /** `@deepseek-ai/dsh-llm` 的模块命名空间, 按需加载一次 */
 let messageFactory = null
@@ -3415,6 +3477,9 @@ async function createVoiceMessage(text) {
  * 两个判据分工不同: `ctx.agents.list()` 是活着的 agent, 其中 `status === 'running'` 的那个就是
  * 主人此刻正在进行的这一轮 —— 话说给它是"插进去"而不是"排到下一轮",没有正在跑的, 才去看会话
  * 列表里最近动过的那个根会话 (子代理与 fork 出来的不算: 那不是主人在看的那个)
+ *
+ * **`line.wake` 为真时这条整个不适用**: 唤醒词命中之后的那一句要**开一个新对话**, 所以它既不插
+ * 正在跑的那一轮, 也不投给最近那个 —— 即使此刻有别的轮在跑 (主人 2026-10-05 定)
  */
 async function voiceTargetSession(ctx, controller, signal) {
   const busy = ctx.agents
@@ -3435,6 +3500,12 @@ async function voiceTargetSession(ctx, controller, signal) {
  * 会话不活着也能投: `resolveAgent` 会把它恢复起来 (与 dsh 自己的 schedule 那条路同一个做法), 所以
  * "应用在后台说了一句话"不会因为界面没开着而丢掉
  *
+ * **`line.wake` 改写目标**: 唤醒词命中之后的那一句 (应用那侧 `VoiceInbox` 带了 `wake: true`) 一律
+ * `controller.create({})` 开一个新对话 —— 不插正在跑的那一轮, 也不投给最近那个 (主人 2026-10-05
+ * 定: 喊一声就是"换一件事说")。界面**不会跟着切过去**: 会话是这里建的, 而"在看哪一个"是浏览器自己
+ * 的路由状态, 应用那侧没有一条让页面切会话的路 —— 所以新对话真的在跑、回答也会念出来, 但人可能正
+ * 看着另一个会话。这是主人选的"改动最小"那一档
+ *
  * **来源标记怎么写是这批里最容易写错的一处** (批次 2.2)。两种写法都"有来源", 但只有一个是对的:
  *
  * - `{ kind: 'user', via: 'voice' }` —— 对了,`MessageSourceMap` 是合并扩展的, 各生产者声明自己
@@ -3453,7 +3524,8 @@ async function voiceDeliver(ctx, line) {
     throw new Error('this profile has no session controller, so a spoken line has nowhere to go')
   }
   const signal = new AbortController().signal
-  const target = await voiceTargetSession(ctx, controller, signal)
+  const fresh = line.wake === true
+  const target = fresh ? null : await voiceTargetSession(ctx, controller, signal)
   const sessionId = target === null ? (await controller.create({})).sessionId : target.sessionId
   const outcome = await ctx.agents.withoutInitiator(async () => {
     const resolved = await controller.resolveAgent(sessionId)
@@ -3469,12 +3541,20 @@ async function voiceDeliver(ctx, line) {
   })
   voiceDelivery.lines += 1
   voiceDelivery.sessionId = String(sessionId)
+  if (fresh) voiceDelivery.opened += 1
   if (outcome.running) voiceDelivery.steered += 1
   else voiceDelivery.queued += 1
-  voiceDelivery.last = { at: Date.now(), text: line.text, sessionId: String(sessionId), steered: outcome.running }
+  voiceDelivery.last = {
+    at: Date.now(),
+    text: line.text,
+    sessionId: String(sessionId),
+    steered: outcome.running,
+    newConversation: fresh,
+  }
   voiceDelivery.error = null
   ctx.logger?.info?.(
-    `voice line #${line.seq} ${outcome.running ? 'steered into' : 'queued on'} ${String(sessionId)}`,
+    `voice line #${line.seq} ${fresh ? 'opened a new conversation' : outcome.running ? 'steered into' : 'queued on'}`
+      + ` ${String(sessionId)}`,
   )
   return outcome
 }

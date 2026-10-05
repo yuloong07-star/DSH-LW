@@ -86,7 +86,9 @@
     <string name="mode_video">视频模式</string>
     <string name="settings_section_wake">唤醒词</string>
     <string name="settings_wake_status">监听状态</string>
-    <string name="settings_wake_state_listening">正在听「%1$s」</string>
+    <string name="settings_wake_state_listening">正在听「%1$s」; 常驻语音只在命中之后才开</string>
+    <string name="settings_wake_state_voice">正在听「%1$s」, 常驻语音也在跑 (说完一句就发出去)</string>
+    <string name="settings_wake_state_allowed">允许唤醒开着, 但这个服务没在跑; 把那一个开关关掉再打开一次</string>
     <string name="settings_wake_state_idle">没在听; 打开下面那个开关就开始</string>
     <string name="settings_wake_hits">这一次从起服务到现在命中 %1$d 次</string>
     <string name="settings_wake_mic_missing">麦克风权限还没给, 下面「权限」那一段里有入口</string>
@@ -102,8 +104,10 @@
     <string name="settings_wake_words_summary">一行一个词, 写成 词=带音调数字的拼音, 例如 大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2; 拼音会转成模型自己的符号, 表里没有的会被拒绝而不是静默丢掉</string>
     <string name="settings_wake_words_saved">已保存: %1$s</string>
     <string name="settings_wake_words_unsaved">没保存: %1$s</string>
-    <string name="settings_wake_listen">一直听着</string>
-    <string name="settings_wake_listen_summary">开着时麦克风一直开着, 通知栏留一个「停止」; 命中会震一下, 响一声短提示音并把应用提到前面</string>
+    <string name="settings_wake_allow">允许唤醒</string>
+    <string name="settings_wake_allow_summary">允许这个应用一直听着唤醒词 (3.3M 的本地关键词模型, 5.3 MB); 它只是许可, 打开之后麦克风才开始守那个词, 通知栏留一条常驻与一个「停止」</string>
+    <string name="settings_wake_voice">允许常驻语音</string>
+    <string name="settings_wake_voice_summary">开着时麦克风在命中之后一直留着 (端侧 SenseVoice 的 240 MB 模型那时才进内存), 想到什么随时说; 关着时每次喊一声仍然能讲一句话, 说完就收回去 (那一次的识别模型也会还回去)</string>
     <string name="settings_wake_need_model">唤醒词模型还没下, 用下面那一行「下载唤醒词模型」</string>
     <string name="wake_badge_listening">正在听</string>
     <string name="wake_badge_stop">点一下关掉</string>

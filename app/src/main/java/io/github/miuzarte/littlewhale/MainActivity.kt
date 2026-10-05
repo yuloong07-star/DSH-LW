@@ -12,6 +12,7 @@ import io.github.miuzarte.littlewhale.channel.PreviewControl
 import io.github.miuzarte.littlewhale.channel.ScreenshotBudget
 import io.github.miuzarte.littlewhale.host.DshHostService
 import io.github.miuzarte.littlewhale.theme.ThemeStore
+import io.github.miuzarte.littlewhale.tool.LwWakeWord
 import io.github.miuzarte.littlewhale.tool.SpeakSettings
 import io.github.miuzarte.littlewhale.ui.LittleWhaleApp
 import io.github.miuzarte.littlewhale.util.PermissionRequests
@@ -65,6 +66,10 @@ class MainActivity : ComponentActivity() {
         LwApps.attach(this)
         // The host deliberately outlives this activity, so the service owns its lifetime
         DshHostService.start(this)
+        // 唤醒词那个许可是存盘的, 所以应用一起来就照着它把监听恢复起来 —— 不然"允许唤醒"只是个记号,
+        // 服务不会自己起, 而主人按下它的意思显然是"让它听着", 缺模型 / 缺权限 / 许可关着时它什么都不做;
+        // 起不来也不该把界面带走 (那是前台服务那一侧的事, 它会把原因记在状态里)
+        runCatching { LwWakeWord.ensure(this) }
         setContent {
             LittleWhaleApp()
             // 设置页里点过的那条授权申请到这一层才真的弹。挂 Content 外面那一层而不是某一页里,

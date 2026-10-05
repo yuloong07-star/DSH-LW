@@ -189,7 +189,26 @@ internal object LwSpeech {
         }
     }
 
-    /** 认出模型文件建一个识别器; 找不到就建, 模型或语言换了就重建 */    private fun recognizerFor(directory: File, model: File, tokens: File, language: String): OfflineRecognizer {
+    /**
+     * 把那 240 MB 先装进内存, 不出字
+     *
+     * 第一次 [recognize] 与第一次 [warmUp] 走的是同一条 [recognizerFor], 所以预热过的下一次认就是
+     * 纯推理 —— 常驻语音链在**命中唤醒词那一下**调它, 那笔加载的时间因此落在主人还在说话的那几秒里,
+     * 而不是落在他"说完了在等"的那几秒里
+     *
+     * 回 false 表示模型不在位, 什么都没做 (与 [recognize] 回 null 是同一个意思)
+     */
+    fun warmUp(context: Context): Boolean {
+        val directory = modelDirectory(context)
+        val model = File(directory, MODEL_FILE)
+        val tokens = File(directory, TOKENS_FILE)
+        if (!model.isFile || !tokens.isFile) return false
+        synchronized(lock) { recognizerFor(directory, model, tokens, "auto") }
+        return true
+    }
+
+    /** 认出模型文件建一个识别器; 找不到就建, 模型或语言换了就重建 */
+    private fun recognizerFor(directory: File, model: File, tokens: File, language: String): OfflineRecognizer {
         val held = loaded
         if (held != null && held.directory == directory.absolutePath && held.language == language) {
             return held.recognizer

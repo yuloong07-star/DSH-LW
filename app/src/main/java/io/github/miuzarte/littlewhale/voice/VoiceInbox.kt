@@ -22,8 +22,12 @@ import kotlinx.serialization.json.put
  * 每一行一句话, JSON Lines:
  *
  * ```json
- * {"seq":7,"at":1759600000000,"text":"今天天气怎么样","source":"voice"}
+ * {"seq":7,"at":1759600000000,"text":"今天天气怎么样","source":"voice","wake":true}
  * ```
+ *
+ * **`wake` 是"这一句要开一个新对话"那个记号** (主人 2026-10-05 定): 只有唤醒词命中之后的**头一句**
+ * 带它, 宿主那侧的 `voiceDeliver` 认到就跳过"正在跑的轮优先"那条规矩直接新建一个会话, 它只给头
+ * 一句 —— 一句话被 VAD 切成两段时两段都带就会开出两个对话
  *
  * **`seq` 是给读者去重用的**: 文件满了会从尾部留下若干行重写一遍, 于是读者的字节游标可能指到
  * 新文件之外。只靠游标去重会在那一刻重放, 而带上序号之后"已经投递过的那条"永远认得出。所以
@@ -61,8 +65,12 @@ internal object VoiceInbox {
      *
      * 回 null 表示**没写进去** (目录建不出来、磁盘满了), 调用方要如实说 —— "投出去了"与"写失败
      * 了"对主人是两件完全不同的事
+     *
+     * [fresh] 是"这一句开一个新对话"那个记号: 只有唤醒词命中之后的头一句传 true, 而**只有 true 才
+     * 写进那一行** —— 读者认的是一个"在不在"而不是一个布尔值, 所以老版本写的行 (没有这个键) 读起来
+     * 与 `wake: false` 是同一个意思, 不会有新旧两种行要分辨
      */
-    fun append(context: Context, text: String, source: String = "voice"): Long? {
+    fun append(context: Context, text: String, source: String = "voice", fresh: Boolean = false): Long? {
         val line = text.trim()
         if (line.isEmpty()) return null
         val target = file(context)
@@ -77,6 +85,7 @@ internal object VoiceInbox {
                     put("at", System.currentTimeMillis())
                     put("text", line)
                     put("source", source)
+                    if (fresh) put("wake", true)
                 }
                 target.appendText("$record\n")
                 nextSeq

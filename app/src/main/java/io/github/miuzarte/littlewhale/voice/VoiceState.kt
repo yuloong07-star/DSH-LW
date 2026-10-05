@@ -9,7 +9,14 @@ package io.github.miuzarte.littlewhale.voice
  */
 internal object VoiceState {
 
-    /** 采集线程在跑没有 */
+    /**
+     * **常驻语音那一路在不在跑** (切段 + 出字), 不是"麦克风开没开"
+     *
+     * 这两件事必须分得开: 只有唤醒词在守的时候麦克风也是开着的 (它当然开着, 不然听不见那个词),
+     * 而那时这里的值是 **false** —— 一直开着的麦克风这件事在状态上的落点是 [VoiceState.capturing],
+     * 而"还在听唤醒词"那一半在 `WakeWordState.listening` 里, 改这一行之前先想清楚:
+     * 把唤醒词也算进 capturing, 就等于把"设置页那个开关 = 常驻监听"那个错又写回来一遍
+     */
     @Volatile
     var capturing: Boolean = false
 

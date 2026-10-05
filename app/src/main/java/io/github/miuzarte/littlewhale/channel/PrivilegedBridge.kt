@@ -3,6 +3,7 @@ package io.github.miuzarte.littlewhale.channel
 import android.graphics.Rect
 import android.os.SystemClock
 import android.util.Log
+import io.github.miuzarte.littlewhale.tool.LwCamera
 import io.github.miuzarte.littlewhale.tool.LwEvents
 import io.github.miuzarte.littlewhale.tool.LwFiles
 import io.github.miuzarte.littlewhale.tool.LwKeepAwake
@@ -948,6 +949,7 @@ object PrivilegedBridge {
         "keepAwake" -> LwKeepAwake.dispatch(request)
         // 模式: 只换那个助手的提示词文件 (手机模式 / 视频模式), 不动预设也不动工具表
         "mode" -> appContext { LwModes.dispatch(it, request) }
+        "camera" -> appContext { LwCamera.dispatch(it, request) }
         // 1.0.3 批次 4: 工作区里那几个文件与手机那一侧的读数、让媒体库看见、拍一张照
         "files" -> appContext { LwFiles.dispatch(it, request) }
         "mediaScan" -> appContext { LwMedia.dispatch(it, request) }

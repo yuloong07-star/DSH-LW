@@ -3,11 +3,13 @@ package io.github.miuzarte.littlewhale.tool
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import androidx.core.content.ContextCompat
 import io.github.miuzarte.littlewhale.util.Capability
 import io.github.miuzarte.littlewhale.util.PermissionGate
 import io.github.miuzarte.littlewhale.voice.VoiceInbox
 import io.github.miuzarte.littlewhale.voice.VoiceState
+import io.github.miuzarte.littlewhale.wake.WakeWordDownload
 import io.github.miuzarte.littlewhale.wake.WakeWordModel
 import io.github.miuzarte.littlewhale.wake.WakeWordService
 import io.github.miuzarte.littlewhale.wake.WakeWordState
@@ -46,12 +48,23 @@ internal object LwWakeWord {
     private const val STORE = "littlewhale"
     private const val WORDS_KEY = "wake-words"
 
+    /**
+     * 两个许可, **默认不同**
+     *
+     * 这是这次改动最要紧的一行: [ALLOW_WAKE] 缺省开着 (喊一声是这个功能的入口), 而 [ALLOW_VOICE]
+     * 缺省**关着** —— 常驻语音 (切段 + 出字, 那份 240 MB 的模型与一直吃着的 CPU) 必须由主人显式
+     * 允许, 而不是被"允许唤醒"顺带打开, 改动之前这两件事由一个开关一起管, 那正是被修掉的那个错
+     */
+    private const val ALLOW_WAKE_KEY = "wake-allow"
+    private const val ALLOW_VOICE_KEY = "wake-allow-voice"
+
     /** 这一个能力的名字, 与设置页里那条一致 */
     private val microphone = Capability(
         name = "麦克风",
         why = "唤醒词要一直听着麦克风",
         permissions = listOf(Manifest.permission.RECORD_AUDIO),
     )
+
 
     fun dispatch(context: Context, request: JsonObject): JsonObject = when (val op = request.string("op")) {
         "status" -> status(context, request)
@@ -87,6 +100,50 @@ internal object LwWakeWord {
         val file = keywordsFile(directory(context))
         if (!file.isFile) return emptyList()
         return file.readLines().filter { it.isNotBlank() }.map { keywordName(it) }
+    }
+
+    /**
+     * 允许不允许唤醒 (那个缺省开着的许可)
+     *
+     * 它只决定**服务起不起来**, 起来之后常驻语音那一半由 [allowVoice] 单独管 —— 这就是"设置项只作
+     * 前置许可"落在代码里的样子
+     */
+    internal fun allow(context: Context): Boolean = prefs(context).getBoolean(ALLOW_WAKE_KEY, true)
+
+    /** 允许不允许常驻语音 (那个缺省关着的许可): 命中之后要不要把切段与出字铺开 */
+    internal fun allowVoice(context: Context): Boolean = prefs(context).getBoolean(ALLOW_VOICE_KEY, false)
+
+    /**
+     * 记下这两个许可
+     *
+     * **这里只写偏好, 什么都不启动** —— 许可与运行时状态是两件事 (改动之前设置页那个开关直接读
+     * `WakeWordState.listening`, 于是"许可 = 常驻监听"在界面上就成立了), 服务那边会把这两个值从
+     * Intent 里读走, 而 Intent 由 [listen] 装
+     */
+    internal fun setAllow(context: Context, wake: Boolean, voice: Boolean) {
+        prefs(context).edit()
+            .putBoolean(ALLOW_WAKE_KEY, wake)
+            .putBoolean(ALLOW_VOICE_KEY, voice)
+            .apply()
+    }
+
+    private fun prefs(context: Context) =
+        context.getSharedPreferences(STORE, Context.MODE_PRIVATE)
+
+    /**
+     * 应用起来时照着许可把服务拉起来
+     *
+     * 没有这一条, "允许唤醒"就只是一个存盘的记号: 服务不会自己起, 那个许可开着也没人听 —— 而
+     * 主人按下它的意思显然是"让它听着", 所以缺模型、缺权限、或者许可关着时这里什么都不做, 否则
+     * 就起 (失败只记日志: 应用这一侧不该因为一个后台服务起不来而崩)
+     */
+    internal fun ensure(context: Context) {
+        if (!allow(context)) return
+        val ready = WakeWordDownload.readyCount(context) == WakeWordDownload.files.size
+        if (!ready) return
+        if (WakeWordState.listening) return
+        runCatching { listen(context) }
+            .onFailure { Log.w("LwWakeWord", "the listener did not come up on start: ${it.message}") }
     }
 
     /**
@@ -131,6 +188,15 @@ internal object LwWakeWord {
             put("unknownTokens", unknown.joinToString(" "))
             put("permission", refusal == null)
             put("listening", WakeWordState.listening)
+            // 三层各自的状态: 许可 (存盘的) / 唤醒词在守 (listening) / 常驻语音在跑 (voiceActive)
+            // **`capturing` 与 `voiceActive` 现在是同一件事** (2026-10-05 起): 前者是 dsh 那边与本
+            // 文件后面那一堆旧字段用的名字, 后者是状态机那个名字 —— 两个都报出来是为了让"一直开着
+            // 的麦克风"这件事在旧调用方那里读起来不变
+            put("allowWake", allow(context))
+            put("allowVoice", allowVoice(context))
+            // 服务那侧读到的许可 (刚改完许可时可能与上面那个短暂不一致, 这一条是"它现在按哪个在跑")
+            put("voiceAllowed", WakeWordState.voiceAllowed)
+            put("voiceActive", WakeWordState.voiceActive)
             put("liveKeywords", WakeWordState.keywords.joinToString(", "))
             put("hits", WakeWordState.hits)
             put("lastKeyword", WakeWordState.lastKeyword ?: "")
@@ -166,7 +232,10 @@ internal object LwWakeWord {
                         "keywords" to (lines.joinToString(" | ").ifEmpty { "none" }),
                         "tokens not in the model's table" to (unknown.joinToString(" ").ifEmpty { "none" }),
                         "microphone permission" to (refusal ?: "granted"),
+                        "allowed to wake" to allow(context).toString(),
+                        "allowed always-listening voice" to allowVoice(context).toString(),
                         "listening" to WakeWordState.listening.toString(),
+                        "always-listening voice running" to WakeWordState.voiceActive.toString(),
                         "hits" to WakeWordState.hits.toString(),
                         "last heard" to (WakeWordState.lastKeyword ?: "nothing yet"),
                         "capture running" to VoiceState.capturing.toString(),
@@ -275,6 +344,9 @@ internal object LwWakeWord {
                 },
             )
             putExtra(WakeWordService.EXTRA_VIBRATE_MS, request.int("vibrateMs", DEFAULT_VIBRATE_MS))
+            // 常驻语音那一个许可: 走通道那条路时由调用方点名 (缺省取设置页存的), 而 [listen] 那条
+            // 路只读设置页存的 —— 界面上那个开关不许绕过许可直接把常驻打开
+            putExtra(WakeWordService.EXTRA_VOICE, request.bool("voice", allowVoice(context)))
         }
         try {
             ContextCompat.startForegroundService(context, intent)
@@ -289,7 +361,17 @@ internal object LwWakeWord {
                 "keywords",
                 keywords.readLines().filter { it.isNotBlank() }.joinToString(" | "),
             )
-            put("text", "the service is up; it listens on the microphone and reports a hit in status")
+            put("voiceAllowed", allowVoice(context))
+            put(
+                "text",
+                "the service is up; the wake word is listening on the microphone and a hit shows up" +
+                    " in status. Always-listening voice is " +
+                    (if (allowVoice(context)) {
+                        "allowed to stay resident, so a hit opens it and it is kept open"
+                    } else {
+                        "not resident; a hit still opens it for one sentence and it closes again"
+                    }),
+            )
         }
     }
 
@@ -308,6 +390,9 @@ internal object LwWakeWord {
      *
      * 设置页那个开关走这一条, 与通道那条 ([start]) 是同一个实现 —— 界面与模型各有一套参数的话,
      * "开关开着而模型那边调到别处"这种状态迟早会出现
+     *
+     * 常驻语音那一个许可**不在这里传**: [start] 自己会去读设置页存的那一个, 所以"起监听"这件事
+     * 永远不会顺手把常驻打开 —— 它只在命中唤醒词时由服务自己开 ([WakeWordService.openVoice])
      */
     internal fun listen(context: Context): JsonObject = start(
         context,
@@ -322,7 +407,23 @@ internal object LwWakeWord {
     internal fun hush(context: Context): Boolean {
         val stopped = context.stopService(Intent(context, WakeWordService::class.java))
         WakeWordState.listening = false
+        WakeWordState.voiceActive = false
         return stopped
+    }
+
+    /**
+     * 许可改了之后让正在跑的那个服务知道
+     *
+     * 服务是从 Intent 里读那两个许可的, 所以改完不告诉它, 就得等下一次起服务才生效 —— 而"我把允许
+     * 常驻语音打开了, 它却要等我关掉再打开一次"是个说不通的中间态, **已经在跑时才发这一条**:
+     * 没在跑时许可自己会说话 ([ensure] 与 [listen] 都会读)
+     */
+    internal fun refresh(context: Context) {
+        if (!WakeWordState.listening) return
+        val intent = Intent(context, WakeWordService::class.java)
+            .setAction(WakeWordService.ACTION_REFRESH)
+        runCatching { ContextCompat.startForegroundService(context, intent) }
+            .onFailure { Log.w("LwWakeWord", "the listener did not take the new permissions: ${it.message}") }
     }
 
     /** 与 sherpa-onnx 自己的缺省值一致 */

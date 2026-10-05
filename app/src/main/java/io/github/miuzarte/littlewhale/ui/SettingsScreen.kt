@@ -864,14 +864,22 @@ private fun SpeakItems() {
 private fun voiceLabel(voice: Voice): String = "${voice.name} (${voice.locale.toLanguageTag()})"
 
 /**
- * 唤醒词: 词表、模型与那个开关
+ * 唤醒词: 词表、模型与那两个许可
  *
- * 三件事分三段说清, 因为它们的处置完全不同: **词表**是用户自己写的 (写错时 sherpa-onnx 会把整行
- * 静默丢掉, 所以这里逐 token 核对后才写), **模型**是那 5.3 MB 的下载 (装完才对得上符号表), **开关**
- * 是麦克风 (开着时通知栏留一条常驻, 上面一个「停止」)
+ * 四件事分四段说清, 因为它们的处置完全不同: **词表**是用户自己写的 (写错时 sherpa-onnx 会把整行
+ * 静默丢掉, 所以这里逐 token 核对后才写), **模型**是那 5.3 MB 的下载 (装完才对得上符号表), 而
+ * **两个开关都是许可、不是"现在就常驻"**:
  *
- * 每秒看一眼: 下载进度、监听状态、命中数都是别处改的 (服务在另一个进程状态里跑), 不轮询界面就是死的
- * —— 这几条读的都是内存与四次 `File.length()`, 一秒一次的花销可以忽略
+ * - 「允许唤醒」= 允不允许这个应用听着唤醒词 (缺省开), 它只决定服务起不起来
+ * - 「允许常驻语音」= 命中唤醒词之后要不要真的把切段与出字铺开 (缺省**关**)
+ *
+ * 改动之前这里只有一个开关, 而它直接等于常驻监听 (`checked = WakeWordState.listening`) —— 主人
+ * 2026-10-05 判定的那个错就落在这一行: 打开"允许唤醒"顺手把常驻麦克风也打开了, 现在这两个许可
+ * **只写偏好、什么都不启动**, 运行时状态另外如实显示 (状态那一行说三件事: 只有唤醒词在守 / 常驻
+ * 语音也在跑 / 许可开着而服务没起)
+ *
+ * 每秒看一眼: 下载进度、两个状态、命中数都是别处改的 (服务在另一个进程状态里跑), 不轮询界面就是
+ * 死的 —— 这几条读的都是内存、两份偏好与四次 `File.length()`, 一秒一次的花销可以忽略
  */
 @Composable
 private fun WakeItems() {
@@ -879,7 +887,10 @@ private fun WakeItems() {
     val scope = rememberCoroutineScope()
     var words by remember { mutableStateOf(LwWakeWord.words(context)) }
     var names by remember { mutableStateOf(LwWakeWord.names(context)) }
+    var allowWake by remember { mutableStateOf(LwWakeWord.allow(context)) }
+    var allowVoice by remember { mutableStateOf(LwWakeWord.allowVoice(context)) }
     var listening by remember { mutableStateOf(WakeWordState.listening) }
+    var voiceActive by remember { mutableStateOf(WakeWordState.voiceActive) }
     var hits by remember { mutableStateOf(WakeWordState.hits) }
     var ready by remember { mutableStateOf(WakeWordDownload.readyCount(context)) }
     var note by remember { mutableStateOf<String?>(null) }
@@ -887,13 +898,16 @@ private fun WakeItems() {
     val total = WakeWordDownload.files.size
     val microphone = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED
-    // 这两句是给开关那个分支念的, 而 stringResource 不能进 when 的 lambda 里之后再取, 所以先取出来
+    // 这几句是给开关那些分支念的, 而 stringResource 不能进 when 的 lambda 里之后再取, 所以先取出来
     val needModel = stringResource(R.string.settings_wake_need_model)
     val micMissing = stringResource(R.string.settings_wake_mic_missing)
     LaunchedEffect(Unit) {
         WakeWordDownload.refresh(context)
         while (true) {
+            allowWake = LwWakeWord.allow(context)
+            allowVoice = LwWakeWord.allowVoice(context)
             listening = WakeWordState.listening
+            voiceActive = WakeWordState.voiceActive
             hits = WakeWordState.hits
             ready = WakeWordDownload.readyCount(context)
             names = LwWakeWord.names(context)
@@ -903,13 +917,17 @@ private fun WakeItems() {
     // fillMaxWidth 是必要的: 这一段的子项是纯文字, 撑不满宽度, 而 Miuix 的 Card 是包着内容的
     Column(modifier = Modifier.fillMaxWidth().padding(UiSpacing.Large)) {
         Text(
-            text = if (listening) {
-                stringResource(
+            text = when {
+                // 常驻语音真在跑: 这才是"一直开着麦克风"最重的那一个态, 放在最前面说
+                listening && voiceActive -> stringResource(R.string.settings_wake_state_voice)
+                listening -> stringResource(
                     R.string.settings_wake_state_listening,
                     names.joinToString("」「").ifEmpty { LwWakeWord.words(context) },
                 )
-            } else {
-                stringResource(R.string.settings_wake_state_idle)
+                // 许可开着而服务没起: 这一句与"许可关着"必须分得开, 否则人不知道是许可没给还是没起来
+                allowWake && microphone && ready == total ->
+                    stringResource(R.string.settings_wake_state_allowed)
+                else -> stringResource(R.string.settings_wake_state_idle)
             },
         )
         if (hits > 0) {
@@ -926,11 +944,14 @@ private fun WakeItems() {
             Text(text = problem, modifier = Modifier.padding(top = UiSpacing.Medium))
         }
     }
+    // 第一个开关是**许可**, 不是"现在就常驻": 它只决定服务起不起来听唤醒词
     SwitchPreference(
-        title = stringResource(R.string.settings_wake_listen),
-        summary = stringResource(R.string.settings_wake_listen_summary),
-        checked = listening,
+        title = stringResource(R.string.settings_wake_allow),
+        summary = stringResource(R.string.settings_wake_allow_summary),
+        checked = allowWake,
         onCheckedChange = { wanted ->
+            LwWakeWord.setAllow(context, wanted, allowVoice)
+            allowWake = wanted
             note = if (wanted) {
                 when {
                     // 缺什么先说什么, 不去替人按下那个 5 MB 的下载 (开关不该是一个下载按钮)
@@ -947,7 +968,22 @@ private fun WakeItems() {
             }
         },
     )
-    // 下载那一条: 装完顺手把缺省词表写上并开始听 —— 人按下这个按钮就是为了"能用"
+    // 第二个开关是**另一个许可**, 而且默认关: 它只决定"命中之后要不要真的把常驻语音铺开",
+    // 打开它不会让麦克风多开一秒 —— 常驻那条链只在命中唤醒词之后才起来
+    SwitchPreference(
+        title = stringResource(R.string.settings_wake_voice),
+        summary = stringResource(R.string.settings_wake_voice_summary),
+        checked = allowVoice,
+        onCheckedChange = { wanted ->
+            LwWakeWord.setAllow(context, allowWake, wanted)
+            allowVoice = wanted
+            note = null
+            // 改完得告诉正在跑的那个服务: 否则"我打开了它却要等下次重启"是个说不通的中间态
+            LwWakeWord.refresh(context)
+        },
+    )
+    // 下载那一条: 装完把缺省词表写上, 并**只把唤醒词起起来** —— 常驻语音那半条不跟着开
+    // (改动之前这里顺手 listen() 等于把常驻也打开, 是同一个错的第二个入口)
     ArrowPreference(
         title = stringResource(R.string.settings_wake_download),
         summary = when {
@@ -975,22 +1011,26 @@ private fun WakeItems() {
                 note = withContext(Dispatchers.IO) {
                     runCatching {
                         val said = WakeWordDownload.download(context)
-                        // 模型没下过时 keywords.txt 也还没写过: 补上缺省那一句再开始听
+                        // 模型没下过时 keywords.txt 也还没写过: 补上缺省那一句
                         if (LwWakeWord.names(context).isEmpty()) {
                             LwWakeWord.setWords(context, LwWakeWord.words(context))
                         }
-                        if (!WakeWordState.listening) {
+                        // **许可是前提**: 没允许唤醒就只把模型放好, 不替人把监听起起来
+                        // (改动之前这里无条件 listen(), 那是"开关 = 常驻监听"那个错的第二个入口)
+                        if (!LwWakeWord.allow(context)) {
+                            "$said, 模型已就位; 上面那个「允许唤醒」开着才会开始听"
+                        } else if (!WakeWordState.listening) {
                             runCatching { LwWakeWord.listen(context) }
                                 .exceptionOrNull()
                                 ?.let { "$said, 但是没能开始听: ${it.message ?: it}" }
-                                ?: "$said, 已经开始听"
+                                ?: "$said, 已经开始听唤醒词"
                         } else {
                             // 换了模型文件时正在跑的那一份要重新读: 停一下再起
                             LwWakeWord.hush(context)
                             runCatching { LwWakeWord.listen(context) }
                                 .exceptionOrNull()
                                 ?.let { "$said, 但是没能重新开始听: ${it.message ?: it}" }
-                                ?: "$said, 已重新开始听"
+                                ?: "$said, 已重新开始听唤醒词"
                         }
                     }.getOrElse { it.message ?: it.toString() }
                 }

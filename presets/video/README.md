@@ -1,14 +1,15 @@
 # dsh-preset-video（本机版「视频模式」预设）
 
-实时识图预设：用虚拟屏打开系统相机、顶格连拍取帧，看图回答「镜头前是什么」。输出会被念出来，所以回复限几句话。
+实时识图预设：用**手机自己的摄像头**（Camera2 直连，相机开在应用进程里，预览画在一块悬浮小窗上）取帧，看图回答「镜头前是什么」。输出会被念出来，所以回复限几句话。
 
 ## 行为
 
-- 识图：`lw_screen` 认屏 → `lw_screen_create` 建虚拟屏 → `lw_launch(displayId, "com.android.camera")` 打开相机 → `lw_screenshot(displayId, count=12, sheet=true, quality="high")`。
-- 连拍顶格：张数最大（`count=12`）、清晰度最高（`quality=high`）、`sheet=true`；组间约 1 秒，**最多 3 组**，第 3 组仍无法确认即停手反问一句，不再重拍。
-- 拍前确认前台是 `com.android.camera`；相机是单实例，已在别处运行时先 `lw_ui` 找窗口，不重复 launch。
+- 识图：`lw_look(frames=4)` —— 一次调用就把 4 张帧当附件交回来，不建虚拟屏、不起相机应用、也不截屏；`lw_mode {mode:"video"}` 那一步已经把相机开好了。
+- 分组递进：第一组 `frames=4`（默认），仍不确定时第二组 `frames=9`；**最多两组**，第二组还认不出来就停手反问一句，不再重拍。东西在动时用 `frames=12`。
+- 换镜头：`lw_look {lens:"front"}` 看用户自己、`{lens:"back"}`（默认）看前面；镜头是**粘的**，切过去之后下一次取景还在那一头。前后摄是两个设备，所以换一头就是一次开关（几百毫秒）。人在设备上也可以直接跑 `$DSH_HOME/modes/camera.sh front|back|status|off`（走同一条回环桥、同一次开关）；那一头设备上没有时如实说没有，不拿另一头顶上。
+- 相机是**独占**的：识图期间别去开系统相机应用；真被抢走时工具会说「被占用 / 断开了」，照实转告并停下，不反复重试。
 - 说话：只回 1–3 句，先结论后细节；不提工具名与过程，不罗列可能；没听清或指向不明时直接问一句，不猜、不硬答。
-- 收尾：用户说关闭虚拟屏时 → `lw_screen_release` 回收本模式建的屏（相机随之关闭）+ 清空本次全部截图（每帧 `.png` 与 `.model.png`，以及 sheet 拼图），回一句「已关闭并清空截图」。
+- 收尾：切回手机模式（`lw_mode {mode:"phone"}`）**自己收工** —— 摄像头还给系统、预览小窗收掉、这一趟抓的帧文件删掉，回一句「相机关了」。截图那条路已经不用了：不用再删 `/storage/emulated/0/DSH/screenshots/`，也不用 `lw_screen_release`。
 
 ## 运行期载体与安装
 
@@ -18,13 +19,13 @@
 
 ## 与手机模式（`presets/mobile-use`）的关系
 
-plugins 列表逐字相同（19 行），仅替换 `id / name / description / order` 与 persona。配套技能见 `skills/android-device-control/SKILL.md` 的七·五节（识物取图通用纪律：`count=4`、最多 5 组）；本预设按语音实时场景收紧为 `count=12`、最多 3 组，并在 persona 第 20 条声明冲突时以本预设为准。
+plugins 列表逐字相同（19 行），仅替换 `id / name / description / order` 与 persona。取景收敛为第一组 4 张、第二组 9 张、最多两组，并在 persona 第 20 条声明与技能 `android-device-control` 冲突时以本预设为准。
 
 ## 已知边界
 
-- 相机单实例：已在别处运行时 `lw_launch` 只把 intent 递给既有实例（回 WARNING），窗口不在本屏。
-- 每次截图落两档文件：全尺寸孪生 `.png` 与给模型的 `.model.png`，删一张要两张一起删；连拍另有 sheet 拼图。
+- 相机单实例：这条链开着的时候系统相机打不开（相机是独占的），反过来也一样；切回手机模式会把它还回去。
+- 抓下来的帧落在工作区的 `photos/`（`cam-<时间戳>-<序号>.jpg`），与截图那条路（`screenshots/`）不是一处；这一趟抓的帧在收工时由 `close clean` 删掉。
 - 逐张读图比只读回执重要；到上限仍看不清就如实说看不清，不编画面。
-- 虚拟屏跨会话共享：不是自己建的屏不要 `lw_screen_release`。
+- 开相机失败会如实报原因（没给相机权限 / 应用在后台而安卓不许后台用相机 / 相机被别的应用占着 / 没有这个方向的摄像头）：那是真话，不要当成"再看一次就有了"。
 
 许可：MIT（与 `presets/mobile-use` 同）。

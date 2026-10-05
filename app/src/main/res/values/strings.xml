@@ -86,7 +86,9 @@
     <string name="mode_video">video mode</string>
     <string name="settings_section_wake">Wake word</string>
     <string name="settings_wake_status">Listening</string>
-    <string name="settings_wake_state_listening">Listening for %1$s</string>
+    <string name="settings_wake_state_listening">Listening for %1$s; always-listening voice only opens after a hit</string>
+    <string name="settings_wake_state_voice">Listening for %1$s, and always-listening voice is running (a sentence goes out as soon as you stop talking)</string>
+    <string name="settings_wake_state_allowed">Allowed to wake, but the service is not running; turn the switch off and on again</string>
     <string name="settings_wake_state_idle">Not listening; the switch below starts it</string>
     <string name="settings_wake_hits">%1$d hit(s) since this run began</string>
     <string name="settings_wake_mic_missing">The microphone permission is not granted yet; the Permissions section below has the entry</string>
@@ -102,8 +104,10 @@
     <string name="settings_wake_words_summary">One word per line, written as word=pinyin with tone numbers, for example 大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2. The pinyin becomes the symbols the model knows, and anything missing from its table is refused instead of dropped quietly</string>
     <string name="settings_wake_words_saved">Saved: %1$s</string>
     <string name="settings_wake_words_unsaved">Not saved: %1$s</string>
-    <string name="settings_wake_listen">Keep listening</string>
-    <string name="settings_wake_listen_summary">On: the microphone stays open and the notification keeps a Stop button; a hit buzzes, beeps once and brings the app forward</string>
+    <string name="settings_wake_allow">Allow the wake word</string>
+    <string name="settings_wake_allow_summary">Let this app listen for the wake word (a local 3.3M keyword model, 5.3 MB). It is only permission: the microphone starts guarding that word once this is on, and the notification keeps a Stop button</string>
+    <string name="settings_wake_voice">Keep the voice chain resident</string>
+    <string name="settings_wake_voice_summary">On: the microphone stays open after a hit (the 240 MB on-device SenseVoice model comes into memory then), so you can keep talking. Off: each wake still buys one sentence - the chain closes again once you have said it, and the model goes back with it</string>
     <string name="settings_wake_need_model">The wake word model is not downloaded yet; the download row below is what gets it</string>
     <string name="wake_badge_listening">Listening</string>
     <string name="wake_badge_stop">Tap to stop listening</string>
