@@ -658,6 +658,14 @@ private fun SpeakItems() {
     LaunchedEffect(Unit) {
         voices = withContext(Dispatchers.IO) { LwSpeak.chineseVoices(context) }
     }
+    // 关掉朗读: 只关"回答落定就自动念"那条链, 手动让模型念 (lw_speak) 与下面那个试听不受影响 ——
+    // 有时就是不想要它出声, 而"要它念一句"仍然该是能做到的
+    SwitchPreference(
+        title = stringResource(R.string.settings_speak_auto),
+        summary = stringResource(R.string.settings_speak_auto_summary),
+        checked = SpeakSettings.readAloud,
+        onCheckedChange = { SpeakSettings.setReadAloud(context, it) },
+    )
     SwitchPreference(
         title = stringResource(R.string.settings_speak_follow),
         summary = stringResource(R.string.settings_speak_follow_summary),
@@ -806,12 +814,18 @@ private fun SpeakItems() {
         summary = stringResource(R.string.settings_speak_system_summary),
         onClick = { openTtsSettings(context) },
     )
-    // 试听: 音色与语速是耳朵判断的东西, 看一眼数字没有意义
+    // 试听: 音色与语速是耳朵判断的东西, 看一眼数字没有意义 —— 而**正在念的时候这一行就是停止**,
+    // 不然一段长回答只能等它念完 (两条引擎都停得下来, 见 LwSpeak.stop)
     ArrowPreference(
-        title = stringResource(if (speaking) R.string.settings_speak_previewing else R.string.settings_speak_preview),
-        summary = stringResource(R.string.settings_speak_preview_summary),
+        title = stringResource(if (speaking) R.string.settings_speak_stop else R.string.settings_speak_preview),
+        summary = stringResource(
+            if (speaking) R.string.settings_speak_previewing else R.string.settings_speak_preview_summary,
+        ),
         onClick = {
-            if (speaking) return@ArrowPreference
+            if (speaking) {
+                scope.launch { withContext(Dispatchers.IO) { runCatching { LwSpeak.stop() } } }
+                return@ArrowPreference
+            }
             speaking = true
             scope.launch {
                 withContext(Dispatchers.IO) { runCatching { LwSpeak.preview(context) } }

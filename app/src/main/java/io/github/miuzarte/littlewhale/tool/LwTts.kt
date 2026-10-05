@@ -68,6 +68,21 @@ internal object LwTts {
     /** 念的时候把引擎放掉用, 半双工那道闸与系统那条共用一个标记 */
     private val playing = AtomicBoolean(false)
 
+    /**
+     * 正在放的那一段
+     *
+     * 留一个引用是为了**停得下来**: `AudioTrack` 播完由标记回调叫醒, 而掐断之后那个回调不会再来,
+     * 所以停的时候除了停 track, 还要把等待叫醒, 不然一次"停止"要等到音频自然放完才生效
+     */
+    private class Playback(val track: AudioTrack, val latch: CountDownLatch)
+
+    @Volatile
+    private var current: Playback? = null
+
+    /** 这一次念有没有被叫停 (被叫停时报的是"停了", 不是"没放完") */
+    @Volatile
+    private var stopped = false
+
     /** 音色放在哪: 工作区根的 `voices/`。设置页把这条路径显示出来, 不然没人知道该往哪拷 */
     fun root(context: Context): File = File(Workspace.resolve(context).directory, ROOT)
 
@@ -124,12 +139,22 @@ internal object LwTts {
         val started = System.currentTimeMillis()
         VoiceState.speaking = true
         playing.set(true)
+        stopped = false
         try {
             pieces.forEach { piece ->
+                if (stopped) return "stopped on request before saying \"${piece.take(SCRIBBLE)}\""
                 val audio = tts.generate(piece, SPEAKER, speed)
+                // 生成这一段要几秒, 那期间被叫停就算停住了 —— **不能`接着放**然后再回一句"停了",
+                // 那是报了一件没发生的事 (2026-10-05 在真机上就是这么露出来的)
+                if (stopped) return "stopped on request before saying \"${piece.take(SCRIBBLE)}\""
                 if (audio.samples.isEmpty()) throw IllegalStateException("the model produced no audio")
                 if (!play(audio.samples, audio.sampleRate, piece.length)) {
-                    return "the model made ${audio.samples.size} samples but playback did not finish"
+                    // 被掐断与"没放完"是两件事, 分开说
+                    return if (stopped) {
+                        "stopped on request while saying \"${piece.take(SCRIBBLE)}\""
+                    } else {
+                        "the model made ${audio.samples.size} samples but playback did not finish"
+                    }
                 }
             }
         } catch (error: Throwable) {
@@ -137,6 +162,7 @@ internal object LwTts {
             return "the on-device engine failed: ${error.message ?: error}"
         } finally {
             playing.set(false)
+            current = null
             VoiceState.speaking = false
         }
         val taken = System.currentTimeMillis() - started
@@ -145,6 +171,29 @@ internal object LwTts {
 
     /** 正在出声 (供状态查询) */
     val speaking: Boolean get() = playing.get()
+
+    /**
+     * 掐断正在念的
+     *
+     * 三种情形分开说, 因为它们是三件事:
+     *
+     * - **正在放**: 停那块 track 并把等待叫醒 (推理那一步掐不断, 原生调用是阻塞的)
+     * - **正在生成还没出声**: 只立一个标记, 那一段生成完就不会再放 (原来这里是"什么都不做然后照放",
+     *   却在答案里说"停了" —— 报了一件没发生的事, 2026-10-05 真机上测出来的)
+     * - **什么都没在念**: 回 null, 由调用方如实说"没东西可停"
+     *
+     * @returns 一句人话说明停住了什么, 没东西可停时回 null
+     */
+    fun stop(): String? {
+        val busy = playing.get()
+        stopped = true
+        val held = current ?: return if (busy) "the reading was called off before it spoke" else null
+        runCatching { held.track.pause() }
+        runCatching { held.track.flush() }
+        held.latch.countDown()
+        Log.i(TAG, "on-device playback stopped on request")
+        return "the on-device playback was cut off"
+    }
 
     /** 把引擎还回去 (下一次 speak 会为当时那个目录再建一个) */
     fun release() {
@@ -267,12 +316,14 @@ internal object LwTts {
                 },
             )
             track.play()
+            current = Playback(track, latch)
             // 预算按音频长度给, 再加一段余量: 到点就说没放完, 不无限等
             val budget = (frames * 1000L / sampleRate) + PLAY_TAIL_MS
             val finished = latch.await(budget, TimeUnit.MILLISECONDS)
-            if (!finished) Log.w(TAG, "playback of $characters characters did not report finishing")
-            finished
+            if (!finished && !stopped) Log.w(TAG, "playback of $characters characters did not report finishing")
+            finished && !stopped
         } finally {
+            current = null
             runCatching { track.stop() }
             runCatching { track.release() }
         }
@@ -284,8 +335,16 @@ internal object LwTts {
     /** 单说话人模型都用 0 号; 多说话人的模型要挑声音时再说 */
     private const val SPEAKER = 0
 
-    /** 一段最多几个字: 太长会让一次推理的等待变得难熬, 也不利于中途停 */
-    private const val CHUNK_CHARS = 120
+    /**
+     * 一段最多几个字
+     *
+     * 这个数是**停止的粒度**: 一次推理掐不断 (原生调用是阻塞的), 所以"停"最迟在这一段生成完 + 放完
+     * 之后生效。原来给的 120 字能让一次叫停等上三秒, 60 字大约一半
+     */
+    private const val CHUNK_CHARS = 60
+
+    /** 被叫停时回话里带多少个字, 够认出停在哪一句就够 */
+    private const val SCRIBBLE = 12
 
     /** 模型目录里可能带的读法规则 (FST): 有就用, 顺序就是这个顺序 */
     private val RULE_FILES = listOf("date.fst", "number.fst", "phone.fst", "new_heteronym.fst")

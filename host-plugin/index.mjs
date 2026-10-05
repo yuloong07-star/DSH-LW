@@ -1541,6 +1541,9 @@ const TOOLS = [
             : 'the system engine'}`,
           `rate: ${answer.rateFollowsSystem ? 'whatever the system says' : `${answer.rate} x`}`
             + `, voice: ${answer.selectedVoice}`,
+          answer.readAloud === false
+            ? 'read-aloud: off (a finished reply is not read on its own; a line asked for by name still is)'
+            : 'read-aloud: on (every finished reply is read out loud)',
           `system engine ${answer.engine}`,
           `voices ${answer.voices}, Chinese: ${answer.chinese}`,
           answer.chineseVoices
@@ -1561,7 +1564,9 @@ const TOOLS = [
           + ' and reported it finished'
       }
       if (args.op === 'stop') {
-        return answer.stopped ? 'stopped' : `nothing was stopped: ${answer.detail}`
+        return answer.stopped
+          ? `stopped: ${answer.detail}`
+          : `nothing was stopped: ${answer.detail}`
       }
       return answer.released
         ? 'the engine was let go; the next call brings it up again'
@@ -1631,6 +1636,7 @@ const TOOLS = [
               + ` (${voiceDelivery.steered} steered, ${voiceDelivery.queued} queued)`
               + `${voiceDelivery.sessionId ? `, last to ${voiceDelivery.sessionId}` : ''}`,
             `${voiceReading.count} reply(ies) read aloud`
+              + `${voiceReading.skipped ? `, ${voiceReading.skipped} skipped because read-aloud is off` : ''}`
               + `${voiceReading.error ? `, last problem: ${voiceReading.error}` : ''}`,
             ...lines.map((line) => `  #${line.seq} ${line.text}`),
           ],
@@ -3211,7 +3217,7 @@ async function voiceDeliver(ctx, line) {
 /* ── 回答念出来 ───────────────────────────────────────────────────────────── */
 
 /** 最近一次朗读的去向, 给 lw_voice 看 */
-const voiceReading = { count: 0, last: null, error: null }
+const voiceReading = { count: 0, skipped: 0, last: null, error: null }
 
 /**
  * 一轮说完才念 (批次 2.3)
@@ -3256,13 +3262,23 @@ function startReadAloud(ctx) {
     if (text === undefined || event.data.reason?.kind !== 'completed') return
     const spoken = readAloudText(text)
     if (!spoken) return
-    voiceReading.count += 1
-    voiceReading.last = { at: Date.now(), characters: spoken.length, text: spoken }
-    voiceReading.error = null
-    // 不 await: 这是 emit 钩子, 念多久都不该把会话的事挡在后面
-    void call('speak', { op: 'speak', text: spoken })
+    // 设置页那个「自动朗读回答」关掉之后就不念 —— 开关在应用那一侧 (它与音色/语速放在一起),
+    // 所以这里先问一句。**读不到设定时照念**: 桥出错不该让这个功能静默消失, 只记一行
+    void call('speak', { op: 'status' })
+      .then((state) => {
+        if (state?.readAloud === false) {
+          voiceReading.skipped += 1
+          voiceReading.error = null
+          return null
+        }
+        voiceReading.count += 1
+        voiceReading.last = { at: Date.now(), characters: spoken.length, text: spoken }
+        voiceReading.error = null
+        // 不 await: 这是 emit 钩子, 念多久都不该把会话的事挡在后面
+        return call('speak', { op: 'speak', text: spoken })
+      })
       .then((answer) => {
-        if (answer.spoken) return
+        if (!answer || answer.spoken) return
         voiceReading.error = `the engine did not report finishing: ${answer.detail}`
         ctx.logger?.warn?.(voiceReading.error)
       })

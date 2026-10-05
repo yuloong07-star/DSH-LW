@@ -85,6 +85,8 @@ internal object LwSpeak {
             // 朗读用的是哪条引擎: 系统那条还是自带那条 (自带那条的音色是主人自己放进来的目录)
             // **键名不能叫 engine**: 那个键上面已经用来报系统引擎的包名了
             put("readingWith", if (SpeakSettings.usesOnDevice()) "on-device" else "system")
+            // 自动念那条链在宿主那侧, 所以这个开关必须报出去 —— 它据此决定要不要念
+            put("readAloud", SpeakSettings.readAloud)
             put("onDeviceModel", SpeakSettings.model ?: "")
             put(
                 "onDeviceVoices",
@@ -236,24 +238,38 @@ internal object LwSpeak {
         }
     }
 
-    /** 掐断正在念的, 队列里的也一起 */
-    private fun stop(): JsonObject {
+    /**
+     * 掐断正在念的
+     *
+     * **两条引擎都要停**: 原来只停了系统那条 (`tts.stop()`), 而自带那条正在放的是我们自己的
+     * `AudioTrack` —— 用它念的时候"停止"会什么都不做 (2026-10-05 做停止按钮时发现的)。两边都叫一遍,
+     * 谁在放谁就停
+     */
+    internal fun stop(): JsonObject {
+        val onDevice = LwTts.stop()
         val tts = synchronized(lock) { engine }
-        if (tts == null) {
-            return buildJsonObject {
-                put("stopped", false)
-                put("detail", "no engine is loaded, so there is nothing to stop")
-            }
-        }
-        val result = tts.stop()
+        val result = tts?.stop()
         current = null
         // 掐断了就不能让那道半双工的闸一直关着
         VoiceState.speaking = false
+        val stopped = onDevice != null || result == TextToSpeech.SUCCESS
         return buildJsonObject {
-            put("stopped", result == TextToSpeech.SUCCESS)
-            put("detail", "stop said $result")
+            put("stopped", stopped)
+            put("onDevice", onDevice != null)
+            put(
+                "detail",
+                when {
+                    onDevice != null -> onDevice
+                    result == TextToSpeech.SUCCESS -> "the system engine stopped (it said $result)"
+                    tts == null -> "nothing was speaking"
+                    else -> "the system engine had nothing playing (it said $result)"
+                },
+            )
         }
     }
+
+    /** 现在有没有在念: ⋮ 菜单那条「停止朗读」据此决定要不要说自己没东西可停 */
+    internal val speakingNow: Boolean get() = current != null || LwTts.speaking
 
     /** 把引擎放掉: 下一次 status/speak 会重新初始化 */
     private fun release(): JsonObject {

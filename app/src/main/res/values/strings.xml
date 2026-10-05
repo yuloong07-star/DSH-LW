@@ -83,7 +83,12 @@
     <string name="settings_ocr_probe_busy">Checking...</string>
 
     <string name="settings_section_speak">Reading aloud</string>
-    <string name="settings_speak_follow">Follow the system speech rate</string>
+    <string name="settings_speak_auto">Read replies aloud</string>
+    <string name="settings_speak_auto_summary">On: every finished reply is read out loud. Off: nothing is read on its own, while asking for a line (lw_speak) and the Listen row below still work</string>
+    <string name="settings_speak_stop">Stop</string>
+    <string name="menu_stop_speaking">Stop reading aloud</string>
+    <string name="menu_stop_speaking_now">Cut off what is being read right now</string>
+    <string name="menu_stop_speaking_idle">Nothing is being read aloud</string>    <string name="settings_speak_follow">Follow the system speech rate</string>
     <string name="settings_speak_follow_summary">On: the rate set on the system\'s text-to-speech page is what you hear. Turning this off, or dragging the slider below, makes this app set its own</string>
     <string name="settings_speak_rate">Speech rate</string>
     <string name="settings_speak_rate_summary">%1$.2f x</string>

@@ -29,6 +29,7 @@ object SpeakSettings {
     private const val VOICE_KEY = "speak-voice"
     private const val ENGINE_KEY = "speak-engine"
     private const val MODEL_KEY = "speak-model"
+    private const val AUTO_KEY = "speak-read-aloud"
 
     /** 两条引擎: 系统的那个即时但只有它的音色; 自带的能换音色但慢一截 */
     enum class Engine { SYSTEM, ON_DEVICE }
@@ -64,6 +65,16 @@ object SpeakSettings {
     /** 两条条件都满足才走自带那条: 选了它、而且真的挑了一个音色 */
     fun usesOnDevice(): Boolean = engine == Engine.ON_DEVICE && model != null
 
+    /**
+     * 回答落定就自动念 (默认开)
+     *
+     * 关掉它只影响那条自动链: 模型点名要念 (`lw_speak`) 与设置页的试听照旧 —— 有时就是不想要它出声,
+     * 而"要它念一句"仍然该是能做到的。**这一条宿主那侧要去读** (自动念是宿主发起的), 所以它同时进
+     * `lw_speak op=status`
+     */
+    var readAloud: Boolean by mutableStateOf(true)
+        private set
+
     /** 出字那一刻要的那个数: null 表示"别动引擎的语速, 让它用系统那个" */
     fun effectiveRate(): Float? = if (followsSystem) null else rate
 
@@ -76,6 +87,13 @@ object SpeakSettings {
         engine = runCatching { Engine.valueOf(stored.getString(ENGINE_KEY, null).orEmpty()) }
             .getOrDefault(Engine.SYSTEM)
         model = stored.getString(MODEL_KEY, null)
+        readAloud = stored.getBoolean(AUTO_KEY, true)
+    }
+
+    /** 关掉/打开自动念 */
+    fun setReadAloud(context: Context, value: Boolean) {
+        readAloud = value
+        preferences(context).edit().putBoolean(AUTO_KEY, value).apply()
     }
 
     /** 换引擎: 挑自带那条但还没有音色时也收下 (设置页会提示去导入), 真正生效看 usesOnDevice */

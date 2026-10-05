@@ -18,6 +18,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
@@ -78,6 +79,7 @@ import io.github.miuzarte.littlewhale.channel.ScreenState
 import io.github.miuzarte.littlewhale.channel.VirtualScreen
 import io.github.miuzarte.littlewhale.host.DshHost
 import io.github.miuzarte.littlewhale.host.HostStatus
+import io.github.miuzarte.littlewhale.tool.LwSpeak
 import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
@@ -512,6 +514,16 @@ private fun mainMenu(
 ): List<DropdownEntry> {
     val context = LocalContext.current
     val screens = VirtualScreen.screens
+    // 「停止朗读」那一条要知道现在有没有在念: `LwSpeak` 那个标记不是 Compose 状态, 而菜单是随手打开
+    // 的, 所以这里半秒看一眼 (两次 volatile 读, 可以忽略), 一次都没念过时也就多几次空转
+    var voiceSpeaking by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            voiceSpeaking = LwSpeak.speakingNow
+            delay(500)
+        }
+    }
+    val idleHint = stringResource(R.string.menu_stop_speaking_idle)
     // 先算好: 下面那个下拉栏是 buildList 里拼的, 而那不是 composable 作用域, stringResource 进不去
     val windowToggle = stringResource(
         if (windowHidden) R.string.screen_window_show else R.string.screen_window_hide,
@@ -580,6 +592,20 @@ private fun mainMenu(
                     summary = "禁用以避免误操作",
                     selected = PreviewControl.allowed,
                     onClick = { PreviewControl.set(context, !PreviewControl.allowed) },
+                ),
+                // 停止朗读放一级菜单: 念一段长回答时要用它, 而那时人大多不在这块页面上, 一级菜单是
+                // 这个界面里最短的一条路 (设置页那一行也能停, 但要先进设置)
+                DropdownItem(
+                    text = stringResource(R.string.menu_stop_speaking),
+                    summary = if (voiceSpeaking) stringResource(R.string.menu_stop_speaking_now)
+                    else stringResource(R.string.menu_stop_speaking_idle),
+                    onClick = {
+                        if (voiceSpeaking) {
+                            LwSpeak.stop()
+                        } else {
+                            Toast.makeText(context, idleHint, Toast.LENGTH_SHORT).show()
+                        }
+                    },
                 ),
                 DropdownItem(
                     text = "设置",
