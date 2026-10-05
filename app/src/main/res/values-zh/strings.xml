@@ -84,6 +84,29 @@
 
     <string name="mode_phone">手机模式</string>
     <string name="mode_video">视频模式</string>
+    <string name="settings_section_wake">唤醒词</string>
+    <string name="settings_wake_status">监听状态</string>
+    <string name="settings_wake_state_listening">正在听「%1$s」</string>
+    <string name="settings_wake_state_idle">没在听; 打开下面那个开关就开始</string>
+    <string name="settings_wake_hits">这一次从起服务到现在命中 %1$d 次</string>
+    <string name="settings_wake_mic_missing">麦克风权限还没给, 下面「权限」那一段里有入口</string>
+    <string name="settings_wake_model_ready">模型已就绪: %1$d 个文件, 逐个对过 sha256</string>
+    <string name="settings_wake_model_missing">还没下过, 一共约 %1$s</string>
+    <string name="settings_wake_model_partial">对了 %1$d/%2$d 个文件, 按一下补齐</string>
+    <string name="settings_wake_download">下载唤醒词模型</string>
+    <string name="settings_wake_downloading">正在下 %1$s / %2$s</string>
+    <string name="settings_wake_failed">下载失败: %1$s</string>
+    <string name="settings_wake_words">唤醒词</string>
+    <string name="settings_wake_words_none">还没设过, 缺省是 %1$s</string>
+    <string name="settings_wake_words_now">现在是: %1$s</string>
+    <string name="settings_wake_words_summary">一行一个词, 写成 词=带音调数字的拼音, 例如 大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2; 拼音会转成模型自己的符号, 表里没有的会被拒绝而不是静默丢掉</string>
+    <string name="settings_wake_words_saved">已保存: %1$s</string>
+    <string name="settings_wake_words_unsaved">没保存: %1$s</string>
+    <string name="settings_wake_listen">一直听着</string>
+    <string name="settings_wake_listen_summary">开着时麦克风一直开着, 通知栏留一个「停止」; 命中会震一下, 响一声短提示音并把应用提到前面</string>
+    <string name="settings_wake_need_model">唤醒词模型还没下, 用下面那一行「下载唤醒词模型」</string>
+    <string name="wake_badge_listening">正在听</string>
+    <string name="wake_badge_stop">点一下关掉</string>
     <string name="settings_section_speak">朗读</string>
     <string name="settings_speak_auto">朗读回答</string>
     <string name="settings_speak_auto_summary">开着时每一轮回答落定就念出来; 关掉之后它不会自己出声, 而点名要念一句 (lw_speak) 与下面那个试听照旧</string>

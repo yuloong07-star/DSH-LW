@@ -11,6 +11,7 @@ import io.github.miuzarte.littlewhale.voice.VoiceState
 import io.github.miuzarte.littlewhale.wake.WakeWordModel
 import io.github.miuzarte.littlewhale.wake.WakeWordService
 import io.github.miuzarte.littlewhale.wake.WakeWordState
+import io.github.miuzarte.littlewhale.wake.WakeWordWords
 import io.github.miuzarte.littlewhale.wake.keywordName
 import io.github.miuzarte.littlewhale.wake.symbolsOf
 import io.github.miuzarte.littlewhale.wake.unknownTokens
@@ -41,6 +42,10 @@ internal object LwWakeWord {
     /** 词表文件名, 与模型自带的那个同名: 认的是内容, 不是名字 */
     private const val KEYWORDS_FILE = "keywords.txt"
 
+    /** 设置页那一份人写的词表 (友好格式) 存在与别处同一个偏好文件里 */
+    private const val STORE = "littlewhale"
+    private const val WORDS_KEY = "wake-words"
+
     /** 这一个能力的名字, 与设置页里那条一致 */
     private val microphone = Capability(
         name = "麦克风",
@@ -58,10 +63,52 @@ internal object LwWakeWord {
 
     /** 模型在哪儿: 缺省 filesDir/wake-word/kws-zipformer-wenetspeech-3.3M, 也可以点名别处 */
     private fun modelDirectory(context: Context, request: JsonObject): File =
-        request.stringOrNull("model")?.let { File(it) }
-            ?: File(File(context.filesDir, MODEL_ROOT), MODEL_NAME)
+        request.stringOrNull("model")?.let { File(it) } ?: directory(context)
+
+    /** 同一个缺省目录, 给不经过通道的调用方用 (下载器与设置页都要它) */
+    internal fun directory(context: Context): File = File(File(context.filesDir, MODEL_ROOT), MODEL_NAME)
 
     private fun keywordsFile(directory: File): File = File(directory, KEYWORDS_FILE)
+
+    /**
+     * 设置页那一份词表: 存的格式与人输入的一样 (`词=带音调数字拼音`), 没存过就是缺省那句
+     *
+     * 为什么不回读 keywords.txt: 那里面是 token 序列 (`d à f éi y ú @大肥鱼大肥鱼`), 给人编辑太难
+     * 看, 而两种写法说的本来就是同一件事
+     */
+    internal fun words(context: Context): String = context
+        .getSharedPreferences(STORE, Context.MODE_PRIVATE)
+        .getString(WORDS_KEY, null)
+        ?.takeIf { it.isNotBlank() }
+        ?: WakeWordWords.DEFAULT
+
+    /** 现在的词表里那几个显示名 (素云 / 大肥鱼大肥鱼 …), 没有词表就是空的 */
+    internal fun names(context: Context): List<String> {
+        val file = keywordsFile(directory(context))
+        if (!file.isFile) return emptyList()
+        return file.readLines().filter { it.isNotBlank() }.map { keywordName(it) }
+    }
+
+    /**
+     * 收下设置页编辑过的那段文本: 先逐行对符号表, 全对才写, 写完把友好格式一起存下来
+     *
+     * 抛出来的句子直接给界面念 —— 对不上 token 时说清是哪一个, 不装作写成功了
+     */
+    internal fun setWords(context: Context, text: String): List<String> {
+        val directory = directory(context)
+        val table = File(directory, "tokens.txt")
+        if (!table.isFile) {
+            throw IllegalArgumentException("模型还没下, 没有符号表可以核词表 (先按「下载唤醒词模型」)")
+        }
+        val lines = WakeWordWords.lines(text, symbolsOf(table))
+        if (lines.isEmpty()) throw IllegalArgumentException("词表不能是空的")
+        directory.mkdirs()
+        File(directory, KEYWORDS_FILE).writeText(lines.joinToString("\n") + "\n")
+        context.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit()
+            .putString(WORDS_KEY, text.trim())
+            .apply()
+        return lines.map { keywordName(it) }
+    }
 
     /** 引擎、模型与词表现在什么样: 页面与模型据此决定能不能开始听 */
     private fun status(context: Context, request: JsonObject): JsonObject {
@@ -248,13 +295,34 @@ internal object LwWakeWord {
 
     /** 停: 服务一停, 识别器、麦克风与那条常驻通知一起收 */
     private fun stop(context: Context): JsonObject {
-        val stopped = context.stopService(Intent(context, WakeWordService::class.java))
-        WakeWordState.listening = false
+        val stopped = hush(context)
         return buildJsonObject {
             put("stopped", true)
             put("hits", WakeWordState.hits)
             put("detail", if (stopped) "the listener was stopped" else "no listener was running")
         }
+    }
+
+    /**
+     * 起监听, 用缺省那几个数
+     *
+     * 设置页那个开关走这一条, 与通道那条 ([start]) 是同一个实现 —— 界面与模型各有一套参数的话,
+     * "开关开着而模型那边调到别处"这种状态迟早会出现
+     */
+    internal fun listen(context: Context): JsonObject = start(
+        context,
+        buildJsonObject {
+            put("threshold", DEFAULT_THRESHOLD)
+            put("score", DEFAULT_SCORE)
+            put("vibrateMs", DEFAULT_VIBRATE_MS)
+        },
+    )
+
+    /** 停监听: 回"有没有真的停掉一个" */
+    internal fun hush(context: Context): Boolean {
+        val stopped = context.stopService(Intent(context, WakeWordService::class.java))
+        WakeWordState.listening = false
+        return stopped
     }
 
     /** 与 sherpa-onnx 自己的缺省值一致 */

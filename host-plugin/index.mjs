@@ -19,7 +19,7 @@ import { connect } from 'node:net'
 
 import { createHash, randomUUID } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { join, dirname } from 'node:path'
@@ -1908,14 +1908,16 @@ const TOOLS = [
       + 'parameter zipformer, 16 kHz mono, nothing leaves the device and no API key is involved. '
       + 'op=status reports the model, the words being watched for, whether the microphone '
       + 'permission is granted, whether the listener is up and how many times it has fired; '
-      + 'op=prepare downloads the model once (about 5.5 MB) and writes the default word 素云; '
+      + 'op=prepare downloads the model once (about 5.3 MB, four files, each checked against a '
+      + 'pinned sha256) and writes the default word 大肥鱼大肥鱼; '
       + 'op=keywords replaces the word table (each word is given as 词=拼音, for example '
-      + '素云=su4 yun2 - the pinyin is what the model needs, see docs/wake-word.md); op=start '
+      + '大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2 - the pinyin is what the model needs, see '
+      + 'docs/wake-word.md); op=start '
       + 'starts the foreground listener, which keeps a notification with a 停止 button; op=stop '
       + 'ends it. What happens on a hit is onWake: app brings the app forward (default, and the '
       + 'one that works without the overlay permission), overlay floats the GUI window over '
       + 'whatever is on the screen. Two things to say plainly: the microphone is really on the '
-      + 'whole time while it listens, and a two syllable word like 素云 does get false hits, '
+      + 'whole time while it listens, and a short word does get false hits, '
       + 'so threshold is worth tuning on the real device.',
     parameters: {
       op: {
@@ -1928,7 +1930,8 @@ const TOOLS = [
         items: { type: 'string' },
         description:
           'For op=keywords (and for op=prepare, to override the default word): one "词=拼音" entry'
-          + ' per word, for example "素云=su4 yun2" or "小爱同学=xiao3 ai4 tong2 xue2". Tone numbers'
+          + ' per word, for example "大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2" or'
+          + ' "小爱同学=xiao3 ai4 tong2 xue2". Tone numbers'
           + ' are what the model wants; pinyin already carrying tone marks is accepted as it is',
       },
       lines: {
@@ -1936,7 +1939,8 @@ const TOOLS = [
         items: { type: 'string' },
         description:
           'For op=keywords: raw keyword lines in the model\'s own token form, for example'
-          + ' "s ù y ún @素云". Use this only when the pinyin route cannot say what you mean',
+          + ' "s ù y ún @素云" (the model\'s own keywords.txt shows this form). Use this only when the'
+          + ' pinyin route cannot say what you mean',
       },
       threshold: {
         type: 'number',
@@ -1980,7 +1984,12 @@ const TOOLS = [
       }
       if (args.op === 'prepare') {
         const info = await wakeWordPrepare(args.words)
-        return `the model is in ${info.directory} (${WAKEWORD_FILES.length} files, sha256 checked)`
+        return `the model is in ${info.directory} (${WAKEWORD_FILES.length} files, each checked`
+          + ` against its pinned sha256; downloaded ${info.fetched.length} just now:`
+          + ` ${info.fetched.join(', ') || 'nothing, it was already there'})`
+          + (info.pruned.length
+            ? `, removed ${info.pruned.length} file(s) from the other build: ${info.pruned.join(', ')}`
+            : '')
           + ` and the table holds: ${info.keywordNames || 'nothing'}. op=start is what begins listening`
       }
       if (args.op === 'keywords') {
@@ -2929,27 +2938,47 @@ async function speechTranscribe(wav, language) {
  * 符号表, 对不上就当面报错
  */
 
-/** 按文件取的那一份: ModelScope 上同名的中文 zipformer KWS (3.3M 参数) */
+/**
+ * 模型从我们自己那个 Release 取, 不从上游取
+ *
+ * 上游那两处 (ModelScope 与 sherpa-onnx 的 Release) 同名文件是**另外几次构建** —— 字节数略差
+ * 几百个, sha256 自然不同 (2026-10-05 逐文件比过)。既然这台手机上跑通的就是我们自己这一套, 那
+ * 清单、下载与运行时就对同一份文件说话, 不留下"文件表说的不是盘上那份"这种说不清的状态
+ */
+const WAKEWORD_RELEASE =
+  'https://github.com/yuloong07-star/DSH-LW/releases/download/models-kws-2024-01-01'
+
+/**
+ * 镜像优先: 这台设备上 github.com 直连只回 302, 真正的字节在 objects.githubusercontent.com 那
+ * 一跳上, 出不去; ghfast.top 前面挂一层实测 200, 而且逐字节对得上。两个都不是就把失败原样报出去
+ */
 const WAKEWORD_SOURCES = [
-  'https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=',
+  `https://ghfast.top/${WAKEWORD_RELEASE}`,
+  WAKEWORD_RELEASE,
 ]
 
-/** 字节数与 sha256 都是本机实测过的 (2026-10-04): 换包一定会被发现 */
+/**
+ * 只留 int8 那一套 (4 个文件, 约 5.3 MB, 适合手机 CPU)
+ *
+ * 字节数与 sha256 都是 GitHub Release 自己算的那份 (`assets[].digest`), 与本地文件逐个核过。
+ * 没量化那一套 (encoder 12 MB) 刻意不在表里: 两套并存时 [wakeWordModelOf] 按 `.int8.` 优先取,
+ * 取到哪一套就变成"谁先下的算谁的", 所以 [wakeWordPrune] 会把不属于这张表的 .onnx 删掉
+ */
 const WAKEWORD_FILES = [
   {
     name: 'encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx',
-    bytes: 4807159,
-    sha256: '017af32f2c0138f931d05fbc009ee864295e910aff304f77d2f563815fc834fb',
+    bytes: 4777666,
+    sha256: 'dd784973fc9d2fabb3b800d6dcd20fc3b0ca84f8e2415afe54b032878e447f4d',
   },
   {
     name: 'decoder-epoch-12-avg-2-chunk-16-left-64.onnx',
     bytes: 675349,
-    sha256: 'bb3d8640cc6a495088707173bc1707a8a4ffe014594fc9adcba8389e27d0339f',
+    sha256: 'fb581d6734511676e246e0dff2fea01b31b0913176cb3ca64576dbab0a177774',
   },
   {
     name: 'joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx',
-    bytes: 65208,
-    sha256: '431de10b554f134ef8af320feea2db337e641290449a3d3f6cb6e5f5fd2c9c3d',
+    bytes: 65242,
+    sha256: 'f79760052b87239e325f0567c752ad3130b30d92effb847d4307743c20c59a24',
   },
   {
     name: 'tokens.txt',
@@ -2958,8 +2987,12 @@ const WAKEWORD_FILES = [
   },
 ]
 
-/** 开门那一句; 改词表就是改这一行 (见 op=keywords) */
-const WAKEWORD_DEFAULT_WORDS = ['素云=su4 yun2']
+/**
+ * 开门那一句; 改词表就是改这一行 (见 op=keywords)
+ *
+ * 应用那一侧 (设置页「唤醒词」) 的缺省与这里必须一致, 两边都会写 keywords.txt, 而它认的是内容
+ */
+const WAKEWORD_DEFAULT_WORDS = ['大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2']
 
 /** 声母: 长在前, 免得 zh 被拆成 z + h */
 const PINYIN_INITIALS = [
@@ -3037,17 +3070,17 @@ function wakeWordLine(word, pinyin, symbols) {
   return `${tokens.join(' ')} @${word}`
 }
 
-/** "素云=su4 yun2" -> 一行; 没写等号就当成拼音与词同名的一对, 报错让人补上 */
+/** "大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2" -> 一行; 没写等号就当成拼音与词同名的一对, 报错让人补上 */
 async function wakeWordLinesFor(args, directory) {
   const raw = args?.lines?.length ? args.lines : null
   if (raw) return raw.map((line) => String(line).trim()).filter(Boolean)
   const pairs = args?.words?.length ? args.words : null
-  if (!pairs) throw new Error('op=keywords names the words: words=["素云=su4 yun2", ...]')
+  if (!pairs) throw new Error('op=keywords names the words: words=["大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2", ...]')
   const folder = directory ?? (await call('wakeword', { op: 'status' })).directory
   const symbols = await wakeWordSymbols(folder)
   return pairs.map((pair) => {
     const at = String(pair).indexOf('=')
-    if (at <= 0) throw new Error(`"${pair}" has to be 词=拼音, for example 素云=su4 yun2`)
+    if (at <= 0) throw new Error(`"${pair}" has to be 词=拼音, for example 大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2`)
     return wakeWordLine(String(pair).slice(0, at).trim(), String(pair).slice(at + 1), symbols)
   })
 }
@@ -3062,15 +3095,19 @@ async function wakeWordInspect() {
   return { ...info, present }
 }
 
-/** 取一次模型, 顺便把缺省词表写上; 已经有了就不动它 */
+/** 取一次模型, 顺便把缺省词表写上; 已经有了的就不动它 */
 async function wakeWordPrepare(words) {
   const before = await wakeWordInspect()
   await mkdir(before.directory, { recursive: true })
+  const fetched = []
   for (const file of WAKEWORD_FILES) {
     const target = join(before.directory, file.name)
     if (await speechSize(target) === file.bytes) continue
     await wakeWordDownload(file, target)
+    fetched.push(file.name)
   }
+  // 装完只留这一套: 见 WAKEWORD_FILES 上面那段, 两套并存时取哪一套不由这里说了算
+  const pruned = await wakeWordPrune(before.directory)
   if (words?.length) {
     const lines = await wakeWordLinesFor({ words }, before.directory)
     await call('wakeword', { op: 'keywords', lines })
@@ -3078,16 +3115,43 @@ async function wakeWordPrepare(words) {
     const lines = await wakeWordLinesFor({ words: WAKEWORD_DEFAULT_WORDS }, before.directory)
     await call('wakeword', { op: 'keywords', lines })
   }
-  return await wakeWordInspect()
+  return { ...(await wakeWordInspect()), fetched, pruned }
 }
 
-/** 与 speech 那一套同一个写法: 换镜像、对 sha256、失败不留半条文件 */
+/**
+ * 把不属于 [WAKEWORD_FILES] 的 .onnx 删掉, 回删掉的那些文件名
+ *
+ * tokens.txt 与词表留着不动 (词表是用户写的), 别的文件也不碰 —— 只清"同一件事的另一份构建"
+ */
+async function wakeWordPrune(directory) {
+  const keep = new Set(WAKEWORD_FILES.map((file) => file.name))
+  let entries = []
+  try {
+    entries = await readdir(directory)
+  } catch {
+    return []
+  }
+  const removed = []
+  for (const entry of entries) {
+    if (!entry.endsWith('.onnx') || keep.has(entry)) continue
+    await rm(join(directory, entry), { force: true })
+    removed.push(entry)
+  }
+  return removed
+}
+
+/**
+ * 与 speech 那一套同一个写法: 换镜像、对 sha256、失败不留半条文件
+ *
+ * 每一跳失败都把**是谁失败、为什么**记下来, 最后一跳也失败时把这几句一起报出去 —— 只回"下载失败"
+ * 会让"镜像没缓存"与"网络真不通"看起来一样
+ */
 async function wakeWordDownload(file, target) {
-  let failure = null
+  const attempts = []
   for (const base of WAKEWORD_SOURCES) {
     const partial = `${target}.part`
     try {
-      const response = await fetch(`${base}${encodeURIComponent(file.name)}`)
+      const response = await fetch(`${base}/${file.name}`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const digest = createHash('sha256')
       const meter = new Transform({
@@ -3102,11 +3166,11 @@ async function wakeWordDownload(file, target) {
       await rename(partial, target)
       return
     } catch (error) {
-      failure = error
+      attempts.push(`${new URL(base).host}: ${error?.message ?? error}`)
       await rm(partial, { force: true })
     }
   }
-  throw new Error(`could not download ${file.name}: ${failure?.message ?? failure}`)
+  throw new Error(`could not download ${file.name} (${attempts.join('; ')})`)
 }
 
 /* ------------------------------------------------------------------ reading aloud */

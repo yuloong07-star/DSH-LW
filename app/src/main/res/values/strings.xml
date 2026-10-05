@@ -84,6 +84,29 @@
 
     <string name="mode_phone">phone mode</string>
     <string name="mode_video">video mode</string>
+    <string name="settings_section_wake">Wake word</string>
+    <string name="settings_wake_status">Listening</string>
+    <string name="settings_wake_state_listening">Listening for %1$s</string>
+    <string name="settings_wake_state_idle">Not listening; the switch below starts it</string>
+    <string name="settings_wake_hits">%1$d hit(s) since this run began</string>
+    <string name="settings_wake_mic_missing">The microphone permission is not granted yet; the Permissions section below has the entry</string>
+    <string name="settings_wake_model_ready">Model ready: %1$d files, each checked against its sha256</string>
+    <string name="settings_wake_model_missing">Not downloaded yet, about %1$s in all</string>
+    <string name="settings_wake_model_partial">%1$d of %2$d files are in place; tap to fetch the rest</string>
+    <string name="settings_wake_download">Download the wake word model</string>
+    <string name="settings_wake_downloading">Downloading %1$s of %2$s</string>
+    <string name="settings_wake_failed">Download failed: %1$s</string>
+    <string name="settings_wake_words">Wake word</string>
+    <string name="settings_wake_words_none">Nothing set yet; the default is %1$s</string>
+    <string name="settings_wake_words_now">Now: %1$s</string>
+    <string name="settings_wake_words_summary">One word per line, written as word=pinyin with tone numbers, for example 大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2. The pinyin becomes the symbols the model knows, and anything missing from its table is refused instead of dropped quietly</string>
+    <string name="settings_wake_words_saved">Saved: %1$s</string>
+    <string name="settings_wake_words_unsaved">Not saved: %1$s</string>
+    <string name="settings_wake_listen">Keep listening</string>
+    <string name="settings_wake_listen_summary">On: the microphone stays open and the notification keeps a Stop button; a hit buzzes, beeps once and brings the app forward</string>
+    <string name="settings_wake_need_model">The wake word model is not downloaded yet; the download row below is what gets it</string>
+    <string name="wake_badge_listening">Listening</string>
+    <string name="wake_badge_stop">Tap to stop listening</string>
     <string name="settings_section_speak">Reading aloud</string>
     <string name="settings_speak_auto">Read replies aloud</string>
     <string name="settings_speak_auto_summary">On: every finished reply is read out loud. Off: nothing is read on its own, while asking for a line (lw_speak) and the Listen row below still work</string>

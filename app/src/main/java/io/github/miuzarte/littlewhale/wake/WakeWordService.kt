@@ -9,6 +9,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.IBinder
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -386,8 +388,8 @@ class WakeWordService : Service() {
     /**
      * 听到了一次
      *
-     * 三件事都做, 顺序是"先让人知道, 再叫起来": 震动是当场的手感, 通知是事后看得见的记录,
-     * 唤起才是这个功能的目的。任何一步失败都不该把监听带走, 所以各自 runCatching
+     * 四件事都做, 顺序是"先让人知道, 再叫起来": 震动与那一声短提示音是当场的手感, 通知是事后看得
+     * 见的记录, 唤起才是这个功能的目的。任何一步失败都不该把监听带走, 所以各自 runCatching
      */
     private fun hit(keyword: String) {
         WakeWordState.hits += 1
@@ -395,6 +397,7 @@ class WakeWordService : Service() {
         WakeWordState.lastHitAt = System.currentTimeMillis()
         Log.i(TAG, "heard $keyword (${WakeWordState.hits} so far)")
         if (vibrateMs > 0) runCatching { buzz(vibrateMs.toLong()) }
+        runCatching { beep(BEEP_MS) }
         runCatching { announce(heardText(keyword)) }
         runCatching { wake(keyword) }
     }
@@ -458,6 +461,23 @@ class WakeWordService : Service() {
         val manager = getSystemService(VibratorManager::class.java)
         val device = manager?.defaultVibrator ?: getSystemService(Vibrator::class.java)
         device?.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
+    }
+
+    /**
+     * 命中那一声短提示音
+     *
+     * 手机可能扣在桌上或者静音, 所以它不是唯一的反馈 (震动与通知都在), 但它是"当场就听见"的那一条。
+     * 造一个用完就放: ToneGenerator 会占着音频输出, 而命中一次与下一次之间可能隔着几小时 —— 留着
+     * 一个常驻的实例换不来什么。放的那一下要等它响完, 所以放在另一条线程上睡一下再放, 不挡命中
+     * 之后的唤起
+     */
+    private fun beep(ms: Int) {
+        val generator = ToneGenerator(AudioManager.STREAM_NOTIFICATION, TONE_VOLUME)
+        generator.startTone(ToneGenerator.TONE_PROP_BEEP, ms)
+        Thread {
+            runCatching { Thread.sleep(ms + 200L) }
+            runCatching { generator.release() }
+        }.start()
     }
 
     /**
@@ -581,6 +601,10 @@ class WakeWordService : Service() {
         private const val DEFAULT_THRESHOLD = 0.25
         private const val DEFAULT_SCORE = 1.5
         private const val DEFAULT_VIBRATE_MS = 200
+
+        /** 命中那一声短提示音: 一个系统自带的气泡音, 够短也够认得出, 音量取 ToneGenerator 的 0..100 */
+        private const val BEEP_MS = 120
+        private const val TONE_VOLUME = 80
 
         /**
          * 等着认的段最多几段

@@ -1,9 +1,11 @@
 package io.github.miuzarte.littlewhale.ui
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -19,6 +21,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -26,10 +30,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -47,23 +56,30 @@ import io.github.miuzarte.littlewhale.host.HostSettings
 import io.github.miuzarte.littlewhale.scaffolds.ArrowSlider
 import io.github.miuzarte.littlewhale.scaffolds.LazyColumn
 import io.github.miuzarte.littlewhale.scaffolds.SectionSmallTitle
+import io.github.miuzarte.littlewhale.scaffolds.SuperTextField
 import io.github.miuzarte.littlewhale.theme.MonetKeyColorOptions
 import io.github.miuzarte.littlewhale.theme.ThemeSettings
 import io.github.miuzarte.littlewhale.theme.ThemeStore
 import io.github.miuzarte.littlewhale.tool.LwSpeak
 import io.github.miuzarte.littlewhale.tool.LwTts
+import io.github.miuzarte.littlewhale.tool.LwWakeWord
 import io.github.miuzarte.littlewhale.tool.SpeakSettings
 import io.github.miuzarte.littlewhale.util.Grant
 import io.github.miuzarte.littlewhale.util.PermissionCatalog
 import io.github.miuzarte.littlewhale.util.PermissionGate
 import io.github.miuzarte.littlewhale.util.PermissionRequests
+import io.github.miuzarte.littlewhale.wake.WakeWordDownload
+import io.github.miuzarte.littlewhale.wake.WakeWordState
+import io.github.miuzarte.littlewhale.wake.WakeWordWords
 import io.github.miuzarte.littlewhale.workspace.Workspace
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
@@ -73,11 +89,13 @@ import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.TabRow
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.icon.extended.More
 import top.yukonga.miuix.kmp.menu.OverlayIconDropdownMenu
+import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
@@ -272,6 +290,13 @@ fun SettingsScreen() {
                 SectionSmallTitle(stringResource(R.string.settings_section_ocr))
                 Card {
                     OcrItems()
+                }
+            }
+
+            item {
+                SectionSmallTitle(stringResource(R.string.settings_section_wake))
+                Card {
+                    WakeItems()
                 }
             }
 
@@ -837,6 +862,236 @@ private fun SpeakItems() {
 
 /** 音色在列表里的样子: 名字加地区, 因为同一个引擎常有 zh-CN 与 zh-TW 两条 */
 private fun voiceLabel(voice: Voice): String = "${voice.name} (${voice.locale.toLanguageTag()})"
+
+/**
+ * 唤醒词: 词表、模型与那个开关
+ *
+ * 三件事分三段说清, 因为它们的处置完全不同: **词表**是用户自己写的 (写错时 sherpa-onnx 会把整行
+ * 静默丢掉, 所以这里逐 token 核对后才写), **模型**是那 5.3 MB 的下载 (装完才对得上符号表), **开关**
+ * 是麦克风 (开着时通知栏留一条常驻, 上面一个「停止」)
+ *
+ * 每秒看一眼: 下载进度、监听状态、命中数都是别处改的 (服务在另一个进程状态里跑), 不轮询界面就是死的
+ * —— 这几条读的都是内存与四次 `File.length()`, 一秒一次的花销可以忽略
+ */
+@Composable
+private fun WakeItems() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var words by remember { mutableStateOf(LwWakeWord.words(context)) }
+    var names by remember { mutableStateOf(LwWakeWord.names(context)) }
+    var listening by remember { mutableStateOf(WakeWordState.listening) }
+    var hits by remember { mutableStateOf(WakeWordState.hits) }
+    var ready by remember { mutableStateOf(WakeWordDownload.readyCount(context)) }
+    var note by remember { mutableStateOf<String?>(null) }
+    var editing by remember { mutableStateOf(false) }
+    val total = WakeWordDownload.files.size
+    val microphone = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+        PackageManager.PERMISSION_GRANTED
+    // 这两句是给开关那个分支念的, 而 stringResource 不能进 when 的 lambda 里之后再取, 所以先取出来
+    val needModel = stringResource(R.string.settings_wake_need_model)
+    val micMissing = stringResource(R.string.settings_wake_mic_missing)
+    LaunchedEffect(Unit) {
+        WakeWordDownload.refresh(context)
+        while (true) {
+            listening = WakeWordState.listening
+            hits = WakeWordState.hits
+            ready = WakeWordDownload.readyCount(context)
+            names = LwWakeWord.names(context)
+            delay(POLL_MS)
+        }
+    }
+    // fillMaxWidth 是必要的: 这一段的子项是纯文字, 撑不满宽度, 而 Miuix 的 Card 是包着内容的
+    Column(modifier = Modifier.fillMaxWidth().padding(UiSpacing.Large)) {
+        Text(
+            text = if (listening) {
+                stringResource(
+                    R.string.settings_wake_state_listening,
+                    names.joinToString("」「").ifEmpty { LwWakeWord.words(context) },
+                )
+            } else {
+                stringResource(R.string.settings_wake_state_idle)
+            },
+        )
+        if (hits > 0) {
+            Text(
+                text = stringResource(R.string.settings_wake_hits, hits),
+                modifier = Modifier.padding(top = UiSpacing.Medium),
+            )
+        }
+        if (!microphone) {
+            Text(text = micMissing, modifier = Modifier.padding(top = UiSpacing.Medium))
+        }
+        val problem = WakeWordState.lastError ?: note
+        if (problem != null) {
+            Text(text = problem, modifier = Modifier.padding(top = UiSpacing.Medium))
+        }
+    }
+    SwitchPreference(
+        title = stringResource(R.string.settings_wake_listen),
+        summary = stringResource(R.string.settings_wake_listen_summary),
+        checked = listening,
+        onCheckedChange = { wanted ->
+            note = if (wanted) {
+                when {
+                    // 缺什么先说什么, 不去替人按下那个 5 MB 的下载 (开关不该是一个下载按钮)
+                    !microphone -> micMissing
+                    ready < total -> needModel
+                    // 起不来时把原因原样说出来 (缺模型 / 缺词表各有各的说法), 不装作打开了
+                    else -> runCatching { LwWakeWord.listen(context) }.exceptionOrNull()?.let { throwable ->
+                        throwable.message ?: throwable.toString()
+                    }
+                }
+            } else {
+                LwWakeWord.hush(context)
+                null
+            }
+        },
+    )
+    // 下载那一条: 装完顺手把缺省词表写上并开始听 —— 人按下这个按钮就是为了"能用"
+    ArrowPreference(
+        title = stringResource(R.string.settings_wake_download),
+        summary = when {
+            WakeWordDownload.phase == WakeWordDownload.Phase.DOWNLOADING -> stringResource(
+                R.string.settings_wake_downloading,
+                "%.1f MB".format(WakeWordDownload.received / 1024.0 / 1024.0),
+                "%.1f MB".format(WakeWordDownload.total / 1024.0 / 1024.0),
+            )
+
+            WakeWordDownload.phase == WakeWordDownload.Phase.FAILED ->
+                stringResource(R.string.settings_wake_failed, WakeWordDownload.detail)
+
+            ready == total -> stringResource(R.string.settings_wake_model_ready, total)
+            ready == 0 -> stringResource(
+                R.string.settings_wake_model_missing,
+                "%.1f MB".format(WakeWordDownload.files.sumOf { it.bytes } / 1024.0 / 1024.0),
+            )
+
+            else -> stringResource(R.string.settings_wake_model_partial, ready, total)
+        },
+        onClick = {
+            // 下载中再按一下不该开第二趟: 两个线程往同一个 .part 上写就是坏文件
+            if (WakeWordDownload.phase == WakeWordDownload.Phase.DOWNLOADING) return@ArrowPreference
+            scope.launch {
+                note = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val said = WakeWordDownload.download(context)
+                        // 模型没下过时 keywords.txt 也还没写过: 补上缺省那一句再开始听
+                        if (LwWakeWord.names(context).isEmpty()) {
+                            LwWakeWord.setWords(context, LwWakeWord.words(context))
+                        }
+                        if (!WakeWordState.listening) {
+                            runCatching { LwWakeWord.listen(context) }
+                                .exceptionOrNull()
+                                ?.let { "$said, 但是没能开始听: ${it.message ?: it}" }
+                                ?: "$said, 已经开始听"
+                        } else {
+                            // 换了模型文件时正在跑的那一份要重新读: 停一下再起
+                            LwWakeWord.hush(context)
+                            runCatching { LwWakeWord.listen(context) }
+                                .exceptionOrNull()
+                                ?.let { "$said, 但是没能重新开始听: ${it.message ?: it}" }
+                                ?: "$said, 已重新开始听"
+                        }
+                    }.getOrElse { it.message ?: it.toString() }
+                }
+            }
+        },
+    )
+    ArrowPreference(
+        title = stringResource(R.string.settings_wake_words),
+        summary = if (names.isEmpty()) {
+            stringResource(R.string.settings_wake_words_none, WakeWordWords.DEFAULT)
+        } else {
+            stringResource(R.string.settings_wake_words_now, names.joinToString(", "))
+        },
+        onClick = { editing = true },
+    )
+    if (editing) {
+        // stringResource 不能在 runCatching 里调 (它不是组合上下文), 先把要念的两句取出来
+        val savedText = stringResource(R.string.settings_wake_words_saved, "")
+        val unsavedText = stringResource(R.string.settings_wake_words_unsaved, "")
+        WakeWordDialog(
+            initial = words,
+            onDismissRequest = { editing = false },
+            onConfirm = { text ->
+                editing = false
+                note = runCatching {
+                    val saved = LwWakeWord.setWords(context, text)
+                    words = text
+                    names = saved
+                    val said = savedText + saved.joinToString(", ")
+                    // 词表换了正在跑的那一份要重新读: 停一下再起才算真的换上了
+                    if (WakeWordState.listening) {
+                        LwWakeWord.hush(context)
+                        runCatching { LwWakeWord.listen(context) }
+                            .exceptionOrNull()
+                            ?.let { "$said, 但是重启监听失败: ${it.message ?: it}" }
+                            ?: said
+                    } else {
+                        said
+                    }
+                }.getOrElse { throwable ->
+                    unsavedText + (throwable.message ?: throwable.toString())
+                }
+            },
+        )
+    }
+}
+
+/**
+ * 词表那个编辑框
+ *
+ * 显示的是**人写的那种格式** (`词=带音调数字的拼音`), 不是 keywords.txt 里的 token 序列 —— 后者是
+ * 给 sherpa-onnx 看的, 让人编辑等于让人手算声调符号。两种写法由 [LwWakeWord.setWords] 翻译, 翻不
+ * 过去时它会说清是哪一个 token 对不上
+ */
+@Composable
+private fun WakeWordDialog(
+    initial: String,
+    onDismissRequest: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = stringResource(R.string.settings_wake_words),
+        summary = stringResource(R.string.settings_wake_words_summary),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismissRequest,
+    ) {
+        var text by rememberSaveable(initial) { mutableStateOf(initial) }
+        SuperTextField(
+            modifier = Modifier.padding(bottom = 16.dp),
+            value = text,
+            onValueChange = { text = it },
+            maxLines = 3,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        )
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                text = stringResource(R.string.button_cancel),
+                onClick = {
+                    haptic.contextClick()
+                    onDismissRequest()
+                },
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                text = stringResource(R.string.button_confirm),
+                onClick = {
+                    haptic.confirm()
+                    onConfirm(text)
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
+}
+
+/** 设置页那一段的轮询间隔: 只喂状态文字, 不用更快 */
+private const val POLL_MS = 1000L
 
 /**
  * 系统那个「文字转语音输出」页

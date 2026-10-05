@@ -10,6 +10,7 @@ import android.util.Log
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -80,6 +81,10 @@ import io.github.miuzarte.littlewhale.channel.VirtualScreen
 import io.github.miuzarte.littlewhale.host.DshHost
 import io.github.miuzarte.littlewhale.host.HostStatus
 import io.github.miuzarte.littlewhale.tool.LwSpeak
+import io.github.miuzarte.littlewhale.tool.LwWakeWord
+import io.github.miuzarte.littlewhale.wake.WakeWordDownload
+import io.github.miuzarte.littlewhale.wake.WakeWordState
+import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
@@ -664,6 +669,8 @@ private fun HostWebView(url: String, modifier: Modifier = Modifier) {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
                 CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                // 输入框旁边那个麦克风指示器要问的两件事都在 app 这一侧 (服务在不在听、点一下停)
+                addJavascriptInterface(WakeBridge(viewContext.applicationContext), WAKE_BRIDGE)
                 // The page is the whole product surface, so its own failures need somewhere to
                 // show up: status codes, load errors, and browser console lines all go to logcat
                 webViewClient = object : WebViewClient() {
@@ -685,6 +692,8 @@ private fun HostWebView(url: String, modifier: Modifier = Modifier) {
                         view.evaluateJavascript(SHELL_PROBE) { result ->
                             Log.i(WEB_TAG, "shell $result")
                         }
+                        // 每次文档加载都把那个指示器装回去: 它是我们画在页面上的, 换一次文档就没了
+                        view.evaluateJavascript(WAKE_BADGE_JS, null)
                     }
 
                     override fun onReceivedHttpError(
@@ -904,6 +913,170 @@ private const val SHELL_PROBE = """
     vh: vh,
     text: (document.body.innerText || '').slice(0, 80)
   })
+})()
+"""
+
+/** The name the page sees for the bridge above: `window.LittleWhale` */
+private const val WAKE_BRIDGE = "LittleWhale"
+
+/**
+ * 页面与 app 之间那一座桥: 只回答唤醒词那两件事
+ *
+ * 为什么不是 dsh 的 client 插件加一条私有路由: 那个指示器要显示的状态 (服务在不在听、命中了几次)
+ * 只有 app 这一侧知道, 而点它要停的也是 app 里那个前台服务 —— 插件跑在浏览器 JS 里, 两个都拿不到,
+ * 还得再连一条回 app 的通道; 而 dsh 的 client 插件是内部协议上的产物 (每个包跟着上游的 descriptors
+ * 与 codecs 走), 为一个小徽标挂一个包不划算。这条桥与一条路由的信任边界是一样的: 页面就是本机 host
+ * 发的那一个 (见上面 shouldOverrideUrlLoading 只放行 http/https), 而这两个方法都没有参数
+ */
+private class WakeBridge(private val context: Context) {
+
+    /** 现在什么样: 听不听、命中几次、看的是哪几个词 —— 一句 JSON, 页面照着画 */
+    @JavascriptInterface
+    fun state(): String = JSONObject().apply {
+        put("listening", WakeWordState.listening)
+        put("hits", WakeWordState.hits)
+        put("words", LwWakeWord.names(context).joinToString(", "))
+        put("ready", WakeWordDownload.present(context))
+        put("label", context.getString(R.string.wake_badge_listening))
+        put("stop", context.getString(R.string.wake_badge_stop))
+    }.toString()
+
+    /** 点一下就是关掉它: 服务停掉, 麦克风与通知栏那条常驻一起收 */
+    @JavascriptInterface
+    fun stop(): String {
+        LwWakeWord.hush(context)
+        return state()
+    }
+}
+
+/**
+ * 输入框上沿那个麦克风指示器
+ *
+ * 状态只有一条: **在听的时候才出来**, 用跳动的波形表示"麦克风开着", 点一下关掉 (上面的 [WakeBridge])
+ * —— 一直开着的麦克风必须有一眼看得见、一下就关得掉的地方, 通知栏那一条是后台时看的, 这一条是看着
+ * 会话时看的
+ *
+ * 位置是**算出来的**: 找到页面里那个输入框 (textarea 或 contenteditable), 贴在它上沿的左上角; 找不到
+ * 就退回右下角一个固定位置。所以不碰输入框自己的控件 (发送键那些还在原地), 也不依赖 dsh 的类名 ——
+ * 它换一次前端不该让这个徽标消失
+ *
+ * 样式一律用 CSSOM (`element.style.x = ...`) 与 JS 计时器来做, **不插样式表也不插 keyframes**: 页面
+ * 万一哪天带上 `style-src` 的 CSP, 内联样式表会被挡掉, 而这样写不受影响
+ */
+private const val WAKE_BADGE_JS = """
+(function () {
+  if (!window.LittleWhale) return
+  var ID = 'lw-wake-badge'
+  var TICK = 220
+  var POLL = 1000
+  var phase = 0
+  var last = null
+  function build() {
+    if (document.getElementById(ID) || !document.body) return
+    var badge = document.createElement('div')
+    badge.id = ID
+    var style = badge.style
+    style.position = 'fixed'
+    style.zIndex = '2147483646'
+    style.display = 'flex'
+    style.alignItems = 'center'
+    style.gap = '6px'
+    style.padding = '4px 10px 4px 8px'
+    style.borderRadius = '999px'
+    style.background = 'rgba(24,24,27,0.86)'
+    style.color = '#ffffff'
+    style.font = '12px/16px system-ui,-apple-system,sans-serif'
+    style.boxShadow = '0 2px 10px rgba(0,0,0,0.28)'
+    style.opacity = '0'
+    style.pointerEvents = 'none'
+    style.transition = 'opacity 200ms'
+    style.cursor = 'pointer'
+    var wave = document.createElement('span')
+    wave.style.display = 'flex'
+    wave.style.alignItems = 'flex-end'
+    wave.style.gap = '2px'
+    wave.style.height = '14px'
+    for (var i = 0; i < 5; i++) {
+      var bar = document.createElement('i')
+      bar.style.display = 'block'
+      bar.style.width = '2px'
+      bar.style.height = '3px'
+      bar.style.borderRadius = '1px'
+      bar.style.background = '#7ee787'
+      wave.appendChild(bar)
+    }
+    var text = document.createElement('span')
+    text.setAttribute('data-role', 'text')
+    badge.appendChild(wave)
+    badge.appendChild(text)
+    badge.onclick = function (event) {
+      event.preventDefault()
+      event.stopPropagation()
+      try { last = JSON.parse(window.LittleWhale.stop()) } catch (error) {}
+      draw(last, false)
+      bars(false)
+    }
+    document.body.appendChild(badge)
+  }
+  function place(badge) {
+    var editable = document.querySelector('textarea, [contenteditable="true"]')
+    if (editable) {
+      var box = editable.getBoundingClientRect()
+      if (box.width > 40 && box.height > 0) {
+        badge.style.left = Math.max(6, box.left + 2) + 'px'
+        badge.style.top = Math.max(6, box.top - 30) + 'px'
+        badge.style.right = 'auto'
+        badge.style.bottom = 'auto'
+        return
+      }
+    }
+    badge.style.left = 'auto'
+    badge.style.top = 'auto'
+    badge.style.right = '12px'
+    badge.style.bottom = '96px'
+  }
+  function draw(state, listening) {
+    var badge = document.getElementById(ID)
+    if (!badge) return
+    var live = listening || (state && state.listening)
+    if (!live) {
+      badge.style.opacity = '0'
+      badge.style.pointerEvents = 'none'
+      return
+    }
+    badge.style.opacity = '1'
+    badge.style.pointerEvents = 'auto'
+    place(badge)
+    var text = badge.querySelector('[data-role="text"]')
+    text.textContent = (state && state.label ? state.label : '') + (state && state.hits > 0 ? ' ' + state.hits : '')
+    badge.title = (state && state.words ? state.words + ' - ' : '') + (state && state.stop ? state.stop : '')
+  }
+  function bars(listening) {
+    var badge = document.getElementById(ID)
+    if (!badge) return
+    var all = badge.querySelectorAll('i')
+    for (var i = 0; i < all.length; i++) {
+      var height = 3
+      if (listening) height = 4 + Math.round(9 * (0.5 + 0.5 * Math.sin(phase + i * 1.7)))
+      all[i].style.height = height + 'px'
+    }
+  }
+  function refresh() {
+    build()
+    var state = null
+    try { state = JSON.parse(window.LittleWhale.state()) } catch (error) {}
+    last = state
+    draw(state, state && state.listening)
+    bars(state && state.listening)
+  }
+  // 问 app 一秒一次足够 (它那侧要读一次词表与四个文件的大小), 而波形按 220ms 跳 —— 状态缓存在这里,
+  // 不是每一帧都过一次桥
+  refresh()
+  setInterval(function () {
+    phase += 0.9
+    bars(last && last.listening)
+  }, TICK)
+  setInterval(refresh, POLL)
 })()
 """
 
