@@ -81,13 +81,34 @@ internal object LwSpeak {
             // 设置页里选的那两样: 语速跟不跟随系统、以及选了哪个音色
             put("rateFollowsSystem", SpeakSettings.followsSystem)
             put("rate", SpeakSettings.rate.toDouble())
+            // 音量 (百分数, 100 = 模型自己的电平)。**只有自带那条引擎吃得到** —— 系统那条与两条在线
+            // 引擎的音量都在它们自己手里 (在线那两条拿回来的是编码过的音频, 应用不解码就没有增益可加),
+            // 所以下面还会直说一句它管不到哪里
+            put("volume", SpeakSettings.volume.toDouble())
+            put("volumeRange", "${SpeakSettings.volumeRange.start.toInt()}..${SpeakSettings.volumeRange.endInclusive.toInt()}")
+            put("volumeAppliesTo", "on-device")
             put("selectedVoice", SpeakSettings.voice ?: "the engine's own default")
-            // 朗读用的是哪条引擎: 系统那条还是自带那条 (自带那条的音色是主人自己放进来的目录)
+            // 朗读用的是哪条引擎: 四条都报出来 (自带那条的音色是主人自己放进来的目录; 两条在线引擎
+            // 的音色在它们各自的服务那一侧)
             // **键名不能叫 engine**: 那个键上面已经用来报系统引擎的包名了
-            put("readingWith", if (SpeakSettings.usesOnDevice()) "on-device" else "system")
+            put(
+                "readingWith",
+                when {
+                    SpeakSettings.usesOnDevice() -> "on-device"
+                    SpeakSettings.usesEdge() -> "edge"
+                    SpeakSettings.engine == SpeakSettings.Engine.API -> "api"
+                    else -> "system"
+                },
+            )
             // 自动念那条链在宿主那侧, 所以这个开关必须报出去 —— 它据此决定要不要念
             put("readAloud", SpeakSettings.readAloud)
             put("onDeviceModel", SpeakSettings.model ?: "")
+            put("edgeVoice", SpeakSettings.edgeVoice)
+            // API 那条: 地址与模型/音色照报, **密钥只报"有没有"** (它不该出现在任何回执或日志里)
+            put("apiUrl", SpeakSettings.apiUrl)
+            put("apiKeySet", SpeakSettings.apiKey.isNotBlank())
+            put("apiModel", SpeakSettings.apiModel)
+            put("apiVoice", SpeakSettings.apiVoice)
             put(
                 "onDeviceVoices",
                 LwTts.list(context).joinToString(", ") { voice ->
@@ -107,7 +128,7 @@ internal object LwSpeak {
                     else -> "unknown ($chinese)"
                 },
             )
-            put("speaking", current != null)
+            put("speaking", current != null || LwEdgeTts.speaking || LwApiTts.speaking)
             put("utterances", spoken)
         }
     }
@@ -161,15 +182,48 @@ internal object LwSpeak {
             }
             val asked = request.numberOrNull("rate")?.toFloat()
             val speed = (asked ?: SpeakSettings.rate).coerceIn(0.5f, 2.0f)
-            val answer = LwTts.speak(context, voice, text, speed)
+            // 音量: 这次调用点名的 > 设置页里选的。**只有自带这条吃得到** (系统那条的增益握在引擎
+            // 自己手里, 见下面 status 里那句), 所以这个数在这里才是有用的
+            val wantedVolume = request.numberOrNull("volume")?.toFloat() ?: SpeakSettings.volume
+            val volume = wantedVolume.coerceIn(SpeakSettings.volumeRange.start, SpeakSettings.volumeRange.endInclusive)
+            val answer = LwTts.speak(context, voice, text, speed, volume / SpeakSettings.VOLUME_UNITY)
             val failed = !answer.startsWith("said ")
             return buildJsonObject {
                 put("spoken", !failed)
                 put("readingWith", "on-device")
                 put("voice", voice.name)
                 put("rate", speed.toDouble())
+                put("volume", volume.toDouble())
                 put("text", text)
                 put("characters", text.length)
+                put("detail", answer)
+            }
+        }
+        // 在线那两条: 语音在服务那一侧, 所以**音量那一条对它们不成立** (拿回来的是编码过的音频) ——
+        // 点名要了音量就必须如实说没生效, 而不是静默丢掉
+        if (SpeakSettings.usesEdge() || SpeakSettings.engine == SpeakSettings.Engine.API) {
+            val asked = request.numberOrNull("rate")?.toFloat()
+            val speed = (asked ?: SpeakSettings.rate).coerceIn(0.5f, 2.0f)
+            val edge = SpeakSettings.usesEdge()
+            val answer = if (edge) {
+                LwEdgeTts.speak(context, text, speed)
+            } else {
+                // 没填地址时这一句会直说缺什么 (见 LwApiTts.speak), 所以这里不另设闸
+                LwApiTts.speak(context, text, speed)
+            }
+            val failed = !answer.startsWith("said ")
+            return buildJsonObject {
+                put("spoken", !failed)
+                put("readingWith", if (edge) "edge" else "api")
+                put("voice", if (edge) SpeakSettings.edgeVoice else SpeakSettings.apiVoice)
+                put("rate", speed.toDouble())
+                put("text", text)
+                put("characters", text.length)
+                val askedVolume = request.numberOrNull("volume") != null
+                put("volumeIgnored", askedVolume)
+                if (askedVolume) {
+                    put("volumeNote", "the online engine keeps its own loudness, so that number did not apply")
+                }
                 put("detail", answer)
             }
         }
@@ -234,6 +288,13 @@ internal object LwSpeak {
             put("pieces", pieces.size)
             put("characters", text.length)
             put("waitedMs", budget)
+            // 点名要音量而这条引擎给不了, 那就要**说出来**: 静默丢掉参数等于报了一件没发生的事
+            // (系统那条的增益在引擎自己手里, 应用这一侧没有 API —— 见 status 里的 volumeAppliesTo)
+            val askedVolume = request.numberOrNull("volume") != null
+            put("volumeIgnored", askedVolume)
+            if (askedVolume) {
+                put("volumeNote", "the system engine keeps its own volume, so that number did not apply")
+            }
             put("detail", reported ?: if (finished) "the engine finished" else "still speaking after ${budget}ms")
         }
     }
@@ -247,18 +308,22 @@ internal object LwSpeak {
      */
     internal fun stop(): JsonObject {
         val onDevice = LwTts.stop()
+        // 在线那两条: 谁在放谁就停 (它们的播放器在 LwVoiceClip 里, 两条引擎各自记着自己的那一次)
+        val online = LwEdgeTts.stop() ?: LwApiTts.stop()
         val tts = synchronized(lock) { engine }
         val result = tts?.stop()
         current = null
         // 掐断了就不能让那道半双工的闸一直关着
         VoiceState.speaking = false
-        val stopped = onDevice != null || result == TextToSpeech.SUCCESS
+        val stopped = onDevice != null || online != null || result == TextToSpeech.SUCCESS
         return buildJsonObject {
             put("stopped", stopped)
             put("onDevice", onDevice != null)
+            put("online", online != null)
             put(
                 "detail",
                 when {
+                    online != null -> online
                     onDevice != null -> onDevice
                     result == TextToSpeech.SUCCESS -> "the system engine stopped (it said $result)"
                     tts == null -> "nothing was speaking"
@@ -269,7 +334,8 @@ internal object LwSpeak {
     }
 
     /** 现在有没有在念: ⋮ 菜单那条「停止朗读」据此决定要不要说自己没东西可停 */
-    internal val speakingNow: Boolean get() = current != null || LwTts.speaking
+    internal val speakingNow: Boolean
+        get() = current != null || LwTts.speaking || LwEdgeTts.speaking || LwApiTts.speaking
 
     /** 把引擎放掉: 下一次 status/speak 会重新初始化 */
     private fun release(): JsonObject {

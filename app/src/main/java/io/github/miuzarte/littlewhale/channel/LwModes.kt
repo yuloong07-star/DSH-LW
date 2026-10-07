@@ -3,6 +3,7 @@ package io.github.miuzarte.littlewhale.channel
 import android.content.Context
 import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.host.DshHost
+import io.github.miuzarte.littlewhale.tool.LwCamera
 import io.github.miuzarte.littlewhale.tool.LwWakeWord
 import io.github.miuzarte.littlewhale.wake.WakeWordState
 import java.io.File
@@ -11,29 +12,43 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /**
- * 模式: 手机模式与视频模式
+ * 模式: 手机模式 / 视频模式 / 识屏模式
  *
  * **只换提示词, 不换工具也不换预设**: dsh 拒绝让另一个预设接管一个已经起过轮次的会话
  * (`agent-preset/locked`), 而助手的提示词是 provider、**每一步组装都重读文件** (四环链, 见可行性稿
  * 3.1.3)。所以"中途换人设"的做法就是把另一份正文 cp 进 `dsh-custom-mode` 那个助手的 `prompt.md`,
  * 下一步模型请求读到的就是新内容 —— 不用重启、不用新开会话、也不动 dsh 的预设闸
  *
- * 两份正文随 APK 发 (`assets/modes/<名字>.md`), 首启落到 `$DSH_HOME/modes/`, 落在那里是因为主人
+ * 三份正文随 APK 发 (`assets/modes/<名字>.md`), 首启落到 `$DSH_HOME/modes/`, 落在那里是因为主人
  * 可以自己改 —— 改完下一次切过去就用新的那份
+ *
+ * **一次切换 = 一次桥调用** (`mode`): 提示词、摄像头、常驻语音三件事都在 [set] 里做完, 而设备上
+ * 三个对应的脚本 (`phone.sh` / `video.sh` / `screen.sh`) 各是同一个切换的另一扇门 —— 切模式时**只跑
+ * 对应的那一个**, 别的不做 (2026-10-06 主人的口径: 这样才快)
  *
  * 与前缀是不是"预设"无关: 只有 **`dsh-custom-mode`(自定义模式)那个助手**读这份文件, 别的预设
  * (手机模式 / 视频模式那两个 preset)的人设写在自己的 YAML 里, 切文件对它们没有影响
  */
 internal object LwModes {
 
-    /** 手机模式: 默认就是它 */
+    /** 手机模式: 默认就是它, 能看能动 */
     const val PHONE = "phone"
 
     /** 视频模式: 用本机摄像头 (Camera2 直连) 抓帧识图 */
     const val VIDEO = "video"
 
-    /** 两个模式各自的显示名, 报给模型时用它 */
-    private val NAMES = mapOf(PHONE to R.string.mode_phone, VIDEO to R.string.mode_video)
+    /** 识屏模式: 只认主屏 (displayId 0), 看与动都只落在这块屏上, 不碰虚拟屏 */
+    const val SCREEN = "screen"
+
+    /** 三个模式, 顺序就是 seed 与报出去 (`list`) 的顺序 */
+    val ALL = listOf(PHONE, VIDEO, SCREEN)
+
+    /** 三个模式各自的显示名, 报给模型时用它 */
+    private val NAMES = mapOf(
+        PHONE to R.string.mode_phone,
+        VIDEO to R.string.mode_video,
+        SCREEN to R.string.mode_screen,
+    )
 
     /** 旧名字: 可行性稿里写的是 `assistant`, 留着当别名免得主人说惯了 */
     private const val PHONE_ALIAS = "assistant"
@@ -42,10 +57,7 @@ internal object LwModes {
     private const val ACTIVE = ".active"
     private const val CUSTOM_PROMPT = ".agent-presets/custom/prompt.md"
 
-    /** 视频模式那条常驻语音链留下的记号 (`voice-input.sh on` 写的): 它在 = "这条链要一直开着" */
-    private const val VOICE_MARKER = "voice-input.on"
-
-    /** `$DSH_HOME/modes`, 两份正文与 `.active` 都在这儿 */
+    /** `$DSH_HOME/modes`, 三份正文、那几个脚本与 `.active` 都在这儿 */
     fun modesDir(context: Context): File = File(dshHome(context), MODES_DIR)
 
     /** 那个助手的提示词文件, 切模式就是覆盖它 */
@@ -56,47 +68,60 @@ internal object LwModes {
         File(modesDir(context), ACTIVE).takeIf { it.isFile }?.readText()?.trim().orEmpty().ifEmpty { PHONE }
 
     /**
-     * 把两份正文从 APK 里放出来
+     * 把三份正文与那几个脚本从 APK 里放出来
      *
-     * **只写缺的那些**: 主人改过的那份不能被 APK 里的覆盖回去, 否则"可以自己改"就是一句空话
+     * **正文只写缺的那些**: 主人改过的那份不能被 APK 里的覆盖回去, 否则"可以自己改"就是一句空话
      * 已在设备上的 (手推的、主人改的) 一律留着
+     *
+     * **脚本每次都覆盖**, 与正文相反: 脚本是代码的一部分, 修一次就得跟着装机走进设备 —— 只写缺的
+     * 会让设备上那份旧拷贝永远留在那儿。这一条也是"切模式那一步不许调 [seed]"的理由: 每次切换都
+     * 重写几十 KB 的脚本是白花的
      */
     fun seed(context: Context): List<String> {
         val directory = modesDir(context)
         directory.mkdirs()
         val written = mutableListOf<String>()
-        listOf(PHONE, VIDEO).forEach { name ->
-            val target = File(directory, "$name.md")
-            if (target.isFile && target.length() > 0) return@forEach
-            runCatching {
-                context.assets.open("$MODES_DIR/$name.md").use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
-                }
-                written += name
-            }
+        ALL.forEach { name -> if (ensureBody(context, name)) written += name }
+        // 三个 `切模式` 脚本就是三个模式各自的**整个切换** (2026-10-06): 切模式时只跑对应的那一个,
+        // 别的什么都不做; camera.sh 不是切换, 它是视频模式里换镜头那一下 (走同一条回环桥)
+        listOf("camera.sh", "phone.sh", "video.sh", "screen.sh").forEach { name ->
+            if (copyScript(context, directory, name)) written += name
         }
-        // 两个脚本各放一份, 都是"人在设备上直接做一次"的事 (走的是与插件同一条回环桥):
-        // voice-input.sh 开/关那条常驻语音链的记号, camera.sh 切前摄/后摄 (前后摄是两个设备, 换一头
-        // 就是一次开关)
-        //
-        // **脚本每次都覆盖**, 与上面那两份正文相反: 正文是给主人改的 (只写缺的), 脚本是代码的一部分,
-        // 修一次就得跟着装机走进设备 —— 只写缺的会让设备上那份旧拷贝永远留在那儿
-        listOf("voice-input.sh", "camera.sh").forEach { name ->
-            val script = File(directory, name)
-            runCatching {
-                context.assets.open("$MODES_DIR/$name").use { input ->
-                    script.outputStream().use { output -> input.copyTo(output) }
-                }
-                script.setExecutable(true)
-                written += name
-            }
+        // 退役的脚本就地删掉 (留着就是设备上一份能跑起来的旧链路, 或者同一件事的第二扇门):
+        // `mode.sh` 是"建虚拟屏 + 起相机应用"的旧切换链路 (2026-10-05 摘掉); `voice-input.sh` 是切模式
+        // 的语音那一半 —— 它现在整个并进了那三个脚本里 (2026-10-06)
+        listOf("mode.sh", "voice-input.sh").forEach { name ->
+            val retired = File(directory, name)
+            if (retired.isFile) runCatching { retired.delete() }
         }
-        // 退役的脚本就地删掉: `mode.sh` 那一套是"建虚拟屏 + 起相机应用"的旧链路 (2026-10-05 摘掉),
-        // 而它曾经被放在这个目录里 —— 留着就是设备上一份能跑起来的旧链路
-        val retired = File(directory, "mode.sh")
-        if (retired.isFile) runCatching { retired.delete() }
         return written
     }
+
+    /**
+     * 只放这一份正文 (缺了才写), 回"这一次写了没有"
+     *
+     * 与 [seed] 分开是因为**切模式那一步不该做整套 seed**: 那个函数每次都把几个脚本从 APK 里重写
+     * 一遍, 而它排在切换里就是每次切都白写几十 KB —— 切换要快, 这条账是白花的
+     */
+    private fun ensureBody(context: Context, mode: String): Boolean {
+        val target = File(modesDir(context), "$mode.md")
+        if (target.isFile && target.length() > 0) return false
+        modesDir(context).mkdirs()
+        return runCatching {
+            context.assets.open("$MODES_DIR/$mode.md").use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+            }
+        }.isSuccess
+    }
+
+    /** 一个脚本: 打开可执行位, 回"放成了没有" (放不成不是致命的, 回执里不报它) */
+    private fun copyScript(context: Context, directory: File, name: String): Boolean = runCatching {
+        val script = File(directory, name)
+        context.assets.open("$MODES_DIR/$name").use { input ->
+            script.outputStream().use { output -> input.copyTo(output) }
+        }
+        script.setExecutable(true)
+    }.isSuccess
 
     /**
      * 首启把默认模式落到实处
@@ -119,7 +144,7 @@ internal object LwModes {
         return when (asked) {
             "", "status" -> status(context)
             "list" -> buildJsonObject {
-                put("modes", NAMES.keys.joinToString(", "))
+                put("modes", ALL.joinToString(", "))
                 put("active", active(context))
             }
 
@@ -127,94 +152,94 @@ internal object LwModes {
         }
     }
 
+    /**
+     * 切模式: **一次调用做完这一个模式要的全部事**
+     *
+     * 三笔账都在这里, 顺序是刻意的:
+     *
+     * 一、语音那一半 ([LwWakeWord.resident]): 只有视频模式要它 (主人 2026-10-06 定的口径 —— 常驻语音
+     *     只允许视频模式打开)。它排在写提示词之前, 因为提示词那一步可能因为目录不存在而做不成, 而
+     *     "进去就听不听得见"不该跟着那件事一起失效 —— 那正是"切了模式却要再喊一声"这个毛病
+     * 二、写提示词 + `.active`
+     * 三、相机那一半 ([LwCamera.warmUp] / [LwCamera.coolDown]): **只有提示词真的换成了才动它** ——
+     *     没换成就是还站在原来那个模式里, 那时把相机收掉才是错的。两半都**不等人** (开一条相机链要
+     *     几百毫秒, 排在回执里等它就是"说完切模式之后卡一下"), 所以回执说的是"正在开 / 正在收",
+     *     而真相由后来者拿 (`lw_look` 自己会等那把锁, 见 [LwCamera.warmUp])
+     *
+     * 这三件事**从前是插件那一侧拼出来的** (先调 `mode`, 再调 `camera`), 那样一次切换要两趟往返,
+     * 而且语音那一半还要在里面白等 600 ms。现在切模式走到这里就到底了, 插件与那三个设备端脚本都只发
+     * 一条命令 (2026-10-06 主人的口径: 切模式只跑对应的那一个脚本, 别的什么都不做)
+     */
     private fun set(context: Context, asked: String): JsonObject {
         val mode = when (asked) {
             PHONE, PHONE_ALIAS -> PHONE
             VIDEO -> VIDEO
+            SCREEN -> SCREEN
             else -> return buildJsonObject {
                 put("switched", false)
-                put(
-                    "detail",
-                    "unknown mode \"$asked\": this build has ${NAMES.keys.joinToString(" and ")}",
-                )
+                put("detail", "unknown mode \"$asked\": this build has ${ALL.joinToString(" and ")}")
             }
         }
-        seed(context)
+        // 只放这一份正文, **不做整套 seed**: 那几个脚本每次覆盖是"装了新版本要跟着走进设备"的意思,
+        // 排在切换里就是每次切换都白写几十 KB (见 [seed])
+        ensureBody(context, mode)
         val source = File(modesDir(context), "$mode.md")
         if (!source.isFile) {
             return buildJsonObject {
                 put("switched", false)
-                put("detail", "the body of $mode is missing: ${source.absolutePath} is not there")
-            }
-        }
-        val target = promptFile(context)
-        // parentFile 是可空的 (根目录上的文件就没有): 先拿在手里判一次, 别在后面每处都写 `!!`
-        val assistant = target.parentFile
-        if (assistant == null || !assistant.isDirectory) {
-            return buildJsonObject {
-                put("switched", false)
                 put(
                     "detail",
-                    "the custom-mode assistant is not installed: ${assistant?.absolutePath ?: target.path} does not exist," +
-                        " so there is no prompt file to write",
+                    "the body of $mode is missing: ${source.absolutePath} is not there",
                 )
             }
         }
-        // 先把旧的留一份: 这个文件是那个助手的全部人设, 覆盖错了就没有第二份
-        if (target.isFile) {
-            runCatching { target.copyTo(File(assistant, "prompt.md.before-$mode"), overwrite = true) }
-        }
-        target.writeText(source.readText())
-        File(modesDir(context), ACTIVE).writeText(mode)
-        // 视频模式是"说话为主"的, 所以**给它常驻语音那一个许可** —— 但许可不等于打开: 服务照旧只在
-        // 唤醒词命中之后才把切段与出字铺开 (状态机那条 ②, 主人 2026-10-05 定), 改动之前这里直接
-        // `op=start` 把整条常驻链起起来, 那是"设置开关 = 常驻监听"那个错换了个触发口
+        // 唤醒词那一个许可仍然一个字都不写 (主人 2026-10-05 的口径: 一个许可都不许自己打开):
+        // 它是主人在设置页上的决定, 这里只把它读出来照着报一句
         //
-        // **一个许可都不许自己打开** (三条路都是同一个错): 唤醒词那一个 (`W` 列 = 允许唤醒) 是主人
-        // 在设置页上的决定, 这里只把它读出来用; 关着时说清"是那个开关挡着", 而不是替人按下去
-        val listening = if (mode == VIDEO) runCatching {
-            val wakeAllowed = LwWakeWord.allow(context)
-            LwWakeWord.setAllow(context, wakeAllowed, true)
-            if (!wakeAllowed) {
-                "always-listening voice: allowed, but the allow-wake switch is off, so nothing is" +
-                    " listening; turn that on in the settings page"
-            } else if (WakeWordState.listening) {
-                // 已经在跑: 把新许可告诉它, 不必重启 (重启会丢掉命中计数与那半句正在说的话)
-                LwWakeWord.refresh(context)
-                "always-listening voice: allowed (the listener was already up)"
-            } else {
-                LwWakeWord.listen(context)
-                "always-listening voice: allowed and the wake word is listening"
-            }
-        }.getOrElse { error ->
-            "always-listening voice: could not be allowed (${error.message ?: error})"
+        // 类型写在这里而不是让它推: 上面那条会抛出 `null to "..."` (第一个 null 是"不知道"), 两边的
+        // 公共父类型是 `Pair<Boolean?, String?>`, 不写清楚的话 [refused] 那个签名就对不上
+        val resident: Pair<Boolean?, String?> =
+            runCatching { LwWakeWord.resident(context, mode == VIDEO, settle = false) }
+                .getOrElse { error ->
+                    null to "the resident voice chain could not be switched: ${error.message ?: error}"
+                }
+        // parentFile 是可空的 (根目录上的文件就没有): 先拿在手里判一次, 别在后面每处都写 `!!`
+        val target = promptFile(context)
+        val assistant = target.parentFile
+        if (assistant == null) {
+            return refused(mode, resident, "there is nowhere to write the prompt: ${target.path} has no directory")
         }
-        else null
-        // 切回手机模式是一次收工: 把常驻语音那一个许可收回去 (状态机那条 ④) —— 手机模式不是"说话为主",
-        // 留着它命中一次就会把那条链又拉起来, **唤醒词本身不动**, 而且那一个许可连读都不读、更不写:
-        // 它是主人在设置页上的决定, 这里伸手改一次就等于"切个模式, 设置被悄悄改了", 主人想整条停掉
-        // 有通知栏那个「停止」与设置页那个「允许唤醒」, 相机那一半由宿主那侧的 lw_mode 关 (它才知道
-        // 相机是不是这条链开的)
-        val teardown = if (mode == PHONE) runCatching {
-            LwWakeWord.setAllow(context, LwWakeWord.allow(context), false)
-            LwWakeWord.refresh(context)
-            val marker = File(modesDir(context), VOICE_MARKER)
-            val cleared = marker.isFile && marker.delete()
-            "always-listening voice: no longer allowed" +
-                (if (cleared) ", the asked-for marker is gone" else "")
-        }.getOrElse { error -> "disallowing the voice chain failed: ${error.message ?: error}" }
-        else null
+        // **缺目录就建**: 这个目录是那个助手的落脚处, 老机器上有 (装过旧 preset), 新装的机器上没有 ——
+        // 没有就什么都不写等于"模式切不了, 而工具只说一句 not installed"。建出来是最小的一步, 而它
+        // 仍然可能在别的 ROM 上失败 (只读挂载之类), 所以下面写文件那一步照样要判
+        if (!assistant.isDirectory) runCatching { assistant.mkdirs() }
+        val written = runCatching {
+            // 先把旧的留一份: 这个文件是那个助手的全部人设, 覆盖错了就没有第二份
+            if (target.isFile) target.copyTo(File(assistant, "prompt.md.before-$mode"), overwrite = true)
+            target.writeText(source.readText())
+            File(modesDir(context), ACTIVE).writeText(mode)
+            target.length()
+        }.getOrElse { error ->
+            return refused(
+                mode,
+                resident,
+                "the prompt for $mode could not be written to ${target.absolutePath}:" +
+                    " ${error.message ?: error}",
+            )
+        }
+        val camera = runCatching {
+            if (mode == VIDEO) LwCamera.warmUp(context) else LwCamera.coolDown(context)
+        }.getOrElse { error -> "the camera could not be switched: ${error.message ?: error}" }
         return buildJsonObject {
             put("switched", true)
             put("mode", mode)
             put("name", context.getString(NAMES.getValue(mode)))
-            put("characters", target.length())
-            listening?.let { put("listening", it) }
-            teardown?.let { put("teardown", it) }
-            // 两条链现在各在不在跑: 这一段答案里要有这个, 否则"许可给了"与"它真的在听"分不开 ——
-            // 而这两件事正是这次改动要分开的
+            put("characters", written)
+            put("camera", camera)
+            put("voice", resident.second ?: "")
             put("wakeWordListening", WakeWordState.listening)
-            put("alwaysListeningVoice", WakeWordState.voiceActive)
+            put("residentVoice", resident.first ?: (mode == VIDEO))
+            put("voiceActive", WakeWordState.voiceActive)
             put(
                 "detail",
                 "$mode is in place: the next model step of a session on the custom-mode assistant reads it",
@@ -222,18 +247,37 @@ internal object LwModes {
         }
     }
 
+    /** 切换没成时的回执: 语音那一半可能已经动过了, 所以说出来它现在是什么样 */
+    private fun refused(mode: String, resident: Pair<Boolean?, String?>, why: String): JsonObject =
+        buildJsonObject {
+            put("switched", false)
+            put("mode", mode)
+            put("residentVoice", resident.first ?: (mode == VIDEO))
+            put("voice", resident.second ?: "")
+            put("detail", why)
+        }
+
     private fun status(context: Context): JsonObject {
         val mode = active(context)
         val target = promptFile(context)
         return buildJsonObject {
             put("mode", mode)
-            put("name", context.getString(NAMES[mode] ?: R.string.mode_phone))
-            put("available", NAMES.keys.joinToString(", "))
+            put("name", label(context, mode))
+            put("available", ALL.joinToString(", "))
             put("promptFile", target.absolutePath)
             put("promptWritten", target.isFile)
             put("modesDirectory", modesDir(context).absolutePath)
         }
     }
+
+    /**
+     * 一个模式的显示名, 认不出的名字一律当手机模式
+     *
+     * **界面上那几处 (球, 通知栏) 走这一条**, 而不是自己写 `if (mode == VIDEO) ... else ...` ——
+     * 那种二选一在第三个模式出现之后会静默地把识屏模式报成「手机模式」(2026-10-06)
+     */
+    fun label(context: Context, mode: String? = null): String =
+        context.getString(NAMES[mode ?: active(context)] ?: R.string.mode_phone)
 
     private fun dshHome(context: Context): File = File(context.filesDir, DshHost.HOME_DIR)
 }

@@ -1,6 +1,8 @@
 package io.github.miuzarte.littlewhale
 
+import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -10,11 +12,14 @@ import io.github.miuzarte.littlewhale.channel.LwApps
 import io.github.miuzarte.littlewhale.channel.LwOcr
 import io.github.miuzarte.littlewhale.channel.PreviewControl
 import io.github.miuzarte.littlewhale.channel.ScreenshotBudget
+import io.github.miuzarte.littlewhale.host.BallReturn
 import io.github.miuzarte.littlewhale.host.DshHostService
+import io.github.miuzarte.littlewhale.overlay.OverlayService
 import io.github.miuzarte.littlewhale.theme.ThemeStore
 import io.github.miuzarte.littlewhale.tool.LwOverlay
 import io.github.miuzarte.littlewhale.tool.LwWakeWord
 import io.github.miuzarte.littlewhale.tool.SpeakSettings
+import io.github.miuzarte.littlewhale.tool.VideoLooks
 import io.github.miuzarte.littlewhale.ui.LittleWhaleApp
 import io.github.miuzarte.littlewhale.util.PermissionRequests
 
@@ -59,6 +64,9 @@ class MainActivity : ComponentActivity() {
         PreviewControl.initialize(this)
         // 截图缩到多少像素, 桥在第一次截图时就要用上
         ScreenshotBudget.initialize(this)
+        // 视频模式取景那三条 (张数 / 间隔 / 清晰度): 相机在第一次取景时就要用上, 而设置页也要在
+        // 画之前知道选的是哪几档
+        VideoLooks.initialize(this)
         // 朗读的音色与语速: 回答落定就念那条链要用, 而设置页也要在画之前知道选的是哪个
         SpeakSettings.initialize(this)
         // OCR 的模型是懒加载的 (第一次调它才建 session), 这里只把 context 挂上去
@@ -67,6 +75,10 @@ class MainActivity : ComponentActivity() {
         LwApps.attach(this)
         // The host deliberately outlives this activity, so the service owns its lifetime
         DshHostService.start(this)
+        // 冷启动那一档: 「回应用」把界面拉起来时带的就是"要落到哪一场对话"那个 id (见 onNewIntent)
+        val ball = intent?.getStringExtra(OverlayService.EXTRA_OPEN_SESSION)
+        Log.i(TAG, "created with open-session=$ball")
+        BallReturn.ask(ball)
         // 唤醒词那个许可是存盘的, 所以应用一起来就照着它把监听恢复起来 —— 不然"允许唤醒"只是个记号,
         // 服务不会自己起, 而主人按下它的意思显然是"让它听着", 缺模型 / 缺权限 / 许可关着时它什么都不做;
         // 起不来也不该把界面带走 (那是前台服务那一侧的事, 它会把原因记在状态里)
@@ -82,5 +94,25 @@ class MainActivity : ComponentActivity() {
                 launchNextPermission()
             }
         }
+    }
+
+    /**
+     * 「回应用」再点一次时走这一条 (SINGLE_TOP: 界面已经在栈里就不再新建一个)
+     *
+     * 那一件事本身 (让会话界面切到浮标那一场) 走 [BallReturn]: 这一次的 intent 里带没带那个 id 都要
+     * 传给它 —— 没带就什么都不做, 界面照旧只是被提到前面
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val ball = intent.getStringExtra(OverlayService.EXTRA_OPEN_SESSION)
+        // 这一行是「回应用」那一跳的证据: 它出现说明 intent 送到了界面, 不出现就是没送到
+        // (而"没送到"那一条已经由 `OverlayService.openApp` 直接写 [BallReturn] 兜住了)
+        Log.i(TAG, "onNewIntent open-session=$ball")
+        BallReturn.ask(ball)
+    }
+
+    private companion object {
+        private const val TAG = "LwMain"
     }
 }

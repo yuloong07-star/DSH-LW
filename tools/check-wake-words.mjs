@@ -38,7 +38,7 @@ function slice(from, to) {
 
 const body = [
   slice('const WAKEWORD_DEFAULT_WORDS', '/** 模型认得的那张符号表'),
-  slice('/** 一个词 + 它的拼音', '/** "大肥鱼大肥鱼=da4'),
+  slice('/** 一个词 + 它的拼音', '/** `肥鱼肥鱼=fei2 yu2 fei2 yu2`'),
 ].join('\n')
 
 const node = new Function(
@@ -158,6 +158,33 @@ check(
   [node.markedSyllable('nv3'), node.markedSyllable('nü3'), node.markedSyllable('nu:3')],
   ['nǚ', 'nǚ', 'nǚ'],
 )
+
+/**
+ * 6. **缺省那张词表两份实现必须同字** (2026-10-06 真机上分家过一次)
+ *
+ * 为什么值得单列一条: 缺省不是"一个常量", 它是**两个进程各自落盘时机不同**的一份写法 —— 应用在
+ * 启动与下载模型时写 `keywords.txt`, 插件在 `op=prepare` 时也写。两边只要差一个字, 设置页念出来的
+ * 就是另一个词 (主人 2026-10-06 报的正是"设置说明的唤醒词和真实的唤醒词不一致": 说明里写着
+ * 「肥鱼肥鱼」, 而设备上守着「大肥鱼大肥鱼」)
+ *
+ * 缺省现在是一张表 (本体加三条容错读音), 所以比的是**整张表的每一行**; 顺带钉住"第一条就是
+ * `DEFAULT` 那一条", 否则表改歪了而常量没动也看不出来。比的是显示名与拼音, 不比注释
+ */
+const kotlinDefault = (() => {
+  const match = /const val DEFAULT = "([^"]+)"/.exec(impl)
+  if (!match) throw new Error('WakeWordWords.kt 里找不到 DEFAULT')
+  return match[1]
+})()
+const kotlinWords = [
+  ...kotlinSlice(impl, 'internal val DEFAULT_WORDS', ')').matchAll(/"([^"]+)"/g),
+].map((one) => one[1])
+const pluginWords = (() => {
+  const match = /const WAKEWORD_DEFAULT_WORDS = \[([^\]]+)\]/.exec(plugin)
+  if (!match) throw new Error('index.mjs 里找不到 WAKEWORD_DEFAULT_WORDS')
+  return [...match[1].matchAll(/'([^']+)'/g)].map((one) => one[1])
+})()
+check('缺省词表两份实现同字', pluginWords, kotlinWords)
+check('缺省词表第一条就是 DEFAULT', kotlinWords[0], kotlinDefault)
 
 console.log(failures === 0 ? `\n两份实现没漂开, ${checks} 条判据全过` : `\n${failures} / ${checks} 条判据不过`)
 process.exit(failures === 0 ? 0 : 1)

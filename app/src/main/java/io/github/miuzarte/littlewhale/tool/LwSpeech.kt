@@ -9,6 +9,8 @@ import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
 import com.k2fsa.sherpa.onnx.VersionInfo
 import com.k2fsa.sherpa.onnx.WaveReader
 import io.github.miuzarte.littlewhale.voice.SpeechSegmenter
+import io.github.miuzarte.littlewhale.voice.TranscriptClean
+import io.github.miuzarte.littlewhale.voice.VoiceState
 import java.io.File
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -25,6 +27,10 @@ import kotlinx.serialization.json.put
  *
  * 三个动作: `status` 看模型与引擎在不在, `transcribe` 认一段录音, `release` 把认出来的实例
  * 放掉 —— SenseVoice int8 的模型是 240 MB 量级, 装进内存之后不便宜, 长时间不用值得放
+ *
+ * **两套引擎**: 这里这一套是 SenseVoice (快, 常驻语音链走它); 另有 [GlmAsr] 那一套
+ * (GLM-ASR-Nano, 1.5B, 准但慢一个数量级), 由 `engine` 这个参数选, 缺省还是 SenseVoice ——
+ * 换引擎是调用方的决定, 不是这里的默认
  */
 internal object LwSpeech {
 
@@ -73,8 +79,9 @@ internal object LwSpeech {
     fun dispatch(context: Context, request: JsonObject): JsonObject = when (val op = request.string("op")) {
         "status" -> status(context, request)
         "transcribe" -> transcribe(context, request)
-        "release" -> release()
-        else -> throw IllegalArgumentException("op has to be status, transcribe or release, not \"$op\"")
+        "release" -> release(request)
+        "warmup" -> warmUp(context, request)
+        else -> throw IllegalArgumentException("op has to be status, transcribe, warmup or release, not \"$op\"")
     }
 
     /** 引擎与模型现在什么样: 页面据此决定录音按钮能不能按 */
@@ -117,12 +124,27 @@ internal object LwSpeech {
             put("vadBytes", vad.length())
             put("loaded", held != null && held.directory == directory.absolutePath)
             put("languages", LANGUAGES.joinToString(", "))
+            // 另一套引擎的状态放在同一个答复里: 调用方问一次就知道两档各能不能用
+            put("glm", GlmAsr.status(context))
         }
     }
 
     /** 认一段录音: 只认 16 kHz 单声道的 WAV, 也就是页面那一侧录出来的样子 */
     private fun transcribe(context: Context, request: JsonObject): JsonObject {
         val path = request.string("wav")
+        if (engineOf(request) == GLM) {
+            val startedAt = System.currentTimeMillis()
+            val text = GlmAsr.transcribe(context, File(path))
+            return buildJsonObject {
+                // **出字之后过一遍清洁**: 修得回来的编码乱码修回来, 引擎不该说的那些文字丢掉
+                // (主人 2026-10-07 报的"识别时会出现乱码", 判据在 [TranscriptClean])
+                put("text", TranscriptClean.clean(text))
+                // 原始那一份也带上: 宿主那侧把它写进 transcripts.log, 下一次出乱码才有得对账
+                put("raw", text)
+                put("engine", GLM)
+                put("elapsedMs", System.currentTimeMillis() - startedAt)
+            }
+        }
         val recording = File(path)
         if (!recording.isFile) {
             unavailable("transcribing $path", "there is no such file")
@@ -156,7 +178,10 @@ internal object LwSpeech {
             }
         }
         return buildJsonObject {
-            put("text", text.trim())
+            // 与 GLM 那一条同一个清洁口 (两套引擎的输出都要过)
+            put("text", TranscriptClean.clean(text))
+            put("raw", text)
+            put("engine", ENGINE)
             put("language", language)
             put("sampleRate", wave.sampleRate)
             put("seconds", wave.samples.size.toDouble() / wave.sampleRate)
@@ -182,7 +207,16 @@ internal object LwSpeech {
             try {
                 stream.acceptWaveform(samples, SAMPLE_RATE)
                 recognizer.decode(stream)
-                recognizer.getResult(stream).text.trim()
+                // 清洁口就在出字这一处: 唤醒词那一条链 (常驻语音) 走的正是它
+                val raw = recognizer.getResult(stream).text
+                val clean = TranscriptClean.clean(raw)
+                // **丢掉了要说一声**: 那一句本来会作为"主人说的话"进会话, 静默丢掉等于点了一下没反应;
+                // 状态里留一句 (通知栏与 `wakeword op=status` 都读它), 而清掉是下一次成功出字时的事
+                if (clean.isEmpty() && raw.isNotBlank()) {
+                    VoiceState.lastError = "a segment came back as text this app cannot speak (" +
+                        raw.take(20) + "), so it was dropped"
+                }
+                clean
             } finally {
                 stream.release()
             }
@@ -233,8 +267,39 @@ internal object LwSpeech {
         return created
     }
 
+    /** 把 SenseVoice 那 240 MB 先读进内存, 等真要认的时候只剩推理 */
+    private fun warmUp(context: Context, request: JsonObject): JsonObject {
+        if (engineOf(request) == GLM) {
+            val ready = GlmAsr.warmUp(context)
+            return buildJsonObject { put("warmed", ready); put("engine", GLM) }
+        }
+        return buildJsonObject {
+            put("warmed", warmUp(context))
+            put("engine", ENGINE)
+        }
+    }
+
+    /**
+     * 把占着的识别器还回去: 下一次 transcribe 会为当时那套模型再建一个
+     *
+     * 不带 `engine` 就两套一起放 (那是"不听了, 把内存还回来"的意思); 点名一套只放那一套
+     */
+    private fun release(request: JsonObject): JsonObject {
+        val asked = request.stringOrNull("engine")
+        if (asked == GLM) {
+            return buildJsonObject { put("engine", GLM); put("glm", GlmAsr.release()) }
+        }
+        if (asked == ENGINE) {
+            return buildJsonObject { put("engine", ENGINE); put("sherpa", releaseSherpa()) }
+        }
+        return buildJsonObject {
+            put("sherpa", releaseSherpa())
+            put("glm", GlmAsr.release())
+        }
+    }
+
     /** 把占着的识别器还回去: 下一次 transcribe 会为当时那套模型再建一个 */
-    private fun release(): JsonObject {
+    private fun releaseSherpa(): JsonObject {
         val held = synchronized(lock) {
             val current = loaded
             loaded = null
@@ -258,4 +323,11 @@ internal object LwSpeech {
         val asked = value?.trim()?.lowercase().orEmpty()
         return if (asked in LANGUAGES) asked else "auto"
     }
+
+    /** 引擎那两个字: 不认识的一律落回 SenseVoice, 一个拼错的名字不该把转写变成"没有" */
+    private fun engineOf(request: JsonObject): String =
+        if (request.stringOrNull("engine")?.trim()?.lowercase() == GLM) GLM else ENGINE
+
+    const val ENGINE = "sherpa"
+    const val GLM = "glm"
 }

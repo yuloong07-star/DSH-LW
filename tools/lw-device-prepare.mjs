@@ -26,7 +26,12 @@ const toolName = readText('/data/local/tmp/lw-tool.txt', '') || 'lw_wakeword'
 const planFile = '/data/local/tmp/lw-plan.json'
 const fallback = [
   { op: 'status' },
-  { op: 'keywords', words: ['大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2'] },
+  { op: 'keywords', words: [
+    '肥鱼肥鱼=fei2 yu2 fei2 yu2',
+    '肥鱼肥鱼=hui2 yu2 hui2 yu2',
+    '肥鱼肥鱼=fei2 yi2 fei2 yi2',
+    '肥鱼肥鱼=hui2 yi2 hui2 yi2',
+  ] },
   { op: 'status' },
 ]
 let plan = fallback

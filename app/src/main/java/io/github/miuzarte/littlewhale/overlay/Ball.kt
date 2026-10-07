@@ -2,6 +2,7 @@ package io.github.miuzarte.littlewhale.overlay
 
 import android.animation.ValueAnimator
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
@@ -86,10 +87,11 @@ internal object BallGeometry {
     /**
      * 半隐比例: 贴边时藏起来的那一份球宽 (0 = 全露, 1 = 全藏)
      *
-     * 0.3 是开源那份 demo 用的数: 48 dp 的球藏掉 14 dp, 还剩 34 dp —— 空闲时那个字 (20 sp) 照旧
-     * 看得见, 而它在画面里占的地方一下子小了很多
+     * **主人 2026-10-05 点过名: "半隐藏"就是球的一半在屏幕外** —— 所以是 0.5, 不是参考那份 demo 的
+     * 0.3。48 dp 的球藏掉 24 dp, 而球体本身画在窗口中间那 45 dp 上 (见 [BallView.BALL_DRAW_DP]),
+     * 于是**看得见的那颗球正好一半留在屏外**: (24 - 1.5) / 45 = 0.5
      */
-    const val HALF_HIDE = 0.3f
+    const val HALF_HIDE = 0.5f
 
     /** 松手之后贴哪一边: 比两边的剩余距离, 近的那条 (参考那套的 `nearestEdge`) */
     fun snapX(x: Int, screenWidth: Int, ball: Int): Int {
@@ -152,7 +154,6 @@ internal object BallSpot {
     private const val KEY_EDGE = "ball-edge"
     private const val KEY_X = "ball-x"
     private const val KEY_Y = "ball-y"
-    private const val KEY_HINT = "ball-hint"
 
     fun on(context: Context): Boolean = prefs(context).getBoolean(KEY_ON, false)
 
@@ -160,12 +161,9 @@ internal object BallSpot {
         prefs(context).edit().putBoolean(KEY_ON, on).apply()
     }
 
-    /** 手势提示只给一次: 球一直挂着, 每次都弹就成了噪音 */
-    fun hintShown(context: Context): Boolean = prefs(context).getBoolean(KEY_HINT, false)
-
-    fun markHint(context: Context) {
-        prefs(context).edit().putBoolean(KEY_HINT, true).apply()
-    }
+    // **那个"手势提示只给一次"的记号已经删掉了** (2026-10-05 主人: 关于球的所有操作都不要有提示):
+    // 球一出来就弹一句 Toast 正是主人点名不要的那一种, 于是 `ball-hint` 这个键与读写它的两个方法
+    // 一起没了 —— 手势那几句话现在只在长按菜单里 (它自己写着「键盘输入 / 识屏模式 / 关掉浮标」)
 
     /** 存过的那一处, 没存过就是 null (调用方按"贴右、中下"那个缺省摆) */
     fun read(context: Context): Pair<String, Int>? {
@@ -232,21 +230,38 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
         setShadowLayer(3f, 0f, 1f, Color.argb(170, 0, 0, 0))
     }
 
-    /** 空闲时球上画的是应用自己那个标 (应用名与通知栏那个图标是同一个), 不写任何名字 */
+    /** 空闲时球上画的是 dsh 那只鲸鱼 (自适应图标的前景, **无背景**的那一份), 不写任何名字 */
     private val glyph = ImageView(context).apply {
-        setImageResource(R.drawable.ic_notification)
+        setImageResource(R.drawable.ic_launcher_foreground)
+        // 那只鲸鱼原本是深蓝的 (#1C2434), 在蓝紫球上看不清 —— 染成白的是同一份形状, 不是另一张图
+        imageTintList = ColorStateList.valueOf(TEXT)
         scaleType = ImageView.ScaleType.FIT_CENTER
         val pad = dp(GLYPH_PADDING_DP)
         setPadding(pad, pad, pad, pad)
     }
 
-    /** 蓝紫渐变那颗球: 底色是渐变, 描边跟着状态换 */
+    /**
+     * 蓝紫渐变那颗球: 底色是渐变, 描边跟着状态换
+     *
+     * **球体住在窗口里居中那一层上** ([BALL_DRAW_DP] = 45 dp, 窗口仍是 48 dp): 拖动时放大到 1.06 倍
+     * (47.7 dp) 正好还在窗口里, 而窗口是**照着 view 的测量尺寸**开的 —— 球画满 48 dp 的话, 放大
+     * 之后四边会超出窗口被裁掉一圈 (主人 2026-10-05 报的就是这个: "球形四边会超出边框, 四边被削掉
+     * 一部分")。放大与圆形裁剪都落在这层上, 所以图标与字也一起被裁进这颗球里
+     */
     private val circle = GradientDrawable().apply {
         shape = GradientDrawable.OVAL
         gradientType = GradientDrawable.LINEAR_GRADIENT
         orientation = GradientDrawable.Orientation.TL_BR
         colors = intArrayOf(FILL_FROM, FILL_TO)
         setStroke(dp(STROKE_DP), NEUTRAL)
+    }
+
+    /** 球体那一层: 45 dp 见方、居窗口正中, 放大缩的是它 */
+    private val core = FrameLayout(context).apply {
+        background = circle
+        clipToOutline = true
+        addView(glyph, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        addView(label, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
     }
 
     private var fill: ValueAnimator? = null
@@ -269,20 +284,25 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
         private set
 
     init {
-        background = circle
-        clipToOutline = true
-        addView(glyph, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        addView(label, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        // 那 3 dp 的余量是留给拖动放大的 (见 [core])
+        addView(
+            core,
+            LayoutParams(dp(BALL_DRAW_DP), dp(BALL_DRAW_DP), Gravity.CENTER),
+        )
         show(null, animate = false)
     }
 
     /**
      * 窗口那一侧给的是 WRAP_CONTENT, 所以尺寸由这里说了算: 一个正方形
      *
-     * 为什么不让文字自己撑: 空闲那一个字与状态那三个字宽度不同, 那样球会随状态忽大忽小
+     * **必须走 `super.onMeasure`**: 球体 (含图标与字) 是里面居中那一层, 只 `setMeasuredDimension`
+     * 的话孩子根本不会被量 —— 表现就是"球在视觉上看不见了" (2026-10-05 主人报的, 而且那次之前的
+     * 图标与状态词其实也一直没被画出来, 只是圆形底色挂在 view 自己身上, 所以看着像没问题)
      */
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val size = dp(BALL_SIZE_DP)
+        val exact = MeasureSpec.makeMeasureSpec(size, MeasureSpec.EXACTLY)
+        super.onMeasure(exact, exact)
         setMeasuredDimension(size, size)
     }
 
@@ -319,15 +339,15 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
         label.alpha = 1f
     }
 
-    /** 按下 / 拖动那两档尺寸: 手指按住要有回应, 拖起来要像"拿起来了" */
+    /** 按下 / 拖动那两档尺寸: 手指按住要有回应, 拖起来要像"拿起来了" (缩的是球体那一层) */
     private fun scaleTo(target: Float) {
         fill?.cancel()
-        fill = ValueAnimator.ofFloat(scaleX, target).setDuration(SCALE_MS).apply {
+        fill = ValueAnimator.ofFloat(core.scaleX, target).setDuration(SCALE_MS).apply {
             interpolator = DecelerateInterpolator()
             addUpdateListener { animator ->
                 val value = animator.animatedValue as Float
-                scaleX = value
-                scaleY = value
+                core.scaleX = value
+                core.scaleY = value
             }
             start()
         }
@@ -387,8 +407,16 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
-        /** D16 定的直径 (约 48 dp) */
+        /** D16 定的窗口尺寸 (约 48 dp): 窗口与命中范围都是它, **装了图标也不许改** */
         const val BALL_SIZE_DP = 48
+
+        /**
+         * 球体本身画多大: 45 dp, 比窗口小 3 dp
+         *
+         * 拖动时整颗球放大到 1.06 倍 = 47.7 dp, 正好还在 48 dp 的窗口里 —— 画满窗口的话放大那四边
+         * 会被窗口裁掉一圈
+         */
+        const val BALL_DRAW_DP = 45
 
         private const val LABEL_SP = 20f
 
@@ -401,7 +429,7 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
         private const val WORD_SP = 12f
 
         private const val STROKE_DP = 2
-        private const val GLYPH_PADDING_DP = 12
+        private const val GLYPH_PADDING_DP = 4
         private const val PRESS_SCALE = 0.94f
         private const val DRAG_SCALE = 1.06f
         private const val SCALE_MS = 120L

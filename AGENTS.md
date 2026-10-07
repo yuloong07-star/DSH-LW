@@ -39,7 +39,7 @@ LittleWhale 自己是一台**远程 dsh 服务器 + 一个安卓控制端**, 两
 
 dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器访问** (主题与字号存浏览器 `localStorage`, 手机与 PC 各一套), 移植时**不要把这些改动弄丢**
 
-**监听地址没有写死 `127.0.0.1`**: 设置页「网络」的开关让 host 以 `--host 0.0.0.0 --allow-lan` 启动 (fork 加的第二个旗标, 安全默认一个字没变), 别的设备用浏览器打开 LAN URL; `DshHost.remoteUrl` 从就绪行的 `(LAN: …)` 后缀里取 URL, **不自己枚举网卡**, 这样显示的地址与 host 认的 browser-trust 栅栏是同一个
+**监听地址没有写死 `127.0.0.1`**: 局域网开关 (`HostSettings.lanAccess`) 让 host 以 `--host 0.0.0.0 --allow-lan` 启动 (fork 加的第二个旗标, 安全默认一个字没变), 别的设备用浏览器打开 LAN URL; `DshHost.remoteUrl` 从就绪行的 `(LAN: …)` 后缀里取 URL, **不自己枚举网卡**, 这样显示的地址与 host 认的 browser-trust 栅栏是同一个 (**2026-10-06 起设置页没有那个开关了**, 改它要写 `littlewhale.xml` 再重启 host, 见下面「界面」那一条)
 
 **安卓侧两个已知的坑**: `os.cpus().length` 返回 **0**, dsh 里任何按 CPU 数并行的地方都要能容忍 0; 随包发的 node 有一批**写死的 Termux 路径**, `OPENSSL_CONF` / `SHELL` / `TMPDIR` 三个少一个都起不来 (见 `docs/host-build.md`)
 
@@ -101,9 +101,11 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **缩进与段间距统一由脚手架的 `LazyColumn` 给** (`scaffolds/LazyColumn.kt`: 页面左右 12dp + `itemSpacing` 12dp + 横屏限宽 + overscroll + 滚到底触感), **Card 不写水平外边距**; Miuix 的 `Card` 不带内边距, 带内边距的是设置项自己 (16dp), 所以**别再套一层 `padding(16.dp)`** (那就是 32dp); 按钮一律 `fillMaxWidth()`
 - 过渡风格只有 `Miuix` / `AOSP` 两项, **没有 "无"**; AOSP 那套手感是搬来的 `ui/CrossActivityTransition.kt` (Miuix 0.9.4 的 `NavTransitions` 里没这个预设), 选中时 `cornerClipMode` 跟着换成 `All`
 - 系统栏图标深浅由 `theme/SystemBars.kt` 按**实际渲染出来的配色**定, 在 `MiuixTheme` 里调一次; **顶栏没有模糊也没有那个选项** (画面自己不透明, 糊了没人看得见)
-- **设置页右上角有一个 ⋮**: 要重启 host 才生效的改动 (工作区授权 / 局域网开关) 全收在那一个菜单里, 以后加选项就是往那个 `items` 里再加一条; 注意 **material3 不是本项目的依赖** (只有 `material3-window-size-class`), 没有 `androidx.compose.material3.DropdownMenu` 可用
+- **设置页右上角有一个 ⋮**: 要重启 host 才生效的改动全收在那一个菜单里 (现在这一条就是「重启 DSH host」), 以后加选项就是往那个 `items` 里再加一条; 注意 **material3 不是本项目的依赖** (只有 `material3-window-size-class`), 没有 `androidx.compose.material3.DropdownMenu` 可用
+- **设置页没有「工作区」与「网络」两段** (2026-10-06 撤掉, 见 `docs/ui-record.md` 第七轮): 工作区落在哪是 host 启动时按 `Workspace.resolve` 那三档自己挑的, 网络那个开关 (局域网) 改完也要重启 host —— 两者都是"平时不用动"的。**能力一个都没删**: `Workspace` 三档解析 / `Workspace.requestAllFilesAccess` / `HostSettings.lanAccess` 与 ⋮ 里那条重启照旧, 只是不再有这两个设置入口 (要开所有文件访问就 `tools/lw-install.ps1`, 要开局域网就写偏好 + 重启 host)
 - **「截图」那段是两条预算, 都是滑块** (见 `channel/ScreenshotBudget.kt`): **像素**三档 (低 262144 = dsh 的 `imagePixelBudget: low`、默认 640000 = dsh 的缺省、高 1690000 = DeepSeek 那头的处理预算), **字节** 256 KiB~1 MiB 连续可滑 (吸附点 256/512/768/1024, 打字给到 4096)。两条给的都是 **app 这一半** (截图产生时缩到多少), 路由那一半 (`imagePixelBudget` / `imageMaxBytes`) 在 dsh 自己的 `settings.yaml` 里, **app 读不到也写不到** —— app 这一半超过路由那一半没用, 只会把注定要被重编码的图交出去 (超了要在 host 那边重编码, 多一次往返也多一次质量损失), 所以滑块上端就停在路由缺省那个数。滑块是搬来的 SFA `ArrowSlider` (`scaffolds/`, 点标题那一行可打字给精确值)
 - **`AndroidView` 里的 WebView 必须显式设 `layoutParams`** (MATCH_PARENT / MATCH_PARENT), 否则它处在 `WRAP_CONTENT` 状态, **所有 viewport unit 都解析成 0** —— dsh 用 `100vh` / `100dvh` 量弹窗、菜单、设置页与目录选择器, 一塌就是空面板
+- **`strings.xml` 里带参数的字符串不能有裸 `%`** (2026-10-06 崩过一次, 见 `docs/ui-record.md` 第七轮): `Resources.getString` 把整条当 `Formatter` 格式串解析, 而它与 `String.format` 不同 —— **`%%` 才是转义**, 裸 `%` 会连着后面那个字一起去当一个转换符, 抛 `UnknownFormatConversionException: Conversion = '是'` 把主线程打死。**崩的位置还特别会骗人**: LazyColumn 预取会在那一行还没进视野时就组合它, 于是现象是"往下拉设置页就重启"。规矩: 只要是进 `stringResource(...)` 的百分号, 一律写 `%%`; `tools/check-bare-percent.py` 扫一遍 (它认 `%1$d` 这类说明符, 跳过合法的 `%%`)
 - **虚拟屏预览放不进网页端**: 预览是合成器直接写进原生 `SurfaceView` 的, 浏览器拿不到那个 surface; dsh 的插件 (`ctx.slots` / `ctx.sidebarRightTabs`) 跑在浏览器 JS 里, **拿不到 Shizuku / root 通道**
 - 远期点子: `ActivityOptions#setLaunchDisplayId()` 能把自己的 Activity 启到虚拟屏上, 让模型直接操作 dsh GUI
 
@@ -200,6 +202,23 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **只有软停**: 手势中止 + 动作被拒 + 工具报错, 由模型收手; 硬停 (`exec.agent.cancel({kind:'hook'})`) 没做。抬手 1 s 之后就能再动手, 想更粘 (锁住到用户显式放开) 是另一个决定
 
 没有真手指也能测: `tools/lw-fake-touch.sh` 往 evdev 节点写事件伪造一只 (`sendevent` 进的是 input core, 所以监视看得见)。**伪造的手指会被系统当真**, 挑一个被点到也无所谓的界面
+
+## 语音 (两档引擎)
+
+「说话 → 出字」这条路有**两档, 由 `engine=` 选, 各有各的缺省**: SenseVoice (sherpa-onnx, 234 M, 在 app 进程里) **快**, 一句话不到 1 秒, 常驻语音链 (唤醒词命中之后那一路) 走它; **GLM-ASR-Nano** (智谱, 1.5 B, MIT) **准**, 中英与粤语/方言、小音量的表现明显更好, 代价是一句话几秒到几十秒, GUI 的录音按钮走它 (`host-plugin/index.mjs` 里的 `SPEECH_ENGINE_DEFAULT`, 模型不在时退回 SenseVoice 而不是把按钮做成死的)
+
+要记住的:
+
+- **GLM 那一档是 app fork 出来的常驻进程, 不是一个库**: `app/src/main/native/glmasr/` 编出来的 `libglmasr.so` 是**程序** (静态链 llama.cpp + mtmd), 与 `liblauncher.so` 同一个理由 (安卓 10+ 不让 app exec 自己 data 目录里的东西, `nativeLibraryDir` 里的可以), 起来之后 `{"wav": ...}` 一问一答, 模型只在进程启动时读一次。它在 APK 里只占 **3.7 MB** (strip 过), 但常驻要 **1.8 GB 内存**、权重占 **1.6 GB** (Q4_K 主模型 + Q8_0 音频编码器), 所以 `lw_speech op=release engine=glm` 是"把它还回去"那条路
+- **它慢的全部原因是那 30 秒静音垫**: llama.cpp 的 mtmd 走 whisper 那套预处理, 不管录音多长都先补 30 秒, 于是 1.5 秒的一句与 30 秒的一段一样贵 (实测都是 12 秒上下)。**这份集成里唯一改上游的地方**就是把那个常数变成 `LW_ASR_PAD_SECONDS` (缺省 4 秒), 补丁是 `app/src/main/native/glmasr/patch-short-window.cmake`, 由 FetchContent **打完源码之后**打 (本地 checkout 走 `-DLW_LLAMA_CPP_DIR=`, 那一份要自己先打)
+- **mel 长度要按 8 帧对齐**: 图里向上取整、`clip_n_output_tokens` 向下取整, 两边只在 8 的倍数上相等, 不然 `clip_encode` 直接 `GGML_ABORT("Invalid number of output tokens")`。补丁里那句 `(n_len + 7) / 8 * 8` 就是这个, 别当装饰删掉
+- 实测 (天玑 9300, 4 秒窗口): 在 `/data/local/tmp` 里跑那一份是 1.5 秒的话 3.7 秒、7.8 秒的话 10.6 秒、19 秒的话 22 秒; **装进 app 之后是 5.2 / 22.6 / 27.0 秒** (整机内存见底 + 热降频, cgroup 是 `top-app`, 八核全给); 七条合成样本里六条与原文逐字一致, 唯一那条数字串两种窗口都错 (TTS 念的数字本身难)。常驻 **2.76 GB RSS**, `lw_speech op=release engine=glm` 是还回去那条路
+- **它必须是 `-O3`**: AGP 给 externalNativeBuild 的 Debug 变体传的是 `CMAKE_BUILD_TYPE=Debug`, 也就是一个 `-O` 都没有, 而 llama.cpp 在 `-O0` 下慢四十倍 (实测 137 秒 vs 3.7 秒, app 里那条路 225 秒 vs 5.2 秒)。补法在 `app/src/main/native/CMakeLists.txt` 的 `CMAKE_*_FLAGS_DEBUG` 那一段, **别删**: 这份二进制是黑盒, 慢起来 app 里没有一处会喊
+- 细节与判据在 `docs/voice-input.md` 的第八点五节, 代码在 `tool/GlmAsr.kt` (进程与协议)、`tool/LwSpeech.kt` (两档的路由)、`host-plugin/index.mjs` (下载与 provider)
+
+**这块还没做完的**: 设置页没有引擎开关 (现在只有插件常量与 `engine=` 参数); 1.6 GB 的下载不能续传, 而且**没从零下过一次** (测试那次是两个 GGUF 直接从 adb push 进 `speech-models/glm-asr/` 的, 手机侧的通路另验过: 同一个 URL 4 MB/1.5 s、16 MB/1.9 s); GUI 那个录音按钮的整链还要人按一次才算验过
+
+**另外**: `:app:packHostTree` 在 2026-10-06 升级到 dsh 0.2.1-alpha.1 时坏过一次, 报 `[@deepseek-ai/dsh-root] Cannot find entry: ["lib/types/{index,startup}.js"]` —— **真因不在根包**: 0.2.1 删掉了 `packages/experimental/schedule-bundle` 与 `packages/runtime-diagnostics/invariants` 两个包, 而升级只删文件、留下带 `node_modules` 的空目录; tsdown 的工作区 glob (`packages/*/*` / `vendor/*`) 会把**没有 `package.json` 的目录**当成成员, 读不到 manifest 就向上读到**仓库根**的 manifest, 于是拿根包的名字与根包的入口去解析, 才找不到。两条修法都已落地: 删掉那两个空壳目录 (里面只有被忽略的 `node_modules`), 以及 `tools/pack-host.mjs` 现在会在官方构建之前 `dropOrphanPackages()` 把这类没有 manifest 的包目录清掉。**只换插件、不重打树的绕法** (把 `host-plugin/index.mjs` 直接换进 `app/build/host-tree/node_modules/littlewhale-channel/`, 再用 `-x packHostTree` 出包) 只够插件改动: **升 dsh 本体必须让 `packHostTree` 真的跑通**, 否则 APK 里带的还是上一次打出来的旧树
 
 ## 无障碍读屏
 
@@ -413,7 +432,7 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
 | 2 | `/sdcard/Android/media/<pkg>/DSH` | 无需任何权限, 文件管理器也看得见 |
 | 3 | `filesDir/DSH` | 兜底, 沙盒, 别的应用读不到 |
 
-- 权限只能跳系统设置页 (`ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION`), 不能弹窗申请; UI 入口是设置页「工作区」段的「授予所有文件访问」, 改完在 ⋮ 里重启 host 生效 (`DshHost.restart` 会等旧进程真的退出再拉起, 否则端口没释放)。测试时也可以 `adb shell appops set <pkg> MANAGE_EXTERNAL_STORAGE allow` 免去手点, 实测这一条就足以让 `isExternalStorageManager()` 变 true
+- 权限只能跳系统设置页 (`ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION`), 不能弹窗申请; 这条权限**在设置页已经没有入口了** (2026-10-06 撤掉「工作区」段), 要么 `adb shell appops set <pkg> MANAGE_EXTERNAL_STORAGE allow` (`tools/lw-install.ps1 -Perms` 也带这一条), 要么手点那一页, 改完重启 host 生效 (`DshHost.restart` 会等旧进程真的退出再拉起, 否则端口没释放) —— 实测那条 appops 就足以让 `isExternalStorageManager()` 变 true
 - **`HOME` 指向工作区**: GUI 的「选择工作区」从 host 的 home 开始列, 所以开屏就在工作区里; dsh 自己的状态仍在 `DSH_HOME` (优先级: 显式配置 > `DSH_HOME` > `~/.dsh`)。进程 cwd 也是工作区
 - `完全权限` 是**会话级**开关: 没启用时会话的文件工具与 shell 被限制在工作区根内, 启用后才放开到整个 `/sdcard`; 这个限制落在 dsh 自己的 fs/sandbox 策略上, **不是安卓层面强制的** (安卓给了权限就是全给), 别误解成"系统级隔离"
 

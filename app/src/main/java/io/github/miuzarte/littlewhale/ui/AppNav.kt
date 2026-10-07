@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -34,6 +35,7 @@ import top.yukonga.miuix.kmp.squircle.LocalSquircleEnabled
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
 import io.github.miuzarte.littlewhale.R
+import io.github.miuzarte.littlewhale.host.BallReturn
 import io.github.miuzarte.littlewhale.theme.ApplySystemBarsAppearance
 import io.github.miuzarte.littlewhale.theme.ThemeSettings
 import io.github.miuzarte.littlewhale.theme.ThemeStore
@@ -75,6 +77,14 @@ fun LittleWhaleApp() {
             push = { backStack.add(it) },
             pop = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
         )
+    }
+    // 「回应用」那一跳 (双击回复框 / 菜单「返回应用」) 落到设置页那一层时: **先回主页** —— 会话界面在
+    // 主页上, 不回去的话会话切了也看不见。请求本身由主页那块 WebView 落地 (见 HostScreen), 这里只管
+    // 把挡在前面的页收掉
+    val ballRequest = BallReturn.request
+    LaunchedEffect(ballRequest?.seq) {
+        if (ballRequest == null) return@LaunchedEffect
+        while (backStack.size > 1) backStack.removeAt(backStack.lastIndex)
     }
     val controller = remember(
         settings.mode,

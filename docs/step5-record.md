@@ -14,7 +14,7 @@
 | :-- | :-- | :-- | :-- |
 | `lw_probe` | `probe` | — | 通道活着吗, 以什么 uid 跑 |
 | `lw_screen` | `screen` | — | 列出所有屏: displayId / 名字 / 尺寸 / dpi / 是不是预览里那块 |
-| `lw_screen_create` | `create` | `name` `width` `height` `dpi` (都可省) | 建一块屏, 返回 displayId, 重名自动补序号 |
+| `lw_screen_create` | `create` (+ `launch`) | `name` `width` `height` `dpi` `launch` (都可省) | 建一块屏, 返回 displayId, 重名自动补序号; **给了 `launch` 就顺手把那个应用起在上面** —— 空屏是黑的, 而黑图看起来像截图坏了 (2026-10-05 主人报的那一条, 见下) |
 | `lw_screen_release` | `release` | `displayId` | 关掉一块屏, **必须带 id** |
 | `lw_tap` | `tap` | `displayId` `x` `y` | 点一下, 返回时设备已经收下 |
 | `lw_swipe` | `swipe` | `displayId` `fromX/fromY/toX/toY` `durationMs` | 拖一次, 一次事务 |
@@ -280,7 +280,8 @@ run-as <pkg> env OPENSSL_CONF=<files>/openssl.cnf DSH_HOME=<files>/dsh-home \
 
 - `DISPLAY_ID` (每个动作工具共用的那个参数) 与 `lw_screen`: **用户没说用哪块屏就用虚拟屏** —— displayId 0 是别人手里那台手机, 动它就是把它从人手里拿走, 手指在玻璃上时还会被直接拒; 要就去 `lw_screen_create` 造一块, 不要因为"它已经在那儿"就用 0
 - `lw_screen_create` / `lw_launch`: 已经知道应用要什么形状就在这里给 —— 横屏应用给 `width > height`, 锁方向的应用在形状不对的屏上只会留一条带子
-- `lw_screen` / `lw_screen_create`: 形状不是终局, 建完还能 `resize` / `rotate`
+- `lw_screen_create` / `lw_screen`: 形状不是终局, 建完还能 `resize` / `rotate`
+- `lw_screen_create` 的 `launch` (2026-10-05 加的, 主人点的名): **虚拟屏单独开出来是一块空屏, 上面一个窗口都没有, 截出来是一张全黑的图** —— 而黑图看起来像"截图坏了", 模型于是去重试、换工具、报故障。三件事一起做掉了: 一是 `lw_screen_create` 多一个 `launch=<应用>`, 建完就在同一步把应用起上去 (与 `lw_launch` 收同一套名字: 包名或人用的名字); 二是**没给 `launch` 时答案里明说"这块屏是空的, 现在是黑的, 那不是一个故障"**; 三是 `lw_screenshot` 拍到全黑图 (逐像素最亮值 ≤ 8) 且 displayId 不是 0 时补一句同样的解释 —— 判据在插件里 (`emptyScreenNote`), 量的是像素不是"看着黑", 实测全黑 0 / 真截图 255
 
 ## 补记: 双开的应用 (`lw_launch` 的 `user`, 2026-09-22 真机验过)
 

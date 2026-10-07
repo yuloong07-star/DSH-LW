@@ -51,10 +51,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -79,12 +81,15 @@ import io.github.miuzarte.littlewhale.constants.UiSpacing
 import io.github.miuzarte.littlewhale.channel.PreviewControl
 import io.github.miuzarte.littlewhale.channel.ScreenState
 import io.github.miuzarte.littlewhale.channel.VirtualScreen
+import io.github.miuzarte.littlewhale.host.BallReturn
 import io.github.miuzarte.littlewhale.host.DshHost
 import io.github.miuzarte.littlewhale.host.HostStatus
+import io.github.miuzarte.littlewhale.overlay.OverlayState
 import io.github.miuzarte.littlewhale.tool.LwSpeak
 import io.github.miuzarte.littlewhale.tool.LwWakeWord
 import androidx.core.content.ContextCompat
 import io.github.miuzarte.littlewhale.wake.WakeWordDownload
+import io.github.miuzarte.littlewhale.voice.VoiceState
 import io.github.miuzarte.littlewhale.wake.WakeWordService
 import io.github.miuzarte.littlewhale.wake.WakeWordState
 import org.json.JSONObject
@@ -98,6 +103,10 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Remove
 import top.yukonga.miuix.kmp.icon.extended.Tune
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.menu.OverlayIconCascadingDropdownMenu
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
@@ -639,6 +648,13 @@ private fun mainMenu(
 @Composable
 private fun HostWebView(url: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    // 「回应用」那一跳: **请求一变就跑一次** (见下面那个 LaunchedEffect), 而不押在 `AndroidView` 的
+    // update 上 —— update 什么时候被叫到是 Compose 的事, 而这一跳是主人点名要的反馈 (2026-10-07:
+    // "在 dsh 应用里双击回复框没有任何反馈")
+    val ballRequest = BallReturn.request
+    // WebView 实例与"这个文档加载完过几次": 切换那一步要拿它跑 JS, 还要等重载真的落地
+    var page by remember { mutableStateOf<WebView?>(null) }
+    var finishes by remember { mutableIntStateOf(0) }
     // A file input can only be answered by an activity, so the page's request parks here until
     // the picker it launched comes back
     var pending by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
@@ -697,6 +713,8 @@ private fun HostWebView(url: String, modifier: Modifier = Modifier) {
                         }
                         // 每次文档加载都把那个指示器装回去: 它是我们画在页面上的, 换一次文档就没了
                         view.evaluateJavascript(WAKE_BADGE_JS, null)
+                        // 「回应用」那一跳在等"页面什么时候回来" (重载 / 冷启动那两档都是它)
+                        finishes += 1
                     }
 
                     override fun onReceivedHttpError(
@@ -779,9 +797,115 @@ private fun HostWebView(url: String, modifier: Modifier = Modifier) {
                 loadUrl(url)
             }
         },
-        update = { view -> if (view.url != url) view.loadUrl(url) },
+        update = { view ->
+            if (view.url != url) view.loadUrl(url)
+            page = view
+        },
     )
+
+    /**
+     * 等下一次 `onPageFinished` (超时回 false): "重载真的落地了没有"只有它答得上来
+     *
+     * [finishes] 是那个计数器, 读它是 Compose 的状态读 —— 所以在 `snapshotFlow` 里能等到它变
+     */
+    suspend fun awaitFinish(after: Int): Boolean = withTimeoutOrNull(RETURN_WAIT_MS) {
+        snapshotFlow { finishes }.first { it > after }
+    } != null
+
+    /** 跑一段 JS 并把它的字符串结果拿回来 (超时 / 页面被换掉就回 null) */
+    suspend fun ask(view: WebView, script: String): String? = withTimeoutOrNull(RETURN_ASK_MS) {
+        suspendCancellableCoroutine { continuation ->
+            view.evaluateJavascript(script) { answer ->
+                // 超时 / 页面被换掉之后回调还会来一次, 已取消的续体不再喂值
+                if (continuation.isActive) continuation.resume(answer.orEmpty())
+            }
+        }
+    }
+
+    // 「回应用」那一跳 (**在 dsh 里也一定有反馈**, 主人 2026-10-07): 请求一来就切到那一场 —— 需要就
+    // 改键 + 重载, 然后**读回那个键验证**; 一次不成再试一次, 两次都不成才把请求放掉。无论哪一种结果
+    // 都留一行日志与一笔状态 (`lw_overlay op=state` 的 `said` 读它)
+    LaunchedEffect(ballRequest?.seq, page) {
+        val request = ballRequest ?: return@LaunchedEffect
+        val view = page ?: return@LaunchedEffect
+        // 页面还没落在 http 上时 localStorage 还不可用 (about:blank 那一档): 等它的 onPageFinished
+        if (view.url?.startsWith("http") != true) {
+            noteReturn("holding the return to ${request.session} until the GUI is up")
+            if (!awaitFinish(finishes)) {
+                // 等不到就把这一次请求收干净再说一句: 留在半路上 ("状态里还挂着请求"而界面上没人会
+                // 再动它) 比明说一次没成更糟
+                noteReturn("return to ${request.session}: failed: the GUI never came up")
+                BallReturn.done(request.seq)
+                return@LaunchedEffect
+            }
+        }
+        var outcome = "failed: the page never answered"
+        for (attempt in 1..RETURN_TRIES) {
+            val before = finishes
+            val answer = ask(view, RETURN_TO_BALL_JS(request.session))?.trim()?.removeSurrounding("\"")
+            if (answer == "already") {
+                outcome = "already on it"
+                break
+            }
+            if (answer != null && answer.startsWith("failed")) {
+                outcome = answer
+                continue
+            }
+            // `reload` (或页面没回话): 等这一次重载落地之后再读回那个键 —— "重载了但没落在那一场"
+            // 与"真的切过去了"要分得开
+            if (!awaitFinish(before)) {
+                outcome = "failed: the page did not come back"
+                continue
+            }
+            val now = ask(view, CURRENT_SESSION_JS)?.trim()?.removeSurrounding("\"")
+            if (now == request.session) {
+                outcome = "verified on try $attempt"
+                break
+            }
+            outcome = "failed: the GUI came back on ${now?.takeIf { it.isNotEmpty() } ?: "nothing"}"
+        }
+        noteReturn("return to ${request.session}: $outcome")
+        BallReturn.done(request.seq)
+    }
 }
+
+/**
+ * 「回应用」那一跳走到哪一步: 一行日志 + 一笔状态
+ *
+ * 两个去处都要有: 主人 2026-10-07 报的那条是"在 dsh 应用里双击回复框没有任何反馈", 而排查时能对账的
+ * 就是 `lw_overlay op=state` 的 `said`(它读 [OverlayState.lastHint]) 与 `adb logcat -s DshWebView`
+ */
+private fun noteReturn(text: String) {
+    Log.i(WEB_TAG, text)
+    OverlayState.lastHint = text
+}
+
+/**
+ * 那一段 JS: 判一下"已经是这一场了吗", 不是就改键 + 重载
+ *
+ * **为什么只有这一条路**: "在看哪一场"是 dsh 客户端在浏览器里的路由状态
+ * (`localStorage['dsh.sessions.current']`, 值形如 `{"sessionId":"session-…"}`), 它只在页面启动那一步
+ * 读一次 (见 `ui-workspace` 的 `restoreSelection`) —— 客户端没有公开的路由可用, 所以唯一拿得到的把手
+ * 就是这个键, 改完必须重载一次
+ *
+ * `location.reload()` 是**故意的**: 那个键只在页面启动那一步读, 改完不重载就等于没改。同步执行
+ * (改键与重载在同一个 JS 块里) 是为了不给客户端一个"看了一半的状态又被重载"的窗口
+ */
+private fun RETURN_TO_BALL_JS(session: String): String =
+    "(function(){try{var k='dsh.sessions.current';var want={sessionId:${JSONObject.quote(session)}};" +
+        "var cur=null;try{cur=JSON.parse(localStorage.getItem(k)||'null')}catch(e){cur=null}" +
+        "if(cur&&cur.sessionId===want.sessionId){return 'already'}" +
+        "localStorage.setItem(k,JSON.stringify(want));location.reload();return 'reload'}catch(e){return 'failed:'+e}})()"
+
+/**
+ * 读回"现在这个键里写着哪一场": 切换那一步的判据 (空串 = 读不出来)
+ *
+ * 与 [RETURN_TO_BALL_JS] 配成一对: 一个负责改, 一个负责验证 —— 少了后面那条, "重载了但没落在那一场"
+ * 会被当成成功
+ */
+private const val CURRENT_SESSION_JS =
+    "(function(){try{var v=JSON.parse(localStorage.getItem('dsh.sessions.current')||'null');" +
+        "return v&&v.sessionId?v.sessionId:''}catch(e){return ''}})()"
 
 /**
  * Hand an http(s) download to the system downloader
@@ -897,6 +1021,16 @@ private val WINDOW_START_TOP = 120.dp
 /** Logcat tag for what the embedded browser reports */
 private const val WEB_TAG = "DshWebView"
 
+/**
+ * 「回应用」那一跳的耐心: 等一次重载落地多久 / 等一次 JS 回话多久, 以及最多试几次
+ *
+ * 两次的代价是"重载两遍页面", 而收益是"一次没成不会静默什么都不发生" —— 在 dsh 里那一下本来就是
+ * 主人点名要的反馈
+ */
+private const val RETURN_WAIT_MS = 15_000L
+private const val RETURN_ASK_MS = 5_000L
+private const val RETURN_TRIES = 2
+
 /** Shell facts worth logging after a load: boot globals, DOM size, and whatever text rendered */
 private const val SHELL_PROBE = """
 (function () {
@@ -923,26 +1057,33 @@ private const val SHELL_PROBE = """
 private const val WAKE_BRIDGE = "LittleWhale"
 
 /**
- * 页面与 app 之间那一座桥: 只回答唤醒词那两件事
+ * 页面与 app 之间那一座桥: 唤醒词那两件事 + "现在在看哪一场"
  *
  * 为什么不是 dsh 的 client 插件加一条私有路由: 那个指示器要显示的状态 (服务在不在听、命中了几次)
  * 只有 app 这一侧知道, 而点它要停的也是 app 里那个前台服务 —— 插件跑在浏览器 JS 里, 两个都拿不到,
  * 还得再连一条回 app 的通道; 而 dsh 的 client 插件是内部协议上的产物 (每个包跟着上游的 descriptors
  * 与 codecs 走), 为一个小徽标挂一个包不划算。这条桥与一条路由的信任边界是一样的: 页面就是本机 host
- * 发的那一个 (见上面 shouldOverrideUrlLoading 只放行 http/https), 而这两个方法都没有参数
+ * 发的那一个 (见上面 shouldOverrideUrlLoading 只放行 http/https)
+ *
+ * **三个方法里只有 [session] 带参数** (2026-10-07 加的): 它是页面推上来的"现在在看哪一场", 而那份
+ * 状态只有浏览器里有 (`localStorage['dsh.sessions.current']`)。这个参数只当提示用 —— 它最终要过宿主
+ * 那一侧的"这一场还在、还是根会话"检查, 认不出来就落回原来的规则, 所以桥上多这一条不改信任边界
  */
 private class WakeBridge(private val context: Context) {
 
     /**
-     * 现在什么样: **常驻语音在不在跑**、命中几次、看的是哪几个词 —— 一句 JSON, 页面照着画
+     * 现在什么样: **这一句话的窗口开着没有**、命中几次、看的是哪几个词 —— 一句 JSON, 页面照着画
      *
-     * 这里给的是 `voice`, 不是 `listening`: 那个胶囊对应的是"常驻语音正在吃麦克风", 所以只有常驻
-     * 语音真的在跑时才该出现, 纯唤醒词守着的时候 (`listening = true, voice = false`) 它**不出来** ——
-     * 那是常态, 不该在会话界面上一直挂一个"正在听"的徽标 (主人 2026-10-05 定的两条链分开说)
+     * 这里给的是 `voice`, 它读的是 [VoiceState.capturing]: 那个胶囊对应的是"麦克风正在被吃", 所以只有
+     * 命中唤醒词 (或球上点一下) 之后那一段时间里才该出现, **纯唤醒词守着的时候它不出来** —— 那是常态
+     * (唤醒词一直在守), 不该在会话界面上一直挂一个"正在听"的徽标 (主人 2026-10-05 定的两条链分开说)
+     *
+     * **它原来读的是 `WakeWordState.voiceActive`** (2026-10-06 改的): 那一个是"常驻语音那半条在不在
+     * 跑", 而常驻语音整条链路已经删掉了 —— 现在两者说的是同一件事, 只剩 `capturing` 这一个名字
      */
     @JavascriptInterface
     fun state(): String = JSONObject().apply {
-        put("voice", WakeWordState.voiceActive)
+        put("voice", VoiceState.capturing)
         put("listening", WakeWordState.listening)
         put("hits", WakeWordState.hits)
         put("words", LwWakeWord.names(context).joinToString(", "))
@@ -952,28 +1093,51 @@ private class WakeBridge(private val context: Context) {
     }.toString()
 
     /**
-     * 点一下就是把常驻语音关掉
+     * 点一下就是**把这一句话的窗口收掉**
      *
-     * **只关常驻那半条, 不关唤醒词**: 那才是这个胶囊代表的那件事 (它只在常驻语音跑的时候出现),
-     * 而唤醒词继续守着 —— 想再要一次"开口说话", 喊一声就回来了, 整件事收工是通知栏那个「停止」,
-     * 那个按钮关的是服务, 与这里分工不同
+     * **不关唤醒词**: 那才是这个胶囊代表的那件事 (它只在窗口开着时出现), 而唤醒词继续守着 —— 想再要
+     * 一次"开口说话", 喊一声就回来了, 整件事收工是通知栏那个「停止」, 那个按钮关的是服务, 与这里
+     * 分工不同
      */
     @JavascriptInterface
     fun stop(): String {
         val intent = Intent(context, WakeWordService::class.java)
-            .setAction(WakeWordService.ACTION_STOP_VOICE)
+            .setAction(WakeWordService.ACTION_HUSH)
         runCatching { ContextCompat.startForegroundService(context, intent) }
         return state()
+    }
+
+    /**
+     * 页面报一句: **它现在在看哪一场** (`localStorage['dsh.sessions.current']` 里那个 id)
+     *
+     * 用处只有一个: 切进视频模式那一刻把这一场**定格**下来 ([LwWakeWord.resident]), 于是视频模式里
+     * 说的话与"打开视频模式"那句话落在同一场 (主人 2026-10-07 的口径: 两条投递目标要统一)
+     *
+     * 空串是合法输入, 意思是"现在没有选中的会话" (页面刚起来 / 选择被清掉那一档) —— 那时把它清成
+     * null, 别让一个过期的 id 钉在那儿。长度上限只是防呆: 真伪由宿主那侧的存在性检查兜底
+     */
+    @JavascriptInterface
+    fun session(id: String) {
+        val wanted = id.trim()
+        VoiceState.uiSession = wanted.takeIf { it.isNotEmpty() && it.length <= SESSION_ID_MAX }
+    }
+
+    private companion object {
+        /** 会话 id 的长度上限 (dsh 的是 `session-` 加一个 uuid, 给足余量) */
+        const val SESSION_ID_MAX = 128
     }
 }
 
 /**
  * 输入框上沿那个麦克风指示器
  *
- * 状态只有一条: **常驻语音在跑的时候才出来**, 用跳动的波形表示"麦克风正在被吃", 点一下把常驻语音
+ * 状态只有一条: **"这一句话的窗口"开着的时候才出来**, 用跳动的波形表示"麦克风正在被吃", 点一下把它
  * 关掉 (上面的 [WakeBridge]) —— 一直开着的麦克风必须有一眼看得见、一下就关得掉的地方, 通知栏那一条
- * 是后台时看的, 这一条是看着会话时看的, **纯唤醒词守着时它不出现**: 那是常驻状态, 一直挂着只会让人
- * 以为麦克风在被吃
+ * 是后台时看的, 这一条是看着会话时看的。**唤醒词守着的时候它不出现**: 那是常态 (麦克风本来就开着听
+ * 那个词), 一直挂着只会让人以为麦克风在被吃
+ *
+ * 它原来代表的是"常驻语音" (那条一直不收的链), 而那条链 2026-10-06 已经删掉了 —— 徽标本身留着,
+ * 语义收窄成"这一句正在听"
  *
  * 位置是**算出来的**: 找到页面里那个输入框 (textarea 或 contenteditable), 贴在它上沿的左上角; 找不到
  * 就退回右下角一个固定位置。所以不碰输入框自己的控件 (发送键那些还在原地), 也不依赖 dsh 的类名 ——
@@ -988,8 +1152,10 @@ private const val WAKE_BADGE_JS = """
   var ID = 'lw-wake-badge'
   var TICK = 220
   var POLL = 1000
+  var CURRENT = 'dsh.sessions.current'
   var phase = 0
   var last = null
+  var lastSession = null
   function build() {
     if (document.getElementById(ID) || !document.body) return
     var badge = document.createElement('div')
@@ -1080,11 +1246,24 @@ private const val WAKE_BADGE_JS = """
     }
   }
   function on() { return !!(last && last.voice) }
+  // 现在在看哪一场: 变了才过一次桥 (那个 id 是 app 那一侧"进视频模式时定格哪一场"的输入,
+  // 见 WakeBridge.session), 一秒问一次 localStorage 是本地读, 不花钱
+  function tellSession() {
+    var id = ''
+    try {
+      var saved = JSON.parse(localStorage.getItem(CURRENT) || 'null')
+      if (saved && saved.sessionId) id = String(saved.sessionId)
+    } catch (error) {}
+    if (id === lastSession) return
+    lastSession = id
+    try { window.LittleWhale.session(id) } catch (error) {}
+  }
   function refresh() {
     build()
     var state = null
     try { state = JSON.parse(window.LittleWhale.state()) } catch (error) {}
     last = state
+    tellSession()
     draw(state, on())
     bars(on())
   }

@@ -19,7 +19,7 @@ import { connect } from 'node:net'
 
 import { createHash, randomUUID } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { join, dirname } from 'node:path'
@@ -220,6 +220,100 @@ async function attachPictures(paths) {
  * 只看头几个字节: 相机那条路给的是 JPEG (`FF D8`), 旧那条截屏链路给的是 PNG (`89 50 4E 47`)。认不
  * 出来就抛 —— 附件库本来也会拒, 而这里的报错能带上路径, 排起来省一步
  */
+/**
+ * 应用那一侧的取景规则 (设置页「视频识别」): 张数 / 间隔 / 清晰度
+ *
+ * 插件读不到应用的偏好文件, 而这三个数只有应用知道 —— 所以走一次桥问相机状态。**问不到就用应用那边
+ * 同样的缺省值**: 一台没装浮标/相机起不来的设备不该让"取景"这条链整个报错, 它该退成"照老样子来"
+ */
+async function cameraLook() {
+  try {
+    const state = await call('camera', { op: 'status' })
+    return {
+      count: Number.isFinite(state?.lookCount) ? state.lookCount : 4,
+      intervalMs: Number.isFinite(state?.lookIntervalMs) ? state.lookIntervalMs : 200,
+      pixels: Number.isFinite(state?.lookPixels) ? state.lookPixels : 0,
+      // 拼不拼网格: 应用把那个开关写成 host 目录里的一个文件 (`$DSH_HOME/lw/look-sheet`), 而
+      // `lookSheet` 就是它此刻在不在 —— 关着时文件被删掉, 所以这里读到的 false 是"设置页关着"
+      sheet: state?.lookSheet === true,
+    }
+  } catch {
+    return { count: 4, intervalMs: 200, pixels: 0, sheet: false }
+  }
+}
+
+/**
+ * 把这一趟的几张帧拼成**一张网格** (主人 2026-10-06 要的那个开关)
+ *
+ * **不往应用那侧加桥方法**: 拼图这件事插件本来就做得到 (host 树里那个 `sharp` 是官方的 wasm 构建),
+ * 而在 host 上拼还少了十几张图过桥的字节数
+ *
+ * 三条与 `lw_screenshot` 那张网格同一个口径:
+ * - **顺序就是拍的顺序**, 从左到右再换行; 空着的格子留黑, 这样"这里没有一张"与"整格是黑的"分得开
+ * - **每一格先缩到位再拼**, 而不是拼一张大的再整张缩一遍 —— 后者要在内存里开一张 N 倍大的图
+ * - **它是用来看动起来的**: 每格都是缩略图, 读小字仍要看那几张原图 (所以原图照旧一起交出去)
+ *
+ * @returns `{ buffer, columns, rows, bytes, tile }`, 拼不出来时回 `{ error }`
+ */
+async function gridOf(paths) {
+  if (paths.length < 2) return { error: 'a grid needs at least two frames' }
+  try {
+    const sharp = (await import('sharp')).default
+    const cell = await sharp(paths[0]).metadata()
+    if (!cell?.width || !cell?.height) return { error: `could not read ${paths[0]}` }
+    const columns = Math.max(1, Math.ceil(Math.sqrt(paths.length)))
+    const rows = Math.ceil(paths.length / columns)
+    // 每格缩到 480 px 那一档: 拼出来 4 格是 960 宽, 9 格是 1440 宽, 都还落在路由的图像预算里
+    const scale = Math.min(1, GRID_CELL_PX / Math.max(cell.width, cell.height))
+    const tileWidth = Math.max(1, Math.round(cell.width * scale))
+    const tileHeight = Math.max(1, Math.round(cell.height * scale))
+    const cells = await Promise.all(
+      paths.map((path) =>
+        sharp(path).resize(tileWidth, tileHeight, { fit: 'fill' }).jpeg({ quality: 88 }).toBuffer()),
+    )
+    const blank = await sharp({
+      create: {
+        width: tileWidth * columns,
+        height: tileHeight * rows,
+        channels: 3,
+        background: { r: 0, g: 0, b: 0 },
+      },
+    }).png().toBuffer()
+    const buffer = await sharp(blank)
+      .composite(paths.map((_path, index) => ({
+        input: cells[index],
+        left: (index % columns) * tileWidth,
+        top: Math.floor(index / columns) * tileHeight,
+      })))
+      .jpeg({ quality: 88 })
+      .toBuffer()
+    return { buffer, columns, rows, bytes: buffer.length, tile: `${tileWidth}x${tileHeight}` }
+  } catch (error) {
+    return { error: error?.message ?? String(error) }
+  }
+}
+
+/** 网格每一格最长那一边缩到多少: 480 是"看得清走向、又装得进图像预算"那一档 */
+const GRID_CELL_PX = 480
+
+/**
+ * 那几拍量出来是多少 (应用给的是每一张距起点的毫秒数, 逗号分开)
+ *
+ * 隔到下一张该拍的那一刻为止是"要的", 而一次抓帧本身要两三百毫秒 —— 所以这个数经常大于要的那个,
+ * 而那正是要紧的信息: 模型按时间轴理解画面时, 用的是量到的这个
+ */
+function gapText(offsets, elapsedMs, frames) {
+  const at = String(offsets ?? '')
+    .split(',')
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isFinite(value))
+  if (at.length < 2) return ''
+  const gaps = at.slice(1).map((value, index) => value - at[index])
+  const each = Math.round(gaps.reduce((sum, value) => sum + value, 0) / gaps.length)
+  return `${each}ms apart on average (${gaps.join('/')}ms)`
+    + (frames > at.length ? `, only ${at.length} of ${frames} frames arrived` : '')
+}
+
 function pictureType(data, path) {
   if (data[0] === 0xff && data[1] === 0xd8) return 'image/jpeg'
   if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return 'image/png'
@@ -227,58 +321,33 @@ function pictureType(data, path) {
 }
 
 /**
- * 视频模式的相机: 起来
+ * 切模式的**唯一一条实现**: 一次桥调用, 应用那一侧把这一个模式要的三件事一起做完
+ * (提示词 / 摄像头 / 常驻语音, 见 `LwModes.set`)
  *
- * 相机开在**我们自己进程**里 (通道方法 `camera`), 预览画在手机上一块悬浮小窗上, 抓帧走 ImageReader
- * —— 不借虚拟屏、不起相机应用、也不截屏。旧那条路 (建一块虚拟屏 → launch 相机应用 → lw_screenshot
- * 截屏) 的代码与它建的屏都已经摘掉了, 这里只剩这一条
+ * **这里只发一条命令, 不做第二步**: 早先是"先调 `mode`, 再调 `camera`"两趟往返, 而语音那一半还要在
+ * 应用里白等 600 ms; 现在三件事都在应用那一次调用里, 而且**相机那一半不等人** —— 回执说的是"正在开",
+ * 开好了 `lw_look` 直接用那一台 (它自己会等那把锁)。切模式快不快就差在这一条上 (2026-10-06 主人的
+ * 口径: 切模式只跑对应的那一个脚本, 别的什么都不做)
+ *
+ * 三个调用方共用它, 所以只有一份实现: 模型调 `lw_mode`、主人说了一句命令句 ([matchVoiceCommand]),
+ * 以及设备上那三个脚本 (`modes/{phone,video,screen}.sh` —— 各自只管自己那一个模式)
  */
-async function bringUpCamera() {
-  const lines = []
-  try {
-    const opened = await call('camera', { op: 'open' })
-    lines.push(
-      `camera: ${opened?.shot ?? '?'} stills on the ${opened?.lens ?? '?'} camera, preview `
-        + `${opened?.preview ?? '?'}, window `
-        + (opened?.window ? 'up' : 'not up'),
-    )
-    if (opened?.lastError) lines.push(`last problem: ${opened.lastError}`)
-    // 预览面起不来不影响抓帧, 但那是"人看不见画面", 要说出来 —— 静默地黑着屏幕比报一句更糟
-    if (opened?.previewError) lines.push(`preview: ${opened.previewError}`)
-  } catch (error) {
-    lines.push(`bringing the camera up failed: ${error?.message ?? error}`)
-  }
-  return lines.join('\n')
-}
-
-/** 视频模式收工: 把摄像头还回去 (小窗一起收, 这一趟抓的帧也删掉) */
-async function putCameraAway() {
-  try {
-    const closed = await call('camera', { op: 'close', clean: true })
-    return `camera: ${closed?.text ?? 'closed'}`
-  } catch (error) {
-    return `closing the camera failed: ${error?.message ?? error}`
-  }
+async function applyMode(mode) {
+  return call('mode', { mode })
 }
 
 /**
- * 切模式的**唯一一条实现**: 换提示词 + 该起的相机起来 / 该收的收回去
+ * 切模式回执那几行 (谁切的都念同一份): 换成了什么、相机在干什么、语音那一半怎么样
  *
- * 两个调用方共用它, 所以相机那一半只有一份: 模型调 `lw_mode`, 与主人说了一句命令句
- * ([matchVoiceCommand] 那一路)。**顺序是刻意的** —— 先把相机那边做好, 再报"模式已切", 否则那句
- * "切好了"会在相机还没起来的时候就说出去
- *
- * 不碰任何虚拟屏: 视频模式现在不建屏, 也没有屏要收
+ * **相机那一行说的是"正在开 / 正在收"**, 不是"开好了": 那两半不堵回执, 真相由 `lw_look` 或
+ * `lw_wakeword op=status` 去读 —— 报一个还没发生的事实是最不该有的那种错
  */
-async function applyMode(mode) {
-  const answer = await call('mode', { mode })
-  const lines = []
-  if (answer.switched === true && answer.mode === 'video') lines.push(await bringUpCamera())
-  // 常驻语音那一个许可的说明排在这里, 是因为它就是"视频模式是说话为主"的那一半
-  if (answer.listening) lines.push(answer.listening)
-  if (answer.switched === true && answer.mode === 'phone') lines.push(await putCameraAway())
-  if (answer.teardown) lines.push(answer.teardown)
-  return { answer, lines }
+function modeLines(answer) {
+  return [
+    `mode -> ${answer.mode} (${answer.name}); ${answer.detail}`,
+    `camera: ${answer.camera}`,
+    `voice: ${answer.voice}`,
+  ]
 }
 
 const TOOLS = [
@@ -301,22 +370,29 @@ const TOOLS = [
   defineTool({
     name: 'lw_mode',
     description:
-      'Switch which mode this phone assistant is in. "phone" is the usual one: operate the phone '
-      + 'through the lw_* tools. "video" points this phone\'s own camera at what is in front of the '
-      + 'user (it runs inside the app, previewing in a small floating window) and answers what it '
-      + 'is, in one to three sentences. A switch replaces the assistant\'s prompt '
-      + 'text, so it takes effect on the NEXT model step rather than this one: call it, say the mode '
-      + 'changed, and stop there. Both directions also put the phone back in order themselves, so '
-      + 'neither has to be undone by hand: "video" opens that camera and starts the always-listening '
-      + 'voice chain, while "phone" closes the camera again and stops that chain. Call it with '
-      + '"video" when the user asks to look at something, and with "phone" when the video work is '
-      + 'over (they said to quit video mode, close the camera or stop looking). mode "status" '
-      + 'reports which one is active right now.',
+      'Switch which mode this phone assistant is in. There are three. "phone" is the usual one: '
+      + 'operate the phone through the lw_* tools. "video" points this phone\'s own camera at what is '
+      + 'in front of the user (it runs inside the app, previewing in a small floating window) and '
+      + 'answers what it is, in one to three sentences. "screen" is about the phone\'s own screen '
+      + 'only (display 0): it may look (lw_ui / lw_ocr / lw_screenshot) and it may also act right '
+      + 'there (lw_tap / lw_swipe / lw_type / lw_key / lw_launch and the rest), but it never builds '
+      + 'or touches a virtual screen - so use it when the user points at what their phone\'s own '
+      + 'screen shows, whether they ask what it says or ask for something to be done on it. A switch replaces the '
+      + 'assistant\'s prompt text, so it takes effect on the NEXT model step rather than this one: '
+      + 'call it, say the mode changed, and stop there - **this one call already does everything that '
+      + 'mode needs** (the prompt, the camera, the resident voice chain), so do not open the camera, '
+      + 'build a screen or tidy anything up yourself. "video" asks for the voice chain to stay '
+      + 'resident (the user can keep talking without saying the wake word again) and brings the '
+      + 'camera up in the background; "phone" and "screen" put the camera away and release that '
+      + 'chain - outside video mode a wake word or a tap on the ball buys exactly one sentence. Call '
+      + 'it with "video" when the user asks to look at something through the camera, with "screen" '
+      + 'when they mean the phone\'s own screen, and with "phone" when that work is over (they said to '
+      + 'quit, close the camera or stop looking). mode "status" reports which one is active right now.',
     parameters: {
       mode: {
         type: 'string',
         required: true,
-        description: 'phone, video, or status',
+        description: 'phone, video, screen, or status',
       },
     },
     output: {
@@ -324,12 +400,10 @@ const TOOLS = [
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args) {
-      const { answer, lines } = await applyMode(args.mode)
+      const answer = await applyMode(args.mode)
       if (answer.switched === false) return answer.detail
       if (answer.modes) return `modes: ${answer.modes}\nactive: ${answer.active}`
-      if (answer.switched === true) {
-        return [`mode -> ${answer.mode} (${answer.name}); ${answer.detail}`, ...lines].join('\n')
-      }
+      if (answer.switched === true) return modeLines(answer).join('\n')
       return `mode: ${answer.mode} (${answer.name})\n`
         + `prompt file: ${answer.promptWritten ? 'written' : 'missing'} (${answer.promptFile})`
     },
@@ -341,16 +415,36 @@ const TOOLS = [
       + 'up yet, takes frames straight off it (no screen is created, no camera app is launched, no '
       + 'screenshot is taken), and hands you the pictures themselves — no separate read_image step for '
       + 'each one. In video mode use this instead of lw_screen + lw_ui + lw_screenshot. Either camera '
-      + 'works and the choice sticks (see the lens parameter). A first look is '
-      + 'frames 4 (the default); if that leaves you unsure, look ONE more time with frames 9 — that is '
-      + 'the second and last group. If the second look still does not settle it, say what you cannot '
-      + 'see and ask for a single adjustment; never guess, and never ask for a third group. '
-      + 'frames 12 is for something that is moving, not for a first look.',
+      + 'works and the choice sticks (see the lens parameter). **How many frames and how far apart are '
+      + 'the user\'s settings** (the app\'s "Video recognition" section: frames per look, ms between '
+      + 'frames, capture quality) and this call takes those as its defaults — do not name a number '
+      + 'unless the user asked for something different in so many words. A first look is usually 4 '
+      + 'frames; if that leaves you unsure, look ONE more time (a few more frames), and that is the '
+      + 'second and last group. If the second look still does not settle it, say what you cannot '
+      + 'see and ask for a single adjustment; never guess, and never ask for a third group. A dozen '
+      + 'frames is for something that is moving, not for a first look. **The user decides whether '
+      + 'these frames also come back as one grid** (the same settings section, "one grid per look"): '
+      + 'when that is on, the FIRST picture in this result is that grid and the full frames follow it '
+      + '— read the grid to see what moved between frames, and go to a full frame when a cell is too '
+      + 'small to read. The answer also says how far apart '
+      + 'the frames actually came out: a capture costs a couple of hundred ms by itself, so the gap is '
+      + 'often longer than the setting asks for, and that measured number is what your timeline is.',
     parameters: {
       frames: {
         type: 'integer',
-        description: 'How many frames: 4 for a first look (the default), 9 for the second and last'
-          + ' group, up to 12 only when the user asks about something moving',
+        description: 'How many frames, only when the user asked for a specific number: otherwise leave'
+          + ' it out and the app\'s setting is used (4 by default)',
+      },
+      intervalMs: {
+        type: 'integer',
+        description: 'Milliseconds between frames, only when the user asked for a specific spacing:'
+          + ' otherwise leave it out and the app\'s setting is used',
+      },
+      sheet: {
+        type: 'boolean',
+        description: 'Also lay these frames out as one grid picture, overriding the setting for this'
+          + ' one call. The setting already decides it in the app, so only name it when the user asks'
+          + ' for the other behaviour right now',
       },
       lens: {
         type: 'string',
@@ -382,27 +476,48 @@ const TOOLS = [
       },
     },
     async execute(args) {
-      const frames = Math.max(1, Math.min(12, args?.frames ?? 4))
+      // **张数的缺省在设置页**, 不在这里: 主人 2026-10-06 加了「视频识别」那一段 (张数 / 间隔 /
+      // 清晰度), 而这三个数只有应用那一侧读得到 —— 所以先问一次相机状态。同一次调用里只问一次,
+      // 不跨调用缓存: 主人改完设置马上就该生效, 而多一次几百微秒的桥调用值这个价
+      const look = await cameraLook()
+      const frames = Math.max(1, Math.min(12, args?.frames ?? look.count))
+      // 拼不拼网格: 设置页那个开关是缺省, 而模型可以就这一次点名要另一种 (args.sheet)
+      const wantGrid = typeof args?.sheet === 'boolean' ? args.sheet : look.sheet
       // 视频模式看的**就是我们自己开的那台摄像头**: 预览画在手机上一块小窗里, 抓帧走 ImageReader
       // (2026-10-05 起不再借虚拟屏与相机应用 —— 那条路要起一个别人的进程、再截屏、再把 PNG 读回来,
       // 而这条路一次 capture 是两百多毫秒, 而且相机就握在自己手里)
       //
       // `lens` 原样交给应用那一侧: 换一头要收一次再开一次 (前后摄是两个设备), 而那件事只有它知道
       const request = { op: 'snapshot', count: frames }
+      if (args?.intervalMs !== undefined) request.intervalMs = Number(args.intervalMs)
       if (args?.lens) request.lens = String(args.lens).trim().toLowerCase()
       const shot = await call('camera', request)
       const paths = Array.isArray(shot?.paths)
         ? shot.paths.filter((path) => typeof path === 'string' && path)
         : []
+      // **间隔要报量到的那个数**: 一次抓帧本身两三百毫秒, 所以"要了 200ms 而实际每拍 420ms"是常态。
+      // 报"要的那个数"就是一句假话, 而模型接下来会拿它当时间轴用
+      const gaps = gapText(shot?.offsets, shot?.elapsedMs, paths.length)
       const text = `camera: ${shot?.lens ?? '?'} lens, ${shot?.shot ?? '?'},`
         + ` ${paths.length} frame(s) in ${shot?.elapsedMs ?? '?'}ms`
+        + (shot?.intervalMs ? `, asked ${shot.intervalMs}ms apart` : '')
+        + (gaps ? `, measured ${gaps}` : '')
       if (!paths.length) return { text, images: [] }
       try {
-        const { images, note } = await attachPictures(paths)
+        // **要拼网格时那一张先交出去** (主人 2026-10-06 要的开关): 一次读图换掉十来次, 而它每一格
+        // 都是缩略图 —— 所以那几张原图照旧跟在后面, 格子看不清时还能看原图
+        const grid = wantGrid && paths.length > 1 ? await gridOf(paths) : null
+        const wide = grid?.buffer ?? null
+        const { images, note } = await attachPictures(wide ? [wide, ...paths] : paths)
+        const lead = wide
+          ? `${text}\nFirst picture: all ${paths.length} frames as one ${grid.columns}x${grid.rows} grid`
+            + ` (${(grid.bytes / 1024).toFixed(1)} KB, in the order they were taken); the ${paths.length}`
+            + ' full frames follow it.'
+          : ''
         return {
           text: images.length
-            ? `${text}\n${images.length} picture(s) are in this result already.`
-            : `${text}\n(the pictures are at those paths; read them with read_image${note ? `: ${note}` : ''})`,
+            ? `${text}${lead}\n${images.length} picture(s) are in this result already.`
+            : `${text}${lead}\n(the pictures are at those paths; read them with read_image${note ? `: ${note}` : ''})`,
           images,
         }
       } catch (error) {
@@ -454,7 +569,9 @@ const TOOLS = [
       + 'usual way to work: a screen of its own leaves the phone in the user\'s hands, where '
       + 'acting on display 0 would take it away from them. The screen '
       + 'starts empty: nothing is drawn on it until an app is launched onto it with lw_launch, and '
-      + 'the apps you launch stay on the display you launched them on. Give it a name to tell your '
+      + 'the apps you launch stay on the display you launched them on - so **give launch=<app> when '
+      + 'you already know what the screen is for**, and read the answer either way: an empty screen '
+      + 'is black, and a black screenshot is not a failure. Give it a name to tell your '
       + 'screens apart - a name that is taken gets a number appended. Width, height and dpi default '
       + "to the device's own screen, so leave them out to get a screen the size of the phone, and "
       + 'give them when you already know the shape the app wants - a game or any other '
@@ -468,6 +585,14 @@ const TOOLS = [
       name: {
         type: 'string',
         description: 'What to call this screen, for example the app you mean to put on it',
+      },
+      launch: {
+        type: 'string',
+        description:
+          'An app to start on the screen as soon as it exists, by package or by the name a person'
+          + ' uses for it (the same names lw_launch takes). **Give this whenever you already know'
+          + ' what the screen is for** - a screen nobody has launched anything onto is black, and a'
+          + ' black picture reads like a failure even though everything worked',
       },
       width: {
         type: 'integer',
@@ -488,7 +613,23 @@ const TOOLS = [
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args) {
-      return formatCreated(await call('create', drop(args)))
+      const created = await call('create', drop(args, 'launch'))
+      const app = (args?.launch ?? '').trim()
+      if (app === '') {
+        // 建了屏而上面什么都没有: 这句话必须说出来, 否则下一次截图是一张全黑的图, 而那看起来
+        // 像"截图坏了" (2026-10-05 主人报的就是这个)
+        return `${formatCreated(created)}\n\nNothing is running on this screen: a virtual screen starts`
+          + ' empty and shows black until an app is launched onto it (lw_launch with this displayId,'
+          + ' or lw_screen_create with launch=<app>). A screenshot of it right now is a black'
+          + ' picture, which is not a failure - it is an empty screen.'
+      }
+      const displayId = Number(created?.displayId)
+      if (!Number.isFinite(displayId)) {
+        return `${formatCreated(created)}\n\nlaunch=${app} was asked for, but the screen came back`
+          + ' without a displayId, so nothing was started on it'
+      }
+      const launched = await call('launch', { displayId, package: app })
+      return `${formatCreated(created)}\n\n${formatLaunched(launched)}`
     },
   }),
 
@@ -975,7 +1116,8 @@ const TOOLS = [
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args) {
-      return formatScreenshot(await call('screenshot', drop(args)))
+      const answer = await call('screenshot', drop(args))
+      return formatScreenshot(answer) + (await emptyScreenNote(args, answer))
     },
   }),
 
@@ -1656,19 +1798,28 @@ const TOOLS = [
   defineTool({
     name: 'lw_speech',
     description:
-      'Transcribe speech on this phone with no network and no API key: the app links sherpa-onnx '
-      + 'and runs SenseVoice (Chinese, English, Cantonese, Japanese and Korean, with punctuation) '
-      + 'in its own process, so the audio never leaves the device. op=status reports the engine and '
-      + 'whether the model is on disk; op=prepare downloads it once, about 240 MB from the '
-      + 'hf-mirror copy of the model (huggingface.co itself is unreachable from this phone), plus '
-      + 'the 1.8 MB silero voice-activity model that the always-listening chain cuts segments '
-      + 'with; op=transcribe turns one 16 kHz mono PCM16 WAV file into text. This is the same '
-      + "engine the GUI's own voice input button uses, so prepare is what makes that button usable.",
+      'Transcribe speech on this phone with no network and no API key: everything runs in the '
+      + 'app process, so the audio never leaves the device. Two engines, and engine= picks one: '
+      + 'engine=glm is Zhipu GLM-ASR-Nano (1.5 B, Q4_K, samples at a time of CPU: a couple of '
+      + 'seconds for a short phrase, ten seconds or more for a long sentence) which is the accurate '
+      + 'one and what the GUI voice input button uses by default, and engine=sherpa is SenseVoice '
+      + '(Chinese, English, Cantonese, Japanese and Korean, with punctuation) which is the fast one. '
+      + 'op=status reports both engines and whether their models are on disk; op=prepare downloads '
+      + 'the one named, from the hf-mirror copy (huggingface.co itself is unreachable from this '
+      + 'phone) - GLM-ASR is about 1.6 GB, SenseVoice about 240 MB plus the 1.8 MB silero '
+      + 'voice-activity model that the one-sentence window cuts segments with; op=transcribe turns '
+      + 'one 16 kHz mono PCM16 WAV file into text.',
     parameters: {
       op: {
         type: 'string',
         required: true,
         description: 'status, prepare or transcribe',
+      },
+      engine: {
+        type: 'string',
+        description:
+          'glm (accurate, 1.5 B, slow) or sherpa (fast, small); default is the accurate one, and '
+          + 'op=status ignores it',
       },
       wav: {
         type: 'string',
@@ -1686,32 +1837,47 @@ const TOOLS = [
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args) {
+      const engine = speechEngineOf(args.engine) ?? SPEECH_ENGINE_DEFAULT
       if (args.op === 'status') {
         const info = await speechInspect()
         return [
-          `engine ${info.engine} ${info.sherpa} (onnxruntime ${info.onnxruntime})`,
-          `model ${info.model} in ${info.directory}`,
+          `SenseVoice: engine ${info.engine} ${info.sherpa} (onnxruntime ${info.onnxruntime})`,
+          `  model ${info.model} in ${info.directory}`,
           info.present
-            ? `downloaded: ${info.modelBytes} bytes of weights, ${info.tokensBytes} bytes of tokens`
-            : 'the model is not downloaded yet, so op=prepare is what comes first',
+            ? `  downloaded: ${info.modelBytes} bytes of weights, ${info.tokensBytes} bytes of tokens`
+            : '  not downloaded yet: op=prepare engine=sherpa fetches it (about 240 MB)',
+          `GLM-ASR-Nano: llama.cpp with mtmd, ${info.glmPresent ? 'downloaded' : 'not downloaded yet'}`
+            + ` in ${info.glm?.directory ?? 'nowhere yet'}`,
+          info.glmPresent
+            ? `  Q4_K ${info.glm.modelBytes} bytes, audio encoder ${info.glm.mmprojBytes} bytes,`
+              + ` loaded in memory: ${info.glm.loaded ? 'yes' : 'no'}`
+            : '  op=prepare engine=glm fetches it (about 1.6 GB), then transcribe with engine=glm',
           info.vad
             ? `silero VAD downloaded: ${info.vadBytes} bytes at ${info.vadPath}`
             : `the silero VAD is missing (${info.vadBytes} bytes at ${info.vadPath}): the wake word`
               + ' still listens, but nothing gets cut into segments until op=prepare fetches it',
-          `loaded in memory: ${info.loaded ? 'yes' : 'no'}`,
+          `SenseVoice loaded in memory: ${info.loaded ? 'yes' : 'no'}`,
           `languages: ${info.languages}`,
+          `the voice input button in the GUI uses: ${SPEECH_ENGINE_DEFAULT}`,
         ].join('\n')
       }
       if (args.op === 'prepare') {
-        const info = await speechPrepare()
-        return `the model is ready in ${info.directory}; the GUI voice input button (and`
-          + ' op=transcribe) can use it now'
+        if (engine === SPEECH_ENGINE_GLM) {
+          const info = await speechPrepareGlm()
+          return `the GLM-ASR-Nano model is ready in ${info.glm.directory}, about 1.6 GB of it;`
+            + ' transcribe with engine=glm, and the GUI voice input button uses it by default'
+        }
+        const info = await speechPrepare(SPEECH_ENGINE_SHERPA)
+        return `the SenseVoice model is ready in ${info.directory}; op=transcribe engine=sherpa`
+          + ' can use it now'
       }
       if (args.op === 'transcribe') {
         if (!args.wav) throw new Error('op=transcribe names the recording with wav=<a 16 kHz mono WAV>')
-        const answer = await speechTranscribe(args.wav, args.language)
-        return `${answer.text}\n\n(${answer.seconds.toFixed(1)}s of audio, ${answer.language},`
-          + ` ${answer.elapsedMs} ms of inference)`
+        const answer = await speechTranscribe(args.wav, args.language, engine)
+        const detail = engine === SPEECH_ENGINE_GLM
+          ? `${(answer.elapsedMs / 1000).toFixed(1)}s of CPU for the whole request`
+          : `${answer.seconds.toFixed(1)}s of audio, ${answer.language}`
+        return `${answer.text}\n\n(${detail}, ${answer.elapsedMs} ms)`
       }
       throw new Error(`op has to be status, prepare or transcribe, not "${args.op}"`)
     },
@@ -1726,7 +1892,11 @@ const TOOLS = [
       + '(bringing it up costs a few hundred milliseconds, so it is kept while in use). Use it to '
       + 'read a result back to the person holding the phone, for instance one line when a task is '
       + 'done. Whether sound actually came out is theirs to confirm: the answer only reports what '
-      + 'the engine said.',
+      + 'the engine said. The engine and its voice are chosen on the settings page: the system '
+      + 'engine keeps its own volume and follows the phone\'s media volume; an imported on-device '
+      + 'voice reads at its own quiet level and has a volume (percent) the settings page owns; the '
+      + 'free Edge online engine and a self-hosted OpenAI-compatible endpoint (address and key live '
+      + 'on the settings page) both take their loudness from the service they talk to.',
     parameters: {
       op: {
         type: 'string',
@@ -1745,6 +1915,13 @@ const TOOLS = [
         type: 'number',
         description: 'Speech rate from 0.5 to 2.0 (default 1.0)',
       },
+      volume: {
+        type: 'number',
+        description: 'How loud, in percent, from 0 to 300 (default: whatever the settings page '
+          + 'holds). 100 is the on-device model\'s own level, which is a quiet one; the gain only '
+          + 'exists on the on-device engine — the system engine and both online engines keep their '
+          + 'own loudness, and the answer says so when a number is ignored',
+      },
     },
     output: {
       schema: { type: 'string' },
@@ -1755,6 +1932,7 @@ const TOOLS = [
       if (args.text !== undefined) request.text = args.text
       if (args.interrupt !== undefined) request.interrupt = args.interrupt
       if (args.rate !== undefined) request.rate = args.rate
+      if (args.volume !== undefined) request.volume = args.volume
       const answer = await call('speak', request)
       if (args.op === 'status') {
         const onDevice = answer.readingWith === 'on-device'
@@ -1764,6 +1942,13 @@ const TOOLS = [
             : 'the system engine'}`,
           `rate: ${answer.rateFollowsSystem ? 'whatever the system says' : `${answer.rate} x`}`
             + `, voice: ${answer.selectedVoice}`,
+          answer.volume === undefined
+            ? 'volume: this app build does not report one'
+            : onDevice
+              ? `volume: ${answer.volume}% of the model's own level (range ${answer.volumeRange}%;`
+                + ' the system engine has no such knob, it keeps its own)'
+              : `volume: ${answer.volume}% is set for the on-device engine, which is not the one in`
+                + ' use right now; the system engine follows the phone\'s media volume',
           answer.readAloud === false
             ? 'read-aloud: off (a finished reply is not read on its own; a line asked for by name still is)'
             : 'read-aloud: on (every finished reply is read out loud)',
@@ -1782,9 +1967,11 @@ const TOOLS = [
         if (!answer.spoken) return `the engine did not report finishing: ${answer.detail}`
         // 自带那条要报出用的是哪个音色目录, 系统那条没有这一项
         const withVoice = answer.readingWith === 'on-device' ? ` with the on-device voice ${answer.voice}` : ''
+        // 点了音量却没落到这条引擎上时要把这句带上: 不然模型以为它调过了, 而人听到的还是原样
+        const volumeNote = answer.volumeIgnored && answer.volumeNote ? `; ${answer.volumeNote}` : ''
         return `the engine took ${answer.characters} characters` + withVoice
           + (answer.pieces > 1 ? ` in ${answer.pieces} pieces` : '')
-          + ' and reported it finished'
+          + ` and reported it finished${volumeNote}`
       }
       if (args.op === 'stop') {
         return answer.stopped
@@ -1799,19 +1986,30 @@ const TOOLS = [
   defineTool({
     name: 'lw_voice',
     description:
-      'The always-listening voice chain on this phone: the app keeps one microphone open, cuts it '
-      + 'into sentences with a silero VAD (3 s of silence ends one, 15 s at most each) and '
-      + 'transcribes each sentence on-device, then drops it into a queue the host sends into the '
-      + 'conversation as a `voice`-sourced message (steering into a running turn when there is one, '
-      + 'creating a session when there is none). A line that matches a command sentence is different: '
-      + 'it is executed here as a mode switch and never delivered (for example 打开视频模式, 回到手机模式 '
-      + '- see VOICE_COMMANDS). op=inbox counts those apart from the delivered ones, and op=say says so '
+      'The voice inbox on this phone: the app cuts what you say into sentences with a silero VAD '
+      + '(3 s of silence ends one, 15 s at most each), transcribes each one on-device, and drops it '
+      + 'into a queue the host sends into the '
+      + 'conversation as a `voice`-sourced message. Where a line lands is fixed: **the ball has a '
+      + 'conversation of its own, in the `dsh-ball` folder of the workspace**, and every line either '
+      + 'continues that one (steering into it while its turn runs) or opens a new one there - it is '
+      + 'never spliced into whatever conversation the person happens to have open in the GUI. One '
+      + 'exception: **the ball\'s reply box can name its own conversation** - a reply carries the '
+      + 'session it came from, and anything typed or spoken back while that box is up is delivered '
+      + 'there (`to`), so answering the box keeps answering that same window even after an hour. A line '
+      + 'that matches a command sentence is different: '
+      + 'it is executed here and never delivered (for example 打开视频模式, 回到手机模式 - see '
+      + 'VOICE_COMMANDS; the app itself writes 打断当前回答 when the ball is double-tapped while it '
+      + 'says 正在想, and that one cancels the turn running in the ball conversation). '
+      + 'op=inbox counts those apart from the delivered ones, and op=say says so '
       + 'when a line was taken that way. op=inbox reports that queue, where the reader has '
       + 'got to and how the last few deliveries landed; op=clean shows what a piece of markdown '
       + 'would sound like when read aloud (code blocks, tables and links are stripped); op=read '
       + 'speaks a line right now through the same cleaning and the same engine the automatic reading '
-      + 'uses; op=say delivers a line by hand, exactly as if it had been spoken. The chain itself is '
-      + 'started and stopped with lw_wakeword, whose status reports it.',
+      + 'uses; op=say delivers a line by hand, exactly as if it had been spoken. What opens that '
+      + 'cutting + recognition chain is lw_wakeword: the wake word is started and stopped with it, '
+      + 'and a hit (or a tap on the ball) opens the chain for exactly ONE sentence, which closes '
+      + 'again 10 s after the last thing it heard. Video mode is the only thing that keeps it '
+      + 'resident instead of closing after one sentence.',
     parameters: {
       op: {
         type: 'string',
@@ -1872,13 +2070,36 @@ const TOOLS = [
               + ` (${voiceDelivery.steered} steered, ${voiceDelivery.queued} queued)`
               + `${voiceDelivery.sessionId ? `, last to ${voiceDelivery.sessionId}` : ''}`
               + `${voiceDelivery.opened ? `, ${voiceDelivery.opened} opened a new conversation` : ''}`,
+            `${voiceDelivery.current
+              ? `the current conversation is ${voiceDelivery.current}`
+              : 'there is no current conversation yet'}`
+              + `${voiceDelivery.reused ? ` (${voiceDelivery.reused} line(s) reused it)` : ''}`
+              + `${voiceDelivery.why ? `, last line: ${voiceDelivery.why}` : ''}`,
+            // **跳过的那几句要说出来** (见 [startVoiceInbox]): 订阅的人看不到日志, 而"你说了话, 没有
+            // 回音"与"这一句没能送出去"是两件事
+            `${voiceDelivery.skipped} line(s) gave up after ${VOICE_DELIVER_TRIES} tries`
+              + `${voiceDelivery.lastSkip
+                ? `, last was #${voiceDelivery.lastSkip.seq}: ${voiceDelivery.lastSkip.reason}`
+                : ''}`,
             `${voiceReading.count} reply(ies) read aloud`
               + `${voiceReading.skipped ? `, ${voiceReading.skipped} skipped because read-aloud is off` : ''}`
+              + `${voiceReading.reply
+                ? `, last one ${voiceReading.reply.channel ? 'went into' : 'was kept for'} the floating channel`
+                : ''}`
               + `${voiceReading.error ? `, last problem: ${voiceReading.error}` : ''}`,
             `${voiceCommands.count} spoken command(s)`
               + `${voiceCommands.last ? `, last was "${voiceCommands.last.said}" -> ${voiceCommands.last.mode}`
                 + ` (${voiceCommands.last.switched ? 'switched' : 'not switched'})` : ''}`
               + `${voiceCommands.error ? `, last problem: ${voiceCommands.error}` : ''}`,
+            // 双击打断那一条 (主人 2026-10-06 加的): "要了几次 / 真的取消了几场" 与"切没切模式"一样,
+            // 是订阅的人判断"那一下到底做了什么"的唯一读数
+            `${voiceInterrupt.count} interrupt(s) asked (${voiceInterrupt.cancelled} cancelled a turn)`
+              + `${voiceInterrupt.last
+                ? `, last: ${voiceInterrupt.last.cancelled ? 'cancelled' : 'nothing to cancel'}`
+                  + `${voiceInterrupt.last.sessionId ? ` in ${voiceInterrupt.last.sessionId}` : ''}`
+                  + ` - ${voiceInterrupt.last.detail}`
+                : ''}`
+              + `${voiceInterrupt.error ? `, last problem: ${voiceInterrupt.error}` : ''}`,
             ...lines.map((line) => `  #${line.seq} ${line.text}`),
           ],
           {
@@ -1888,6 +2109,7 @@ const TOOLS = [
             delivery: { ...voiceDelivery },
             reading: { ...voiceReading },
             commands: { ...voiceCommands },
+            interrupts: { ...voiceInterrupt },
           },
         )
       }
@@ -1901,26 +2123,50 @@ const TOOLS = [
       + 'The ball does not take focus, so taps outside it still reach the app underneath, and it is '
       + 'dragged to an edge where it tucks itself half out of the screen and stays dim until '
       + 'something happens (the way the system\'s own assistant ball behaves). Its face says what it '
-      + 'is doing: 正在听 while the always-listening chain is running, 正在想 while a turn is running '
-      + 'here on the host, 正在念 while a reply is being read aloud, and the app icon when it is idle. '
-      + 'Tap it to speak (that goes into the always-listening chain, not the page microphone), hold '
-      + 'it for the menu (keyboard strip, always-listening voice, the two modes, back to the app, '
-      + 'close the ball) and drag it to dock it. '
+      + 'is doing: 正在听 while it is listening for the sentence you are saying, 正在想 while a turn is '
+      + 'running here on the host, 正在说 while a reply is being spoken, and the app icon when it '
+      + 'is idle. '
+      + 'Tap it to speak (that goes into the app\'s own recognition chain, not the page microphone; '
+      + 'the first tap only summons the ball, the next one starts listening), hold '
+      + 'it for the menu (keyboard input channel, screen mode on/off, close the ball) and drag it to '
+      + 'dock it. Double-tap it while it says 正在想 and that turn is interrupted (the ball asks this '
+      + 'host to cancel the turn running in the ball conversation and drops the word again). '
       + 'op=show puts the ball up - expand=true opens the keyboard strip as well, and that strip IS '
       + 'focusable, so while it is open touches outside it no longer pass through; op=expand and '
-      + 'op=collapse open and close that strip; op=hide takes the ball away (and clears the stored '
-      + '"keep it on screen" flag); op=state reports the permission, whether the ball is up, where it '
-      + 'is docked, which word it is showing, the active mode and the last problem. op=phase is the '
+      + 'op=collapse open and close that strip; op=channel opens the text channel instead (a 650 px '
+      + 'box the app draws itself: it grows with the text up to seven lines, follows the ball, sends '
+      + 'on Enter, closes as soon as that line went out, comes back up by itself - without taking '
+      + 'focus - when the reply arrives, closes by itself once nobody has touched it for 20 s, and '
+      + 'closes after a double tap on empty space - the second tap has to land within 300 ms of the '
+      + 'first one, a slower one just starts the count again); op=reply is the '
+      + 'host pushing a finished reply into that channel and is not something the model calls (it '
+      + 'does nothing while the ball is down, and it never brings the ball back); op=note is the same '
+      + 'push without being an answer - it is how a spoken or typed line that could not be delivered '
+      + 'says so, in the ball\'s own box; op=hide takes the ball away - it removes the '
+      + 'window itself, stops the service and clears the stored "keep it on screen" flag, and its '
+      + 'answer carries a problem field when the window would not come off; op=state reports the '
+      + 'permission, whether the ball is up and whether its service is running, where it '
+      + 'is docked, which word it is showing, whether it has tucked itself away at the edge yet and '
+      + 'which of the six reasons is holding it out (a finger on it, the menu, the voice chain, the '
+      + 'keyboard, the text channel, or simply not idle for 5 s yet), how long the text channel has '
+      + 'been untouched, how many times it was double-tapped to interrupt, the text channel and its '
+      + 'replies, the active mode and '
+      + 'the last problem. op=phase is the '
       + 'host pushing its own turn state and is not something the model calls.',
     parameters: {
       op: {
         type: 'string',
         required: true,
-        description: 'show, expand, collapse, hide, state, or phase (host-side push)',
+        description: 'show, expand, collapse, hide, state, channel, reply, note or phase'
+          + ' (the last three are host-side pushes)',
       },
       expand: {
         type: 'boolean',
         description: 'For op=show: also open the keyboard strip (it takes focus while open)',
+      },
+      text: {
+        type: 'string',
+        description: 'For op=reply: the text to put into the floating channel',
       },
     },
     output: {
@@ -1930,6 +2176,7 @@ const TOOLS = [
     async execute(args) {
       const request = { op: args.op }
       if (args.expand !== undefined) request.expand = args.expand
+      if (args.text !== undefined) request.text = args.text
       const answer = await call('overlay', request)
       if (args.op === 'show' || args.op === 'expand') {
         return `the ball is up${answer.expanded ? ', with the keyboard strip open' : ''}:`
@@ -1939,11 +2186,23 @@ const TOOLS = [
           + (answer.url ? '' : ' (no GUI address yet, so the strip cannot open)')
       }
       if (args.op === 'hide' || args.op === 'collapse') return answer.detail
+      if (args.op === 'channel' || args.op === 'reply') {
+        const where = answer.channel === true ? 'open' : 'closed'
+        return `${answer.detail} (channel ${where})`
+      }
       return [
         `overlay permission: ${answer.permission ? 'granted' : 'not granted'}`,
         `ball: ${answer.showing ? `up at ${answer.x},${answer.y}${answer.expanded ? ' (strip open)' : ''}` : 'not up'}`
           + `, remembered: ${answer.remembered ? 'yes' : 'no'}`,
         `showing: ${answer.word || 'idle'}${answer.phase === 'thinking' ? ', a turn is running' : ''}`,
+        // 收边那一档: "为什么它还没半隐"就是这一行 —— 这个原因只有五种 (held / menu / listening /
+        // keyboard / activity 那一档开始了) 加"还没到点", 而主人 2026-10-06 报的毛病就落在 keyboard 上
+        `idle edge: ${answer.peeked ? 'peeked away' : 'out'}`
+          + `${answer.ballWait ? `, ${answer.ballWait === 'waiting' ? 'waiting' : answer.ballWait}` : ''}`
+          + `${answer.keyboard ? ', the keyboard counts as in use' : ''}`
+          + `${typeof answer.idleMs === 'number' ? `, idle ${answer.idleMs}ms` : ''}`,
+        `text channel: ${answer.channel ? 'open' : 'closed'}`
+          + `, ${answer.replies ?? 0} reply(ies) in it`,
         `mode: ${answer.mode}`,
         `host: ${answer.host}`,
         answer.said ? `last said: ${answer.said}` : '',
@@ -1957,32 +2216,41 @@ const TOOLS = [
       'Listen for a wake word on this phone, so the agent can be called by voice instead of by '
       + 'typing. The listening runs in the app itself with sherpa-onnx keyword spotting - a 3.3M '
       + 'parameter zipformer, 16 kHz mono, nothing leaves the device and no API key is involved. '
-      + 'The wake word is a low-power gatekeeper and the always-listening voice chain is a second, '
-      + 'separate stage: the keyword spotter guards the word the whole time, and a hit opens '
-      + 'cutting + recognition (silero VAD + SenseVoice). Turning the wake word on never turns that '
-      + 'second stage on - a hit does. **A hit always buys one sentence**: the chain opens, what you '
-      + 'say goes into a new conversation, and then it closes again (10 s without a word is the idle '
-      + 'limit, and that is when the 240 MB model goes back). What voice=true / the app\'s own setting '
-      + 'page changes is whether the chain STAYS resident after that first sentence instead of '
-      + 'closing. A hit also makes that first recognised sentence open a NEW conversation rather than '
-      + 'steering into whatever is running. The app\'s settings page also decides what a hit does '
+      + 'The wake word is a low-power gatekeeper and the cutting + recognition chain (silero VAD + '
+      + 'SenseVoice) is a second stage: the keyword spotter guards the word the whole time, and a '
+      + 'hit opens that second stage. **A hit always buys one sentence**: the chain opens, what you '
+      + 'say goes into the ball\'s conversation, and then it closes again (10 s without a word is the '
+      + 'idle limit, and that is when the 240 MB model goes back). '
+      + '**Video mode is the one and only thing that keeps that chain resident** - the app\'s setting '
+      + 'page has no resident-voice switch of its own (the switch it used to have was removed in '
+      + '2.0.0, because turning it on in phone mode is exactly what made a conversation run on and '
+      + 'on). Switch with lw_mode: "video" makes it resident, "phone" or "screen" releases it. '
+      + 'Where that first sentence lands is decided by the clock alone (2026-10-06): inside the hour '
+      + 'since the last delivered line it joins the ball\'s current conversation (steering into its '
+      + 'running turn when there is one), and once that hour is up the next line opens a new one - a '
+      + 'wake word and a tap on the ball behave the same way. The app\'s settings page also decides '
+      + 'what a hit does '
       + 'beyond waking - just wake, or also switch to video mode / back to phone mode (those two go '
       + 'out as command sentences the host executes, so they are never delivered) - and whether it '
       + 'buzzes at all. '
       + 'op=status reports the model, the words being watched for, whether the microphone '
       + 'permission is granted, whether the listener is up, how many times it has fired, and '
-      + 'whether that second stage is allowed and running; '
+      + 'whether that second stage is resident right now; '
       + 'op=prepare downloads the model once (about 5.3 MB, four files, each checked against a '
-      + 'pinned sha256) and writes the default word 大肥鱼大肥鱼; '
+      + 'pinned sha256) and writes the default word table 肥鱼肥鱼 (the word itself plus three '
+      + 'tolerance spellings); '
       + 'op=keywords replaces the word table (each word is given as 词=拼音, for example '
-      + '大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2 - the pinyin is what the model needs, see '
+      + '肥鱼肥鱼=fei2 yu2 fei2 yu2 - the pinyin is what the model needs, see '
       + 'docs/wake-word.md); op=start '
       + 'starts the foreground listener, which keeps a notification with a 停止 button; op=stop '
-      + 'ends it. What happens on a hit is onWake: app brings the app forward (default, and the '
-      + 'one that works without the overlay permission), overlay floats the GUI window over '
-      + 'whatever is on the screen. Two things to say plainly: the microphone is really on the '
-      + 'whole time while it listens, and a short word does get false hits, '
-      + 'so threshold is worth tuning on the real device.',
+      + 'ends it. What happens on a hit is onWake: overlay (the default) brings up **the floating '
+      + 'ball**, whose face then says it is listening - the one-sentence window a hit already '
+      + 'opened is exactly what the ball points at, so nothing else runs and no activity is pulled '
+      + 'forward; app brings the app forward, which '
+      + 'is also where a hit falls back when there is no ball (the switch is off, the overlay '
+      + 'permission is missing, or the host is not up), so nothing goes silent either way. Two '
+      + 'things to say plainly: the microphone is really on the whole time while it listens, and a '
+      + 'short word does get false hits, so threshold is worth tuning on the real device.',
     parameters: {
       op: {
         type: 'string',
@@ -1994,7 +2262,7 @@ const TOOLS = [
         items: { type: 'string' },
         description:
           'For op=keywords (and for op=prepare, to override the default word): one "词=拼音" entry'
-          + ' per word, for example "大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2" or'
+          + ' per word, for example "肥鱼肥鱼=fei2 yu2 fei2 yu2" or'
           + ' "小爱同学=xiao3 ai4 tong2 xue2". Tone numbers'
           + ' are what the model wants; pinyin already carrying tone marks is accepted as it is',
       },
@@ -2017,19 +2285,14 @@ const TOOLS = [
       onWake: {
         type: 'string',
         description:
-          'For op=start: "app" brings the app forward, "overlay" floats the GUI window (default app)',
-      },
-      voice: {
-        type: 'boolean',
-        description:
-          'For op=start: whether the always-listening voice chain may STAY resident after a hit'
-          + ' (cutting + recognition kept open). Defaults to whatever the app\'s own setting page'
-          + ' holds, and its own default is off. A hit always opens that chain for one sentence'
-          + ' either way - this only decides whether it closes again afterwards',
+          'For op=start: "overlay" (the default) wakes the floating ball\'s own voice input, "app" '
+          + 'brings the app forward. Either way a hit falls back to the app when there is no ball '
+          + '(its switch is off, the overlay permission is missing, or the host is not up). This is '
+          + 'read once, when the listener starts, and is not stored: leaving it out means "overlay"',
       },
       vibrateMs: {
         type: 'integer',
-        description: 'For op=start: how long to buzz on a hit (default 200, 0 for silent)',
+        description: 'For op=start: how long to buzz on a hit (default 500, 0 for silent)',
       },
     },
     output: {
@@ -2047,9 +2310,13 @@ const TOOLS = [
           `microphone permission: ${info.permission ? 'granted' : `not granted - ${info.permission}`}`,
           `listener: ${info.listening ? 'up' : 'not running'}, ${info.hits} hit(s)`
             + (info.lastKeyword ? `, last was ${info.lastKeyword} at ${new Date(info.lastHitAt).toLocaleString()}` : ''),
-          `always-listening voice: ${info.voiceActive ? 'running' : 'not running'}`
-            + ` (allowed by the setting: ${info.allowVoice ? 'yes' : 'no'},`
-            + ` the listener is running with: ${info.voiceAllowed ? 'yes' : 'no'})`,
+          `voice chain: ${info.voiceActive
+            ? 'resident (video mode) - keep talking, no wake word needed'
+            : 'not resident - a hit or a tap on the ball buys one sentence'}`,
+          // 视频模式里说的话投给哪一场 (2026-10-07): 定格的那个 id 与页面现在报上来的那个 id, 两个一起
+          // 看才说得清"打开视频模式那句话与之后说的话落在同一场"这件事
+          `video-mode voice target: ${info.videoTarget || 'not pinned'}`
+            + ` (the GUI is showing: ${info.uiSession || 'nothing reported yet'})`,
           info.unknownTokens
             ? `these tokens are not in the model's table, so their lines would be dropped silently:`
               + ` ${info.unknownTokens}`
@@ -2076,18 +2343,16 @@ const TOOLS = [
       }
       if (args.op === 'start') {
         const request = { op: 'start' }
-        for (const key of ['threshold', 'score', 'onWake', 'vibrateMs', 'voice']) {
+        for (const key of ['threshold', 'score', 'onWake', 'vibrateMs']) {
           if (args[key] !== undefined) request[key] = args[key]
         }
         const answer = await call('wakeword', request)
         return `listening for ${answer.keywords}; the microphone is on until op=stop, and a hit`
-          + ' shows up in op=status. A hit always buys one sentence (it opens the cutting +'
-          + ' recognition chain and what you say goes into a new conversation). Always-listening voice'
-          + ' is '
-          + (answer.voiceAllowed
-            ? 'also set to stay resident, so the chain is kept open after that sentence'
-            : 'not set to stay resident, so the chain closes again after that sentence; pass'
-              + ' voice=true (or turn it on in the app\'s own setting page) to keep it open')
+          + ' shows up in op=status. A hit (or a tap on the ball) opens the cutting + recognition'
+          + ' chain for exactly ONE sentence, and what you say lands in the ball conversation -'
+          + ' reused while it is inside the hour, a new one once the hour is up; the'
+          + ' chain closes again 10s after the last thing it heard. **Video mode is what keeps that'
+          + ' chain resident** (lw_mode mode="video") - there is no resident-voice switch in the app'
       }
       if (args.op === 'stop') {
         const answer = await call('wakeword', { op: 'stop' })
@@ -2887,7 +3152,7 @@ const SPEECH_FILES = [
 ]
 
 /**
- * The silero voice-activity model the always-listening chain cuts segments with
+ * The silero voice-activity model the one-sentence window cuts segments with
  *
  * Same file and same sha256 as the one dsh's own `speech-to-text-sensevoice` package pins, so the
  * segmentation behaves the way that package's does. It is 1.8 MB - small enough that the app hashes
@@ -2905,6 +3170,53 @@ const SPEECH_VAD = {
 const SPEECH_VAD_SOURCES = [
   'https://hf-mirror.com/csukuangfj/vad/resolve/main',
   'https://huggingface.co/csukuangfj/vad/resolve/main',
+]
+
+/**
+ * The second engine: Zhipu's GLM-ASR-Nano-2512 (1.5 B params, MIT)
+ *
+ * It is a different animal from SenseVoice: an audio encoder plus a small Llama decoder, run by
+ * llama.cpp inside the APK (the app spawns libglmasr.so and keeps it resident). It is markedly
+ * better on Mandarin, dialects and quiet speech - and markedly slower: every utterance costs
+ * seconds, not fractions of a second.
+ *
+ * The weights are the community GGUF conversion of the official release. The main model has no
+ * quantised audio encoder to go with it - upstream only published BF16 and Q8_0 for the mmproj -
+ * so Q8_0 is the one that travels, and Q4_K is the main model because that is the balanced one.
+ *
+ * Weights come from the hf-mirror copy first for the same reason as SenseVoice: the phone cannot
+ * reach huggingface.co. Both files are checked against the sha256 the mirror publishes.
+ */
+const SPEECH_ENGINE_SHERPA = 'sherpa'
+const SPEECH_ENGINE_GLM = 'glm'
+
+/**
+ * Which engine the page's own voice input button uses
+ *
+ * The accurate one: pressing that button is a deliberate act, and the wait is what the user asked
+ * to pay for accuracy. Anything interactive that cannot wait (the wake-word chain in the app)
+ * stays on SenseVoice and does not read this constant.
+ */
+const SPEECH_ENGINE_DEFAULT = SPEECH_ENGINE_GLM
+
+const SPEECH_GLM_SOURCES = [
+  'https://hf-mirror.com/concedo/GLM-ASR-Nano-2512-GGUF/resolve/main',
+  'https://huggingface.co/concedo/GLM-ASR-Nano-2512-GGUF/resolve/main',
+]
+
+const SPEECH_GLM_FILES = [
+  {
+    name: 'model-q4k.gguf',
+    remote: 'GLM-ASR-Nano-1.6B-2512-Q4_K.gguf',
+    bytes: 980472032,
+    sha256: '5d2fc1b22f90286b0d7141c821d9eac4e294cd6d6cc480d2d9bd7427c9c718af',
+  },
+  {
+    name: 'mmproj-q8.gguf',
+    remote: 'mmproj-GLM-ASR-Nano-2512-Q8_0.gguf',
+    bytes: 720211744,
+    sha256: '764227793db868b41b2e8dbe04ab2633cc503e1020466928ef95c60fd7fbb0d4',
+  },
 ]
 
 /** How far the model is, as the page's voice input reads it */
@@ -2939,17 +3251,53 @@ async function speechInspect() {
   )
   const present = SPEECH_FILES.every((file, index) => sizes[index] === file.bytes)
   const vad = await speechSize(info.vadPath) === SPEECH_VAD.bytes
+  const glmDirectory = info.glm?.directory
+  const glmSizes = glmDirectory
+    ? await Promise.all(SPEECH_GLM_FILES.map((file) => speechSize(join(glmDirectory, file.name))))
+    : []
+  // A size match is not a hash check; the download path is what checks sha256, this only answers
+  // "is it worth asking the engine to load that file"
+  // 名字别叫 glm: 那个字段是 app 报回来的状态对象 (目录 / 字节数 / 有没有常驻), 这一个才是
+  // "两个文件的大小都对得上" 那件事 —— 混用一个名字会让 provider 那一路拿到 undefined
+  const glmPresent = Boolean(glmDirectory)
+    && SPEECH_GLM_FILES.every((file, index) => glmSizes[index] === file.bytes)
   speechAnnounce(
-    present && vad ? 'ready' : 'unprepared',
-    present && vad
-      ? `sherpa-onnx ${info.sherpa}`
-      : present ? 'the silero VAD is not downloaded yet' : 'the model is not downloaded yet',
+    (glmPresent || (present && vad)) ? 'ready' : 'unprepared',
+    glmPresent
+      ? 'GLM-ASR-Nano (Q4_K) is on disk'
+      : present && vad
+        ? `sherpa-onnx ${info.sherpa}`
+        : present ? 'the silero VAD is not downloaded yet' : 'the model is not downloaded yet',
   )
-  return { ...info, present, vad }
+  return { ...info, present, vad, glmPresent }
+}
+
+/** Which engine an `engine` argument (or the default) names, anything unknown falls back */
+function speechEngineOf(value) {
+  const asked = String(value ?? '').trim().toLowerCase()
+  if (asked === SPEECH_ENGINE_GLM) return SPEECH_ENGINE_GLM
+  if (asked === SPEECH_ENGINE_SHERPA) return SPEECH_ENGINE_SHERPA
+  return null
+}
+
+/** Fetch the GLM-ASR-Nano weights (about 1.6 GB) into the app's private directory */
+async function speechPrepareGlm() {
+  const info = await speechInspect()
+  const directory = info.glm?.directory
+  if (!directory) throw new Error('the app did not name a directory for the GLM-ASR model')
+  await mkdir(directory, { recursive: true })
+  for (const file of SPEECH_GLM_FILES) {
+    const target = join(directory, file.name)
+    if (await speechSize(target) === file.bytes) continue
+    await speechDownload(file, target, SPEECH_GLM_SOURCES)
+  }
+  speechAnnounce('ready', 'GLM-ASR-Nano (Q4_K) is on disk')
+  return { ...info, glmPresent: true }
 }
 
 /** Fetch the model once, from whichever mirror answers */
-async function speechPrepare() {
+async function speechPrepare(engine = SPEECH_ENGINE_DEFAULT) {
+  if (engine === SPEECH_ENGINE_GLM) return await speechPrepareGlm()
   const info = await speechInspect()
   await mkdir(info.directory, { recursive: true })
   if (!info.present) {
@@ -2968,12 +3316,13 @@ async function speechPrepare() {
 }
 
 async function speechDownload(file, target, sources = SPEECH_SOURCES) {
+  const remote = file.remote ?? file.name
   let failure = null
   for (const base of sources) {
     const partial = `${target}.part`
     try {
-      speechAnnounce('downloading', `${file.name} from ${new URL(base).host}`)
-      const response = await fetch(`${base}/${file.name}`)
+      speechAnnounce('downloading', `${remote} from ${new URL(base).host}`)
+      const response = await fetch(`${base}/${remote}`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const digest = createHash('sha256')
       let received = 0
@@ -3000,13 +3349,75 @@ async function speechDownload(file, target, sources = SPEECH_SOURCES) {
   throw new Error(`could not download ${file.name}: ${failure?.message ?? failure}`)
 }
 
-/** One recording through the app's own engine; a missing model is an error, not a 240 MB surprise */
-async function speechTranscribe(wav, language) {
+/**
+ * One recording through the app's own engine
+ *
+ * A missing model is an error naming the prepare call, not a surprise multi-hundred-MB download
+ */
+async function speechTranscribe(wav, language, engine = SPEECH_ENGINE_DEFAULT) {
   const info = await speechInspect()
-  if (!info.present) {
-    throw new Error('the speech model is not downloaded yet: run lw_speech op=prepare once')
+  if (engine === SPEECH_ENGINE_GLM && !info.glmPresent) {
+    throw new Error(
+      'the GLM-ASR model is not downloaded yet: run lw_speech op=prepare engine=glm once'
+      + ' (about 1.6 GB), or ask for engine=sherpa to use the small one',
+    )
   }
-  return await call('speech', { op: 'transcribe', wav, language: language ?? 'auto' })
+  if (engine === SPEECH_ENGINE_SHERPA && !info.present) {
+    throw new Error(
+      'the SenseVoice model is not downloaded yet: run lw_speech op=prepare engine=sherpa once',
+    )
+  }
+  return await call('speech', { op: 'transcribe', wav, language: language ?? 'auto', engine })
+}
+
+/**
+ * 留住刚认完的那一段录音与它的结果 (最近 [SPEECH_KEEP] 段)
+ *
+ * 为什么留: 2026-10-07 主人报"输入框上麦克风识别时会出现乱码", 而真正的现场 —— 那一段 16 kHz
+ * 单声道 WAV —— 原来在 `finally` 里被删掉了, 于是事后只剩"我见过一串怪字"。留最近几段之后,
+ * 下一次出乱码可以拿同一段音频喂回模型 (`lw_speech op=transcribe wav=…`) 对账: 是模型听错了,
+ * 还是别的地方把它写坏了
+ *
+ * 分寸: 只留 [SPEECH_KEEP] 段 (每段几百 KB 量级), 结果写成一行 JSON 的日志也只留 [SPEECH_LOG_KEEP]
+ * 行; 目录在 `files/speech-models/recordings/` (应用私有, 与模型同一个父目录), 清理时按文件名排序
+ * 丢最旧的 —— 这几件事失败**只写日志**, 不该让一次转写白跑
+ */
+const SPEECH_KEEP = 5
+const SPEECH_LOG_KEEP = 200
+
+async function speechKeep(directory, wav, answer, engine) {
+  const home = dirname(directory)
+  const recordings = join(home, 'recordings')
+  const log = join(home, 'transcripts.log')
+  try {
+    await mkdir(recordings, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const kept = join(recordings, `recording-${stamp}.wav`)
+    await rename(wav, kept)
+    const line = JSON.stringify({
+      at: new Date().toISOString(),
+      engine,
+      wav: kept,
+      // 应用那侧回的是两份: `text` 是过了清洁口的 (真正插进输入框的那一份), `raw` 是引擎原话 ——
+      // 两个不一样时, 那就是"乱码被修回来 / 被丢掉"的那一次
+      text: answer?.text ?? null,
+      raw: answer?.raw ?? null,
+      ...(answer?.error === undefined ? {} : { error: String(answer.error) }),
+    })
+    await appendFile(log, `${line}\n`)
+    const files = (await readdir(recordings)).filter((name) => name.endsWith('.wav')).sort()
+    for (const name of files.slice(0, Math.max(0, files.length - SPEECH_KEEP))) {
+      await rm(join(recordings, name), { force: true })
+    }
+    const lines = (await readFile(log, 'utf8')).split('\n').filter((item) => item !== '')
+    if (lines.length > SPEECH_LOG_KEEP) {
+      await writeFile(log, `${lines.slice(-SPEECH_LOG_KEEP).join('\n')}\n`)
+    }
+  } catch (error) {
+    // 现场失败不该把这一次转写也带坏: 那一段录音本来就是要删的
+    await rm(wav, { force: true }).catch(() => {})
+    console.warn(`littlewhale-channel: keeping the recording failed: ${error?.message ?? error}`)
+  }
 }
 
 /* ── 唤醒词 ─────────────────────────────────────────────────────────────────
@@ -3069,11 +3480,23 @@ const WAKEWORD_FILES = [
 ]
 
 /**
- * 开门那一句; 改词表就是改这一行 (见 op=keywords)
+ * 缺省那一张词表; 改词表就是改这一组 (见 op=keywords)
  *
- * 应用那一侧 (设置页「唤醒词」) 的缺省与这里必须一致, 两边都会写 keywords.txt, 而它认的是内容
+ * 应用那一侧 (`WakeWordWords.DEFAULT_WORDS`) 的缺省与这里必须**同字** —— 两边都会写 keywords.txt, 而
+ * 只认内容不认谁写的。`tools/check-wake-words.mjs` 逐行比对两份实现, 所以谁单独改了都会被抓住
+ *
+ * **2026-10-06 主人定的是「肥鱼肥鱼」**: 六音节那一版「大肥鱼大肥鱼」作废, 而这一版不是一条, 是
+ * 本体加三条容错读音 —— 声母 f / h (肥 -> huí) 与韵母 ü / i (鱼 -> yí) 两处口音各一条, 再加两个
+ * 都改的那一条。四条同名, 设置页与通知去重之后仍然只念一个「肥鱼肥鱼」
  */
-const WAKEWORD_DEFAULT_WORDS = ['大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2']
+const WAKEWORD_DEFAULT_WORDS = [
+  '肥鱼肥鱼=fei2 yu2 fei2 yu2',
+  '肥鱼肥鱼=hui2 yu2 hui2 yu2',
+  '肥鱼肥鱼=fei2 yi2 fei2 yi2',
+  '肥鱼肥鱼=hui2 yi2 hui2 yi2',
+]
+
+/** 模型的符号表: `tokens.txt` 每行第一个字段 */
 
 /** 声母: 长在前, 免得 zh 被拆成 z + h */
 const PINYIN_INITIALS = [
@@ -3151,17 +3574,17 @@ function wakeWordLine(word, pinyin, symbols) {
   return `${tokens.join(' ')} @${word}`
 }
 
-/** "大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2" -> 一行; 没写等号就当成拼音与词同名的一对, 报错让人补上 */
+/** `肥鱼肥鱼=fei2 yu2 fei2 yu2` -> 一行; 没写等号就当成拼音与词同名的一对, 报错让人补上 (见 slice 那一头) */
 async function wakeWordLinesFor(args, directory) {
   const raw = args?.lines?.length ? args.lines : null
   if (raw) return raw.map((line) => String(line).trim()).filter(Boolean)
   const pairs = args?.words?.length ? args.words : null
-  if (!pairs) throw new Error('op=keywords names the words: words=["大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2", ...]')
+  if (!pairs) throw new Error('op=keywords names the words: words=["肥鱼肥鱼=fei2 yu2 fei2 yu2", ...]')
   const folder = directory ?? (await call('wakeword', { op: 'status' })).directory
   const symbols = await wakeWordSymbols(folder)
   return pairs.map((pair) => {
     const at = String(pair).indexOf('=')
-    if (at <= 0) throw new Error(`"${pair}" has to be 词=拼音, for example 大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2`)
+    if (at <= 0) throw new Error(`"${pair}" has to be 词=拼音, for example 肥鱼肥鱼=fei2 yu2 fei2 yu2`)
     return wakeWordLine(String(pair).slice(0, at).trim(), String(pair).slice(at + 1), symbols)
   })
 }
@@ -3304,6 +3727,37 @@ function voiceInboxPath() {
 }
 
 /**
+ * 浮标那一路的**专用工作区**: 由通道问出来的对话都落在这个目录里
+ *
+ * 主人 2026-10-06: "给浮标上的对话通道建一个专门的工作区, 对话都放在这个工作区中"。宿主进程的
+ * cwd 与 `HOME` 都是工作区根 (见 app 的 DshHost.spawn), 所以这里只取根下一个固定的子目录 ——
+ * 会按需创建, 但**不建在别处**: 主人要的是"对话们有个自己的家", 而它的文件也该由主人的文件管理器
+ * 看得见 (工作区本来就在共享存储里)
+ *
+ * 名字是中英混合的一处取舍: 目录名要能在文件管理器里一眼认出是什么, 所以用 `dsh-ball`, 而不是
+ * 一串没有意义的 hash —— 中文目录名在少数工具链里会踩编码, 这一条不值得赌
+ */
+const BALL_WORKSPACE_NAME = 'dsh-ball'
+
+function ballWorkspace() {
+  const home = process.env.HOME || process.cwd()
+  return join(home, BALL_WORKSPACE_NAME)
+}
+
+/** 确保那个目录在: 建不出来时回 null, 调用方退回"工作区根" (对话照旧能开, 只是没有自己的家) */
+async function ensureBallWorkspace() {
+  const directory = ballWorkspace()
+  try {
+    await mkdir(directory, { recursive: true })
+    return directory
+  } catch (error) {
+    // `hostCtx` 是 apply() 里挂上的 (见上面那个声明), 而这条路径只在投递时走到 —— 那时它一定在
+    warn(hostCtx, `the channel workspace ${directory} could not be created: ${error?.message ?? error}`)
+    return null
+  }
+}
+
+/**
  * 轮询那个队列的间隔
  *
  * 一次 tick 只是一次 `stat` (内容没变时连文件都不读, 见 voiceUnchanged), 所以这里可以很密。
@@ -3312,6 +3766,54 @@ function voiceInboxPath() {
  * 最坏多等 150 ms, 而平均只多等 75 ms
  */
 const VOICE_POLL_MS = 150
+
+/** 同一句话最多投几次 (投不动就跳过, 队列继续走, 见 [startVoiceInbox]) */
+const VOICE_DELIVER_TRIES = 3
+
+/** 一次投递最多等多久: 下游某一处 await 永不落定时把它放掉, 不许一直占着队列 */
+const VOICE_DELIVER_TIMEOUT_MS = 20_000
+
+/** 失败之后隔多久再试同一行 (150 ms 一拍上连着重试只会把日志刷满) */
+const VOICE_RETRY_MS = 3_000
+
+/** 刚失败过的那一行 (`seq`) 与"什么时候可以再试它" */
+const voiceRetry = { seq: null, at: 0 }
+
+/** 现在每一行试了几次 (`seq` -> 次数), 投成功或跳过都清掉 */
+const voiceAttempts = new Map()
+
+/**
+ * 超时那一层
+ *
+ * 它管的是"下游某一处卡住"这件事 —— 那一步既不 resolve 也不 reject, 而队列的 `running` 那一道闸
+ * 只在 `finally` 复位, 于是整条队列会静静地停在那里 (2026-10-06 真机上查到的就是这种形态)
+ *
+ * **被超时放掉的那一步并没有被取消** (JS 的 Promise 取消不了): 它可能过一会儿自己成了, 于是那一句
+ * 会在"已经报过没送出去"之后再进会话一次。这是刻意留下的一头 —— 宁可让主人多看到一句已经送进去的
+ * 话, 也不要让整条队列为它停摆
+ */
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`nothing answered within ${ms}ms`)),
+      ms,
+    )
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (error) => { clearTimeout(timer); reject(error) },
+    )
+  })
+}
+
+/**
+ * 这一行投失败之后该怎么办: 还试 (`retry`) 还是跳过 (`skip`)
+ *
+ * 纯函数, 没有设备也能量 (`tools/check-voice-inbox.mjs`): "试满就跳过"是这一批最要紧的一条 ——
+ * 只重试不跳过的写法在一行必败的句子面前就是"整条队列永久停摆"
+ */
+function voiceAfterFailure(tries) {
+  return tries >= VOICE_DELIVER_TRIES ? { retry: false, skip: true } : { retry: true, skip: false }
+}
 
 function voiceCursorPath(inbox) {
   return join(dirname(inbox), 'inbox.cursor')
@@ -3395,14 +3897,21 @@ async function voiceReadNew(inbox) {
     const seq = Number(record?.seq)
     const said = typeof record?.text === 'string' ? record.text.trim() : ''
     if (!Number.isFinite(seq) || seq <= since || !said) continue
-    // `wake` 是"这一句开一个新对话"那个记号 (应用那侧只有唤醒词命中之后的头一句带它, 见
-    // VoiceInbox.append)。老版本写的行没有这个键, 读起来与 false 是一回事
+    // `wake` 是"这一句是唤醒之后的头一句"那个记号 (应用那侧只有头一句带它, 见 VoiceInbox.append) ——
+    // **2026-10-06 起它只是记号, 不再是"另开一场"的判据**: 选哪一场由 [voiceCurrentSession] 那一笔
+    // 账 (2026-10-07 起是 20 分钟) 定, 见 [voiceTargetSession]。老版本写的行没有这个键, 读起来与
+    // false 是一回事
+    //
+    // `to` 是**回复框点名的那一场** (2026-10-06 加): 框在屏上时, 框里发出去的那句话投给"发出那条
+    // 回复的会话" (见 [voiceTargetSession] 的第一条判据)。老版本写的行没有这个键, 读起来就是"没点名"
+    const to = typeof record?.to === 'string' ? record.to.trim() : ''
     fresh.push({
       seq,
       text: said,
       source: record.source ?? 'voice',
       at: Number(record.at) || 0,
       wake: record.wake === true,
+      to,
     })
   }
   // 留一条"还没确认投出去"的记号, 见 voiceUnchanged: 它让失败的那句话下一次还被读出来
@@ -3414,6 +3923,15 @@ async function voiceReadNew(inbox) {
  * 一直看着那个队列, 有新句子就送进会话
  *
  * 一句一句地送, 送成功才前移游标: 顺序就是主人说话的顺序, 而中途失败不会让后面的话插到前面去
+ *
+ * **一行投不动不许把整条队列堵死** (2026-10-06 真机上发生的那一次): 只"投成功才前移"是必要的,
+ * 但它有个反面 —— 某一句话因为一步必败 (当时是唤醒词那一句拿了个 null 会话) 而永远投不出去时,
+ * 后面**每一句** (键盘打的那些在内) 都排在它后面, 而屏幕上没有任何东西说得出这件事。所以现在三条:
+ *
+ * - 一次投递有 [VOICE_DELIVER_TIMEOUT_MS] 的上限: 下游某一处 await 永不落定也不再占着 `running`
+ * - 同一行最多 [VOICE_DELIVER_TRIES] 次, 两次之间隔 [VOICE_RETRY_MS] (150 ms 一拍上连着重试只是刷日志)
+ * - 试满就**跳过它并前移游标**, 队列继续走; 同时记进 `voiceDelivery` 并往浮标那块框推一条提示
+ *   ([reportNote]) —— 跳过不等于静默丢掉
  */
 function startVoiceInbox(ctx, deliver) {
   const inbox = voiceInboxPath()
@@ -3427,9 +3945,36 @@ function startVoiceInbox(ctx, deliver) {
     running = true
     try {
       for (const line of await voiceReadNew(inbox)) {
+        // 刚失败过的那一行要等一会儿再试: 后面的句子按顺序等它, 不许插队
+        if (voiceRetry.seq === line.seq && Date.now() < voiceRetry.at) break
         console.log(`littlewhale-channel: voice line #${line.seq} picked up from the queue`)
-        await deliver(line)
-        await voiceCursorStore(inbox, line.seq)
+        try {
+          await withTimeout(deliver(line), VOICE_DELIVER_TIMEOUT_MS)
+          voiceAttempts.delete(line.seq)
+          voiceRetry.seq = null
+          await voiceCursorStore(inbox, line.seq)
+        } catch (error) {
+          const tries = (voiceAttempts.get(line.seq) ?? 0) + 1
+          voiceAttempts.set(line.seq, tries)
+          const reason = error?.message ?? String(error)
+          const next = voiceAfterFailure(tries)
+          warn(
+            ctx,
+            `voice line #${line.seq} was not delivered (try ${tries} of ${VOICE_DELIVER_TRIES}): ${reason}`,
+          )
+          if (next.retry) {
+            voiceRetry.seq = line.seq
+            voiceRetry.at = Date.now() + VOICE_RETRY_MS
+            break
+          }
+          voiceAttempts.delete(line.seq)
+          voiceRetry.seq = null
+          voiceDelivery.skipped += 1
+          voiceDelivery.lastSkip = { at: Date.now(), seq: line.seq, text: line.text, reason }
+          voiceDelivery.error = `line #${line.seq} was skipped after ${VOICE_DELIVER_TRIES} tries: ${reason}`
+          reportNote(ctx, `这句话没能送进会话 (试了 ${VOICE_DELIVER_TRIES} 次): ${reason}`)
+          await voiceCursorStore(inbox, line.seq)
+        }
       }
     } catch (error) {
       warn(ctx, `the voice inbox could not be read: ${error?.message ?? error}`)
@@ -3479,6 +4024,149 @@ async function voiceInboxState() {
   return { inbox, queued, cursor }
 }
 
+/**
+ * "当前对话"那一笔账: 一个会话 id 加它是什么时候拿到的
+ *
+ * **为什么落盘**: 宿主重启之后"20 分钟内那一场对话"还该是同一场 —— 记在内存里的话, 重启一次主人
+ * 刚才说的话就接不上了 (而重启在这台设备上是常事: 装一次包、改一次设置都要重来)
+ *
+ * 可变部分全在 [voiceSession.state] 这一个对象上: 换掉它就等于"什么都没记住", 而那正是
+ * `tools/check-voice-inbox.mjs` 要模拟的两件事 (宿主重启 / 过了很久)
+ */
+const voiceSession = { state: { file: { path: null, read: false }, current: { id: null, at: 0 } } }
+
+/** 把这一笔账清干净, 下一次读会重新从文件里读 (测试与"重启"用) */
+function voiceSessionReset() {
+  voiceSession.state = { file: { path: null, read: false }, current: { id: null, at: 0 } }
+}
+
+/**
+ * 多久之内那一场算"当前对话", 过了就当没有 —— 这是需求点名的那个数
+ *
+ * **2026-10-07 主人把 1 小时改成 20 分钟** ("ball 开新对话间隔 1h 改为 20min"): 从最后一句
+ * 成功投递起算, 20 分钟之内点球 / 喊唤醒词 / 打字都接在同一场, 过了才新开一场
+ */
+const VOICE_SESSION_MS = 20 * 60 * 1000
+
+/** 会话 id 是无符号 64 位, **别进整数**: 与虚拟屏那块屏的 id 同一个坑 */
+function voiceSessionPath() {
+  const inbox = voiceInboxPath()
+  return inbox === null ? null : join(dirname(inbox), 'session.json')
+}
+
+/** 账本读一次就够: 之后都以内存里那份为准 (写的时候顺手落盘) */
+async function voiceSessionLoad() {
+  const path = voiceSessionPath()
+  const state = voiceSession.state
+  if (path === null || state.file.read) return
+  state.file = { path, read: true }
+  const raw = await readFile(path, 'utf8').catch(() => null)
+  if (raw === null) return
+  try {
+    const record = JSON.parse(raw)
+    const id = record?.id === undefined || record?.id === null ? '' : String(record.id)
+    const at = Number(record?.at)
+    if (id && Number.isFinite(at)) state.current = { id, at }
+  } catch {
+    // 半行 / 坏文件: 当没有, 下一次投递会重新写一份
+  }
+}
+
+/** 现在那一场"当前对话"的 id, 没有 (或者过了 [VOICE_SESSION_MS]) 就是 null */
+async function voiceCurrentSession() {
+  await voiceSessionLoad()
+  const current = voiceSession.state.current
+  if (!current.id) return null
+  if (Date.now() - current.at > VOICE_SESSION_MS) return null
+  return current.id
+}
+
+/** 一句话投出去之后的记账: **每次发送都重算这一笔账**, 所以"20 分钟内可复用"是从最后一句起算 */
+async function voiceSessionBump(sessionId) {
+  const path = voiceSessionPath()
+  voiceSession.state.file = path === null ? { path: null, read: true } : { path, read: true }
+  voiceSession.state.current = { id: String(sessionId), at: Date.now() }
+  if (path === null) return
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, `${JSON.stringify(voiceSession.state.current)}\n`)
+}
+
+/**
+ * 目标会话: **默认只投浮标自己那一场, 而选场按优先级问三条** —— 回复框点名 > 那一笔账 > 新开
+ *
+ * 三条判据 (前两条是主人 2026-10-06 的口径: "只要是 1 小时内, 无论点球/喊唤醒词 都只在同一场
+ * 对话" + 当天那条例外 "有回复框时, 框里进的输入走发出回复那个窗口"; **2026-10-07 那个"1 小时"
+ * 改成 20 分钟**):
+ *
+ * - **回复框点名的 `to`** ([voiceReadNew] 那一行读出来的): 它还在、还是根会话就投它 —— 框里
+ *   发出的键盘与语音都从这条路进来, 于是"接着回答那个窗口"不会因为那笔账过了就换场
+ * - 20 分钟内那一场 ([voiceCurrentSession], 需求点名的那个数): 复用它 —— 它本来就是浮标开出来的,
+ *   唤醒词命中之后的头一句也一样接上去 (**`fresh` 不再另开一场**, 2026-10-05 那版"喊一声就是换
+ *   一件事说"作废)
+ * - 那笔账过了 / 那一场不在了 / 从来没有过: 开一场新的 —— 而新对话落在浮标那个工作区里 (见
+ *   [ensureBallWorkspace])
+ *
+ * 也就是说"浮标的对话"与"主人在界面里用哪一场"是两件事
+ *
+ * **改过什么, 为什么改**: 原来是四条, 还多两条 —— "有正在跑的那一轮就 `steer` 插进去"与"都没有就
+ * 投给会话列表里最近动过的那个根会话"。那两条会把一句浮标里说的话落进**主人此刻正在界面里用的那一场**
+ * (它的 cwd 是 `/sdcard/DSH` 之类, 不是 `dsh-ball`), 于是"浮标的对话都在 dsh-ball 里"这件事就不成立
+ * 了 —— 主人报的正是这一条。现在 [voiceDeliver] 只问这一个函数, 而它只认浮标自己那一场: 那一场正在跑
+ * 就 `steer`, 没在跑就 `followup`, 两种都落在浮标工作区
+ */
+async function voiceTargetSession(controller, signal, fresh, to) {
+  // 三条判据, **顺序就是优先级** (前一条不成立才看后一条):
+  //
+  // 1. **回复框点名的会话** (`to`, 2026-10-06 加): 框里发出去的那句话投给"发出那条回复的会话"。
+  //    它必须还活着、而且是个根会话 (子代理那一场不是"能对话的窗"); 不成立时**不当它是错**,
+  //    直接落回下面那条小时账 —— 框里的字照旧发得出去, 只是回到老规矩
+  // 2. **时间那一笔** ([voiceCurrentSession]): 20 分钟内那一场复用, 唤醒头句 / 点球头句也一样
+  //    (主人 2026-10-06 改的口径: "只要是 1 小时内, 无论点球/喊唤醒词 都只在同一场对话",
+  //    2026-10-07 那个数由主人改成 20 分钟);
+  //    `fresh` 只是记号, 不决定开不开新场
+  // 3. 都没有 (或那场不在了) 才开一场新的
+  const listed = await controller.list({}, signal)
+  const roots = listed.items.filter((item) => item.origin !== 'subagent' && !item.parentSessionId)
+  const asked = to ? roots.find((item) => String(item.sessionId) === String(to)) : undefined
+  if (asked !== undefined) {
+    return {
+      sessionId: asked.sessionId,
+      running: asked.running,
+      why: 'the reply box asked for its own conversation',
+    }
+  }
+  const current = await voiceCurrentSession()
+  if (current === null) {
+    return {
+      sessionId: null,
+      running: false,
+      why: fresh
+        ? 'the hour was up, so the wake word opened a new conversation'
+        : 'the ball had no conversation, so this opened one',
+    }
+  }
+  const reused = roots.find((item) => String(item.sessionId) === current)
+  if (reused === undefined) {
+    return { sessionId: null, running: false, why: 'the ball conversation is gone, so this opened one' }
+  }
+  return { sessionId: reused.sessionId, running: reused.running, why: 'the ball conversation, reused' }
+}
+/**
+ * 这一句话该投给哪一个会话, `null` 就是"没有可投的, 开一个新的"
+ *
+ * **"没有"有两种写法, 这是它踩过的一次坑** (2026-10-06): 会话列表为空时 [voiceTargetSession] 回
+ * `null`, 而唤醒词那一句回的是一张 `sessionId: null` 的记账卡 (那张卡要顺带说清"为什么开新对话")。
+ * 调用方只判 `target === null` 就会把后一种当成"有会话", 拿着一个 null 去 `resolveAgent` —— 那一步
+ * 必然失败, 而队列是"投成功才前移游标", 于是**这一句后面的每一句都卡死在队列里** (真机上就是
+ * "键盘输入谈不了话", 见 docs/floating-input.md 那一节). 所以"到底投给谁"只由这一个函数回答: 两种
+ * "没有"收成同一个 `null`
+ */
+function voiceTargetId(target) {
+  return target?.sessionId ?? null
+}
+
+function voiceBlockEnd() {}
+
 /* ── 说出来的那几句命令 ────────────────────────────────────────────────────── */
 
 /**
@@ -3488,13 +4176,22 @@ async function voiceInboxState() {
  * —— **所以命令词表在宿主这一侧**: 改它不必重下关键词表, 也不必重建 APK (推一个文件就行), 这正是
  * 当初选 host 侧那张表而不是 app 侧那张的理由
  *
- * 只有两句, 因为这一批要的只有"一句话全开"那一件事: `video` 是"提示词换成视频那份 + 常驻语音许可
- * 靠上 + 摄像头起来", `phone` 是收工那一条。`say` 里那几行是说法上的变体 —— 识别出来的句子不会被
- * 人念得一模一样, 而 `say` 里**没有列出来的**说法照旧当普通一句话投进会话 (宁可多一句对话, 也
+ * 只有三个模式, 因为要的只有"一句话全开"那一件事: `video` 是"提示词换成视频那份 +
+ * 常驻语音许可靠上 + 摄像头起来", `screen` 是"换成识屏那份 + 摄像头与常驻语音都收回", `phone` 是收工
+ * 那一条。**一句命令 = 一次桥调用** (见 [applyMode]): 这三句与模型调 `lw_mode`、与设备上那三个脚本
+ * (`modes/{phone,video,screen}.sh`) 走的是同一个切换。`say` 里那几行是说法上的变体 —— 识别出来的句子
+ * 不会被人念得一模一样, 而 `say` 里**没有列出来的**说法照旧当普通一句话投进会话 (宁可多一句对话, 也
  * 不要因为"猜它想切模式"而吃掉主人真正说的一句)
  *
- * 应用那一侧只保留两个规范句子 (`voice/VoiceCommands.kt`): 浮标菜单与「叫醒之后」那个开关写的
- * 就是它们, 而 `tools/check-voice-commands.mjs` 拿两份源码对着核, 两份不许漂
+ * 应用那一侧只保留五条规范句子 (`voice/VoiceCommands.kt`: 视频 / 识屏开 / 识屏关 / 手机 / 打断):
+ * 浮标菜单、浮标上那一记双击与「叫醒之后」那个开关写的就是它们, 而 `tools/check-voice-commands.mjs`
+ * 拿两份源码对着核, 两份不许漂
+ *
+ * **识屏那一档有两条**: 开与关各一句 (`phone` 那一支里那句「退出识屏模式」就是关). 浮标菜单上那一行
+ * 按当前模式显示开或关, 两边写的都是这里认得的整句 (主人 2026-10-06 点名的口径)
+ *
+ * **`interrupt` 那一支不是模式** (主人 2026-10-06 加的): 它说的是"把浮标那一场正在跑的轮打断",
+ * 入口是**球上那一记双击** (见 [runVoiceInterrupt]), 与那三句模式命令共用"整句相等"这一套
  */
 const VOICE_COMMANDS = [
   {
@@ -3502,8 +4199,29 @@ const VOICE_COMMANDS = [
     say: ['打开视频模式', '进入视频模式', '切到视频模式', '换成视频模式', '视频模式'],
   },
   {
+    mode: 'screen',
+    say: ['打开识屏模式', '进入识屏模式', '切到识屏模式', '换成识屏模式', '识屏模式'],
+  },
+  {
     mode: 'phone',
-    say: ['回到手机模式', '退出视频模式', '关闭视频模式', '关掉视频模式', '手机模式'],
+    say: [
+      '回到手机模式',
+      '退出视频模式',
+      '关闭视频模式',
+      '关掉视频模式',
+      '手机模式',
+      // 识屏那一档的"关" (浮标菜单那一行写的就是它): 退出识屏 = 收相机、收常驻语音, 与回到手机模式同一件事
+      '退出识屏模式',
+      '关闭识屏模式',
+      '关掉识屏模式',
+    ],
+  },
+  {
+    // 打断: 与那三句模式命令同一类 (整句相等, 不进会话), 但做的事是"取消浮标那一场正在跑的轮"
+    // 说法只加需要的这两条 —— 命令词表认错人比少认一句糟得多 ("打断"开头的话里很容易夹着一句
+    // 主人真想问的事)
+    interrupt: true,
+    say: ['打断当前回答', '打断这一轮'],
   },
 ]
 
@@ -3533,6 +4251,73 @@ function matchVoiceCommand(text) {
 const voiceCommands = { count: 0, last: null, error: null }
 
 /**
+ * 双击打断那一条的去向: 要了几次、真的取消了几场、最近一次为什么没取消 (lw_voice 会念它)
+ *
+ * 与 [voiceCommands] 分开是两个理由: 它不是"切模式"那一类 (没有 `mode`), 而它的成功判据也不是
+ * "切没切过去" —— "那一场没在跑"是一个**正常结果** (球上那三个字还该落下), 不是失败
+ */
+const voiceInterrupt = { count: 0, cancelled: 0, last: null, error: null }
+
+/** 把球上那三个字推回空闲: 打断的最后一步, 无论有没有真的取消到一轮 */
+function pushBallIdle() {
+  return call('overlay', { op: 'phase', phase: 'idle' }).catch(() => {})
+}
+
+/**
+ * 打断: **只取消浮标那一场对话正在跑的轮** (主人 2026-10-06 选的范围)
+ *
+ * 入口是球上那一记双击 ("正在想"里 300 ms 之内两下, 见 `OverlayService.onTap`), 而它落到这里只
+ * 经过一份队列 ([startVoiceInbox] 那一份) —— 应用那侧写一句 [VoiceCommands.INTERRUPT], 这一侧认出
+ * 来就地执行, **绝不进会话** (命令是"对这台手机说的", 不是"对助手说的一句话")
+ *
+ * 三件事与"切模式"那三句不同, 都要记住:
+ *
+ * 1. **范围只有浮标那一场**: 主人点名的口径是"只打断浮标那一场对话"。那一场是 [voiceCurrentSession]
+ *    记着的 (20 分钟内那一场, `voice/session.json`), 别的会话 (主人在界面里自己开的) 不动 ——
+ *    球上那三个字照样落下, 那一轮照旧跑 (下一次它开新轮时 `turn/start` 会把字推回来)
+ * 2. **没在跑也要推状态**: "那一场没在跑"时什么都不取消, 但那三个字必须落下 —— 主人双击要的是
+ *    "别让球一直写着正在想", 而状态是这一条唯一的可见结果
+ * 3. **不 resolve 冷会话**: `controller.resolveAgent` 会把一个没活着的会话恢复起来, 于是"打断"
+ *    会变成一个"启动" —— 所以先问 `controller.list` 那一份 `running`, 不在跑就到此为止
+ *
+ * `agent.cancel({ kind: 'user' }, { keepInbox: true })` 与界面那个停止键是同一条
+ * (`packages/api/session-controller/src/commands.ts`): `keepInbox` 保住还没投出去的几句,
+ * 而不是把它们一起丢掉
+ */
+async function runVoiceInterrupt(ctx, line) {
+  const controller = ctx.get('sessionController')
+  if (!controller) {
+    throw new Error('this profile has no session controller, so an interrupt has nowhere to go')
+  }
+  const signal = new AbortController().signal
+  const sessionId = await voiceCurrentSession()
+  let cancelled = false
+  let detail = 'the ball had no conversation yet, so there was nothing to interrupt'
+  if (sessionId !== null) {
+    const listed = await controller.list({}, signal)
+    const item = listed.items.find((one) => String(one.sessionId) === sessionId)
+    if (item === undefined) {
+      detail = `the ball conversation ${sessionId} is not in the session list any more`
+    } else if (item.running !== true) {
+      detail = `the ball conversation ${sessionId} was not running a turn`
+    } else {
+      const resolved = await ctx.agents.withoutInitiator(() => controller.resolveAgent(sessionId))
+      if ('error' in resolved) throw resolved.error
+      resolved.agent.cancel({ kind: 'user' }, { keepInbox: true })
+      cancelled = true
+      detail = `cancelled the turn running in the ball conversation ${sessionId}`
+    }
+  }
+  // 状态落下去这一步**无论上面走哪一支都做**: 双击要的就是"球上那三个字不再写着正在想"
+  await pushBallIdle()
+  voiceInterrupt.count += 1
+  if (cancelled) voiceInterrupt.cancelled += 1
+  voiceInterrupt.error = null
+  voiceInterrupt.last = { at: Date.now(), said: line.text, sessionId, cancelled, detail }
+  return { interrupt: true, cancelled, sessionId, said: line.text, detail }
+}
+
+/**
  * 执行一句命令: 走 [applyMode], 不投会话
  *
  * **失败也把游标前移**: 认出"这是一句命令"这件事已经做对了, 而"切模式没成"是一句要报出来的结果,
@@ -3540,7 +4325,7 @@ const voiceCommands = { count: 0, last: null, error: null }
  */
 async function runVoiceCommand(command, line) {
   try {
-    const { answer, lines } = await applyMode(command.mode)
+    const answer = await applyMode(command.mode)
     const switched = answer.switched === true
     voiceCommands.count += 1
     voiceCommands.error = switched ? null : `"${line.text}" did not switch the mode: ${answer.detail}`
@@ -3550,7 +4335,7 @@ async function runVoiceCommand(command, line) {
       switched,
       mode: answer.mode ?? command.mode,
       said: line.text,
-      detail: switched ? lines.join('\n') : String(answer.detail ?? ''),
+      detail: switched ? modeLines(answer).join('\n') : String(answer.detail ?? ''),
     }
   } catch (error) {
     const reason = error?.message ?? String(error)
@@ -3567,10 +4352,20 @@ async function runVoiceCommand(command, line) {
 const voiceDelivery = {
   lines: 0,
   sessionId: null,
+  /** 现在那一场"当前对话" (20 分钟内可复用的那个) */
+  current: null,
+  /** 这里面有几条是**复用**了当前对话 (而不是新开一场 / 投给最近动过的) */
+  reused: 0,
+  /** 最近一次为什么投给那一场: 正在跑的轮 / 复用的当前对话 / 最近动过的 / 新开的 */
+  why: null,
   steered: 0,
   queued: 0,
-  /** 其中几条是唤醒词开的**新对话** (应用那侧带了 `wake: true`) */
+  /** 其中几条真的**新开了一场** (那笔账过了 / 那一场不在了, 见 [voiceTargetSession]) */
   opened: 0,
+  /** 试满 [VOICE_DELIVER_TRIES] 次也没投出去、被跳过的句子有几条 */
+  skipped: 0,
+  /** 最近一条被跳过的 (序号 / 正文 / 为什么) —— 它必须答得出来, 跳过不等于静默丢掉 */
+  lastSkip: null,
   last: null,
   error: null,
 }
@@ -3597,26 +4392,6 @@ async function createVoiceMessage(text) {
 }
 
 /**
- * 目标会话: 正在跑的那一轮优先, 否则最近动过的那个**根**会话
- *
- * 两个判据分工不同: `ctx.agents.list()` 是活着的 agent, 其中 `status === 'running'` 的那个就是
- * 主人此刻正在进行的这一轮 —— 话说给它是"插进去"而不是"排到下一轮",没有正在跑的, 才去看会话
- * 列表里最近动过的那个根会话 (子代理与 fork 出来的不算: 那不是主人在看的那个)
- *
- * **`line.wake` 为真时这条整个不适用**: 唤醒词命中之后的那一句要**开一个新对话**, 所以它既不插
- * 正在跑的那一轮, 也不投给最近那个 —— 即使此刻有别的轮在跑 (主人 2026-10-05 定)
- */
-async function voiceTargetSession(ctx, controller, signal) {
-  const busy = ctx.agents
-    .list()
-    .find((agent) => agent.status === 'running' && agent.meta?.origin !== 'subagent')
-  if (busy !== undefined) return { sessionId: busy.sessionId, running: true }
-  const listed = await controller.list({}, signal)
-  const roots = listed.items.filter((item) => item.origin !== 'subagent' && !item.parentSessionId)
-  if (roots.length === 0) return null
-  const newest = roots.reduce((newest, item) => (item.updatedAt > newest.updatedAt ? item : newest))
-  return { sessionId: newest.sessionId, running: newest.running }
-}
 
 /**
  * 把一句话送进会话
@@ -3625,11 +4400,11 @@ async function voiceTargetSession(ctx, controller, signal) {
  * 会话不活着也能投: `resolveAgent` 会把它恢复起来 (与 dsh 自己的 schedule 那条路同一个做法), 所以
  * "应用在后台说了一句话"不会因为界面没开着而丢掉
  *
- * **`line.wake` 改写目标**: 唤醒词命中之后的那一句 (应用那侧 `VoiceInbox` 带了 `wake: true`) 一律
- * `controller.create({})` 开一个新对话 —— 不插正在跑的那一轮, 也不投给最近那个 (主人 2026-10-05
- * 定: 喊一声就是"换一件事说")。界面**不会跟着切过去**: 会话是这里建的, 而"在看哪一个"是浏览器自己
- * 的路由状态, 应用那侧没有一条让页面切会话的路 —— 所以新对话真的在跑、回答也会念出来, 但人可能正
- * 看着另一个会话。这是主人选的"改动最小"那一档
+ * **`line.wake` 不再改写目标** (主人 2026-10-06 改口径: "只要是 1 小时内, 无论点球/喊唤醒词 都只在
+ * 同一场对话"): 它只是"这一句是唤醒之后的头一句"那个记号, 选哪一场由 [voiceTargetSession] 按那一
+ * 时间定 —— 20 分钟内一律复用浮标那一场 (正在跑就 steer), 那笔账过了才新开一场。界面**不会跟着切过去**:
+ * 会话是这里建的, 而"在看哪一个"是浏览器自己的路由状态, 应用那侧没有一条让页面切会话的路 —— 所以
+ * 新对话真的在跑、回答也会念出来, 但人可能正看着另一个会话。这是主人选的"改动最小"那一档
  *
  * **来源标记怎么写是这批里最容易写错的一处** (批次 2.2)。两种写法都"有来源", 但只有一个是对的:
  *
@@ -3648,6 +4423,26 @@ async function voiceDeliver(ctx, line) {
   // 一轮, 也不开新对话, 更不理会 `line.wake`。命令是"对这台手机说的", 不是"对助手说的一句话"
   const command = matchVoiceCommand(line.text)
   if (command !== null) {
+    // 打断那一支与三句模式命令不是同一种动作 (一边切模式, 一边取消一轮), 所以从这里分开走 ——
+    // 理由写在 [runVoiceInterrupt] 上面
+    if (command.interrupt === true) {
+      try {
+        const outcome = await runVoiceInterrupt(ctx, line)
+        console.log(
+          `littlewhale-channel: the ball was double-tapped -> ${outcome.cancelled ? 'cancelled' : 'nothing to cancel'}`,
+        )
+        return outcome
+      } catch (error) {
+        const reason = error?.message ?? String(error)
+        voiceInterrupt.count += 1
+        voiceInterrupt.error = `interrupting failed: ${reason}`
+        voiceInterrupt.last = { at: Date.now(), said: line.text, sessionId: null, cancelled: false, detail: reason }
+        console.warn(`littlewhale-channel: the interrupt failed: ${reason}`)
+        // 失败了也要把状态落下来: 球上写着"正在想"而打断没成, 那三个字留着只会让人以为有事在跑
+        await pushBallIdle()
+        return { interrupt: true, cancelled: false, said: line.text, detail: reason }
+      }
+    }
     const outcome = await runVoiceCommand(command, line)
     console.log(
       `littlewhale-channel: voice line #${line.seq} was a command -> ${outcome.mode} (${outcome.switched ? 'switched' : 'not switched'})`,
@@ -3660,8 +4455,18 @@ async function voiceDeliver(ctx, line) {
   }
   const signal = new AbortController().signal
   const fresh = line.wake === true
-  const target = fresh ? null : await voiceTargetSession(ctx, controller, signal)
-  const sessionId = target === null ? (await controller.create({})).sessionId : target.sessionId
+  const target = await voiceTargetSession(controller, signal, fresh, line.to)
+  // **新开的对话落在浮标那个专用工作区里** (主人 2026-10-06): 只对"这一句要开新对话"那一条路生效
+  // (没有可复用的当前对话时: 那笔账过了 / 那一场不在了 / 从来没有过); 复用一个已经在跑的会话时不改它
+  // 的目录 —— 一个会话的 cwd 是它自己的事, 中途换掉就是 `ApiSessionCwdConflict`
+  const workspace = await ensureBallWorkspace()
+  // **判的是"这一句投给谁", 不是"那张记账卡在不在"** ([voiceTargetId] 那一处写着这次踩的坑):
+  // "没有"那张卡上 `sessionId` 是 null, 而它必须走新建
+  const existing = voiceTargetId(target)
+  const opened = existing === null
+  const sessionId = opened
+    ? (await controller.create(workspace === null ? {} : { cwd: workspace })).sessionId
+    : existing
   const outcome = await ctx.agents.withoutInitiator(async () => {
     const resolved = await controller.resolveAgent(sessionId)
     if ('error' in resolved) throw resolved.error
@@ -3674,9 +4479,14 @@ async function voiceDeliver(ctx, line) {
     const flushed = await ctx.sessions.flush(agent.session)
     return { running, flushed }
   })
+  // 投出去了才记"当前对话": 这一笔是从**这一句**起算的 20 分钟 (需求: 每次发送完成后 20 分钟内)
+  await voiceSessionBump(sessionId)
   voiceDelivery.lines += 1
   voiceDelivery.sessionId = String(sessionId)
-  if (fresh) voiceDelivery.opened += 1
+  voiceDelivery.reused = (voiceDelivery.reused ?? 0) + (target?.why === 'the ball conversation, reused' ? 1 : 0)
+  voiceDelivery.current = String(sessionId)
+  voiceDelivery.why = target?.why ?? 'there was no conversation, so this opened one'
+  if (opened) voiceDelivery.opened += 1
   if (outcome.running) voiceDelivery.steered += 1
   else voiceDelivery.queued += 1
   voiceDelivery.last = {
@@ -3684,12 +4494,14 @@ async function voiceDeliver(ctx, line) {
     text: line.text,
     sessionId: String(sessionId),
     steered: outcome.running,
-    newConversation: fresh,
+    newConversation: opened,
+    reused: target?.why === 'the ball conversation, reused',
+    source: line.source ?? 'voice',
   }
   voiceDelivery.error = null
   ctx.logger?.info?.(
-    `voice line #${line.seq} ${fresh ? 'opened a new conversation' : outcome.running ? 'steered into' : 'queued on'}`
-      + ` ${String(sessionId)}`,
+    `voice line #${line.seq} ${opened ? 'opened a new conversation' : outcome.running ? 'steered into' : 'queued on'}`
+      + ` ${String(sessionId)} (${voiceDelivery.why})`,
   )
   return outcome
 }
@@ -3754,6 +4566,10 @@ function startReadAloud(ctx) {
         voiceReading.count += 1
         voiceReading.last = { at: Date.now(), characters: spoken.length, text: spoken }
         voiceReading.error = null
+        // 这一句回答同时推回浮标那个输入通道 (主人 2026-10-05: "回复结果也传此通道"): 问与答
+        // 落在同一块框里, 眼睛不必在浮标与页面之间来回找。通道没开着时应用那侧**攒着**, 下次张开
+        // 再补上, 所以这里不区分开没开
+        reportReply(spoken, session.id)
         // 不 await: 这是 emit 钩子, 念多久都不该把会话的事挡在后面
         return call('speak', { op: 'speak', text: spoken })
       })
@@ -3767,6 +4583,94 @@ function startReadAloud(ctx) {
         ctx.logger?.warn?.(voiceReading.error)
       })
   })
+}
+
+/**
+ * 把一句回答推回浮标那个输入通道 (主人 2026-10-05: "回复结果也传此通道")
+ *
+ * 与「正在想」那一句同一个去向 (`overlay` 那一个通道方法), 只是 op=reply: 应用那侧把它画进那块
+ * 650 px 的文字框里 —— 问与答落在同一块框, 眼睛不必在浮标与页面之间来回找
+ *
+ * **通道没开着时那一句不丢**: 服务那边记着它 ([OverlayState.pendingReply]), 主人下次把通道张开
+ * 时补上 (问完就去别的应用里是常态, 而"回来时回答不见了"是最让人恼火的那种丢)
+ *
+ * **`session` 是那条回复是哪一场发来的** (2026-10-06 加): 应用那一侧的回复框记住它, 之后从框里
+ * 发出去的话就点名投回这一场 (见 `voiceTargetSession` 的第一条判据) —— 少了它, "接着回答"就只能
+ * 靠那笔账撞运气
+ *
+ * 推不出去只记一行: 没装应用 / 应用在后台被杀掉的时候它本来就没有落脚处, 而不是一条要报给模型的错
+ */
+function reportReply(text, session) {
+  const line = String(text ?? '').trim()
+  if (!line) return
+  const from = String(session ?? '').trim()
+  void call('overlay', { op: 'reply', text: line, ...(from ? { session: from } : {}) })
+    .then((answer) => {
+      voiceReading.reply = { at: Date.now(), characters: line.length, channel: answer?.channel === true }
+    })
+    .catch((error) => {
+      voiceReading.replyError = `the reply did not reach the floating channel: ${error?.message ?? error}`
+    })
+}
+
+/**
+ * 推一条"不是回答"的话给浮标那块框 (`overlay op=note`)
+ *
+ * 投递失败这件事实在屏幕上本来一个字都没有, 而主人看到的只是"我说了话, 没有回音" —— 这一批里最难查
+ * 的一条就是这么来的 (2026-10-06: 12 句话卡在队列里, 界面上毫无痕迹). 所以被跳过的句子必须从浮标
+ * 那侧说出来: 与 [reportReply] 同一个去向 (`overlay` 那一个通道方法), 只是记号不同, 应用那侧把它
+ * 画成一条 `⚠` 提示
+ *
+ * 推不出去只记一行: 没装应用 / 球被关掉的时候它本来就没有落脚处, 而不是一条要报给模型的错
+ */
+function reportNote(ctx, text) {
+  const line = String(text ?? '').trim()
+  if (!line) return
+  void call('overlay', { op: 'note', text: line }).catch((error) => {
+    warn(ctx, `a note for the floating channel did not arrive: ${error?.message ?? error}`)
+  })
+}
+
+/**
+ * 一张全黑的图是不是"这块屏上什么都没有"
+ *
+ * 主人 2026-10-05 报的那一条: 虚拟屏可以单独开出来, 那时它上面一个窗口都没有, 截出来是一张全黑
+ * 的图 —— 而**黑图看起来像"截图坏了"**, 于是模型会去重试、换工具、报故障, 一圈下来什么都没干成。
+ * 真相是"这块屏是空的", 处置完全不同 (往上面 launch 一个应用), 所以这句话必须由工具说出来
+ *
+ * 量的是**像素**: 只读 PNG 头几 KB, 解出一小块缩略图再取最大亮度 —— 全黑是"一个亮点都没有", 而不是
+ * "看起来暗"。判据留一点余量 (阈值 8): 纯黑屏在真机上量到的就是 0
+ */
+async function emptyScreenNote(args, answer) {
+  const displayId = Number(args?.displayId ?? 0)
+  if (!Number.isFinite(displayId) || displayId === 0) return ''
+  const path = typeof answer?.path === 'string' ? answer.path : ''
+  if (!path) return ''
+  const dark = await isAllBlack(path)
+  if (dark !== true) return ''
+  return `\n\n**This screen is empty**: the picture is black because nothing has been launched onto`
+    + ` display ${displayId} yet, not because the capture failed. Start an app on it with lw_launch`
+    + ` (displayId ${displayId}, package=...) or make the next screen with lw_screen_create`
+    + ' launch=<app>, then take the picture again.'
+}
+
+/** 一张 PNG 是不是全黑: 缩到 64 格取**逐像素**最亮值, 读不出来时回 null (不猜) */
+async function isAllBlack(path) {
+  try {
+    const sharp = (await import('sharp')).default
+    // **不能只看 `stats().channels[].max`**: 那是"每个通道各自的极值", 一张右下角有个白点的黑图
+    // 也会让三个通道都报 255。逐像素取最大才是"这张图上有没有亮过" (实测: 全黑 0, 真截图 255)
+    const { data } = await sharp(path)
+      .resize(64, 64, { fit: 'inside' })
+      .greyscale()
+      .raw()
+      .toBuffer({ resolveWithObject: true })
+    let brightest = 0
+    for (const value of data) if (value > brightest) brightest = value
+    return brightest <= 8
+  } catch {
+    return null
+  }
 }
 
 /* ── 浮标上那个「正在想」 ──────────────────────────────────────────────────── */
@@ -3809,15 +4713,17 @@ function startBallPhase(ctx) {
   speech.register({
     info: {
       id: SPEECH_PROVIDER_ID,
-      name: 'On-device SenseVoice (sherpa-onnx)',
+      name: 'On-device GLM-ASR-Nano / SenseVoice',
       location: 'host-local',
       languages: SPEECH_LANGUAGES,
       downloadSources: SPEECH_SOURCES,
+      // the numbers are the GLM-ASR-Nano pair (1.6 GB of weights, a resident 1.5 B model),
+      // because that is what the button trains on by default
       setupEstimate: {
-        recommendedDiskBytes: 260 * 1024 * 1024,
-        expectedMemoryBytes: 700 * 1024 * 1024,
-        minimumMinutes: 1,
-        maximumMinutes: 30,
+        recommendedDiskBytes: 1800 * 1024 * 1024,
+        expectedMemoryBytes: 2400 * 1024 * 1024,
+        minimumMinutes: 3,
+        maximumMinutes: 90,
       },
     },
     preparation: {
@@ -3835,16 +4741,26 @@ function startBallPhase(ctx) {
     },
     async transcribe({ audio, language }) {
       const info = await speechInspect()
-      if (!info.present) {
-        throw new Error('the speech model is not downloaded yet: run lw_speech op=prepare once')
+      // the accurate engine when it is there, the fast one when it is not: a missing GLM model
+      // must not make the button dead, it must make it quieter about being less sure
+      const engine = info.glmPresent
+        ? SPEECH_ENGINE_GLM
+        : info.present ? SPEECH_ENGINE_SHERPA : null
+      if (engine === null) {
+        throw new Error('no speech model is downloaded yet: run lw_speech op=prepare once')
       }
-      const wav = join(info.directory, `recording-${randomUUID()}.wav`)
+      const directory = engine === SPEECH_ENGINE_GLM ? info.glm.directory : info.directory
+      await mkdir(directory, { recursive: true })
+      const wav = join(directory, `recording-${randomUUID()}.wav`)
       await writeFile(wav, Buffer.from(audio))
+      let answer = null
       try {
-        const answer = await speechTranscribe(wav, language)
+        answer = await speechTranscribe(wav, language, engine)
         return { text: answer.text }
       } finally {
-        await rm(wav, { force: true })
+        // **不再当场删掉**: 最近几段录音与它们的转写结果留一份 (见 [speechKeep]) —— 主人 2026-10-07
+        // 报的"识别时会出乱码"需要那一段音频才查得下去, 而删掉之后连现场都没了
+        await speechKeep(directory, wav, answer, engine)
       }
     },
   })

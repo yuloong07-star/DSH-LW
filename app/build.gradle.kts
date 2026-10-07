@@ -94,11 +94,15 @@ val packHostTree = tasks.register<Exec>("packHostTree") {
     group = "littlewhale"
     description = "Rebuild dsh at the pinned commit and install the flat host tree the APK ships"
     workingDir = rootProject.projectDir
+    // `--install` 是必须的: 子模块的 node_modules 里只有 workspace 链接, 各包自己的依赖没装, 而
+    // dsh root 的 `pnpm run check` 要 tsc / tsdown —— 少了它构建会死在"某个包缺 typescript"上。
+    // pnpm 那一份由 tools/pack-host.mjs 自己找 (并把 npm_execpath 补齐, 见那个文件里的长注释)
     commandLine(
         "node",
         "tools/pack-host.mjs",
         "--dsh", dshCheckout.asFile.absolutePath,
         "--out", hostTree.get().asFile.absolutePath,
+        "--install",
     )
     inputs.file(rootProject.file("tools/pack-host.mjs"))
     // The plugin is copied into the tree rather than built, so its sources are an input too
@@ -131,6 +135,31 @@ android {
     namespace = "io.github.miuzarte.littlewhale"
     compileSdk {
         version = release(37)
+    }
+
+    /**
+     * 签名: **固定的那一把 debug keystore**
+     *
+     * 为什么写死而不是让工具链自己找 (2026-10-06 踩的): 默认那条路是 `${user.home}/.android/debug.keystore`,
+     * 而 `user.home` 跟着**谁在跑 gradle** 走 —— 这台机器上 Android 的家目录是 `D:\apk\.android`
+     * (AVD / cache / studio 都在那儿, 10-03 装的工具链建的), 真机上装的那一版就是用它的
+     * `debug.keystore` (`65:20:84:A9…`) 签的; 而在 `C:\Users\30216` 下跑一次 gradle 会**当场新建
+     * 一把新的** (`83:37:F1:E8…`), 签出来的包与真机上那版**签名不同, 覆盖安装必失败** —— 那条路
+     * 只剩"卸载重装", 而卸载会删掉 files/dsh-home (会话 / 凭据 / 设置)
+     *
+     * 所以这里点名 `D:\apk\.android\debug.keystore`: 谁跑、在哪个用户下跑, 签出来的都是同一把。
+     * 换机器时用 `LW_DEBUG_KEYSTORE` 指过去 (它必须仍是**同一把旧 key**, 否则真机装不上)
+     */
+    val debugKeystore = providers.environmentVariable("LW_DEBUG_KEYSTORE")
+        .orElse(providers.environmentVariable("ANDROID_SDK_HOME").map { "$it/.android/debug.keystore" })
+        .getOrElse(rootProject.file("../.android/debug.keystore").absolutePath)
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file(debugKeystore)
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     defaultConfig {
@@ -267,6 +296,8 @@ dependencies {
     implementation(libs.miuix.squircle)
 
     implementation(libs.kotlinx.serialization.json)
+    // 「Edge 在线」那条朗读引擎: 那条接口是 WebSocket, 用它比手写握手可靠
+    implementation(libs.okhttp)
 
     // The privileged channel: Shizuku's API and provider, plus libsu for the root shell
     implementation(libs.shizuku.api)

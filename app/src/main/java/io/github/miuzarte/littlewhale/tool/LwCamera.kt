@@ -32,6 +32,7 @@ import java.io.File
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
@@ -77,6 +78,16 @@ internal object LwCamera {
     private val frames = ArrayBlockingQueue<Image>(FRAME_QUEUE)
 
     private val lock = Any()
+
+    /**
+     * 切模式那两半跑在上面的那条线程
+     *
+     * **一条就够, 而且必须是一条**: 切模式是个序列 (视频 → 手机 → 识屏), 两条线程同时开收就成了两个
+     * 顺序打架的相机操作。这里只保顺序, 真正互斥的还是 [lock] (见 [ensure] 与 [teardown])
+     */
+    private val switcher = Executors.newSingleThreadExecutor { work ->
+        Thread(work, "lw-camera-switch").apply { isDaemon = true }
+    }
 
     // 这些字段两头都在用 (开相机那条回调在相机线程上, 取帧与收工在桥的请求线程上), 而桥是**一次请求
     // 一条线程**, 所以每一个都要 volatile: 少了它, 下一次调用可能读到上一次的旧值 (最坏的样子是
@@ -125,6 +136,16 @@ internal object LwCamera {
     @Volatile
     private var shot = Size(0, 0)
 
+    /**
+     * 开这一趟相机时用的是多少像素那**一档清晰度**
+     *
+     * 抓帧的尺寸在开相机那一刻就定死了 (`ImageReader` 与预览缓冲都按它建), 所以设置页改了清晰度
+     * 之后必须**重开一次**才生效。这一个数就是那个判据: [status] 拿它与 [VideoLooks.pixels] 比,
+     * 不一样就在状态里说"下一次开相机才生效" (`sizePending`), 而 `op=rule` 就是当场重开那一条
+     */
+    @Volatile
+    private var shotPixels = 0
+
     @Volatile
     private var preview = Size(0, 0)
 
@@ -137,7 +158,6 @@ internal object LwCamera {
 
     /** 这一趟开出摄像头之后抓过哪些文件, `close {clean:true}` 按它清理 */
     private val produced = mutableListOf<File>()
-
     @Volatile
     private var lastError: String? = null
 
@@ -178,7 +198,125 @@ internal object LwCamera {
         "open" -> open(context, request)
         "snapshot" -> snapshot(context, request)
         "close" -> close(context, request)
-        else -> throw IllegalArgumentException("op has to be status, open, snapshot or close, not \"$op\"")
+        // 设置页改完那三条规则之后走这一条: 相机开着就重开一次 (尺寸要重开才生效)
+        "rule" -> rule(context, request)
+        else -> throw IllegalArgumentException("op has to be status, open, snapshot, close or rule, not \"$op\"")
+    }
+
+    /**
+     * 切进视频模式时用它: **不等人** —— 相机开在另一条线程上, 当场回一句"在开"
+     *
+     * 为什么要这样: 开一条相机链是几百毫秒的活 (挑设备 → 按档位选尺寸 → 建 ImageReader → 摆小窗 →
+     * 等 `onOpened` → 建会话), 而切模式那一步要的只是"这件事已经在做了"。排在回执里等它, 主人看到的
+     * 就是"说完切视频模式之后卡一下"; 而**真相一点都没少**: [ensure] 全程握着 [lock], 所以紧接着来的
+     * `lw_look` 会等在锁上, 开完了直接用那一台, 不会开出第二台相机 (前后摄是独占的两个设备)
+     */
+    internal fun warmUp(context: Context): String {
+        if (device != null) return "the camera is already up on the ${lensName(facing)} lens"
+        val app = context.applicationContext
+        switcher.execute {
+            runCatching { ensure(app, facing, required = false) }
+                .onFailure { error ->
+                    lastError = error.message ?: error.toString()
+                    Log.w(TAG, "the camera asked for by the mode switch did not come up", error)
+                }
+        }
+        return "the camera is coming up on the ${lensName(facing)} lens in the background"
+    }
+
+    /**
+     * 切出视频模式 (去手机 / 识屏模式) 时用它: **也不等人**
+     *
+     * 与 [warmUp] 对称: 收是一条要还设备、关会话、放帧、收小窗的活, 而"切走了"这件事本身与它无关 ——
+     * 切模式的回执不该等这条链。同样的取舍: 真相由后来者拿 (下一次 `camera op=status` 照实说)
+     *
+     * **不管看着开没开都排一次收工**, 只有回执那句话分两档: 刚切进视频模式又立刻切走时, 这边看到的
+     * 还是"什么都没开"(开那条链排在 [switcher] 上还没轮到), 而**排一次就对了** —— 那一条线程是串行的,
+     * 收工一定跑在开相机之后, 不会留下一台没人管的相机
+     */
+    internal fun coolDown(context: Context): String {
+        val looked = device != null || reader != null || thread != null || CameraWindow.isOpen()
+        val app = context.applicationContext
+        switcher.execute {
+            runCatching {
+                // 与 `op=close {clean:true}` 同一份收工: 这一趟抓的帧一起删掉
+                teardown(true)
+                CameraWindow.hide()
+            }.onFailure { error -> Log.w(TAG, "putting the camera away after a mode switch failed", error) }
+        }
+        return if (looked) {
+            "the camera is being put away in the background"
+        } else {
+            "the camera was not open"
+        }
+    }
+
+    /**
+     * 设置页改完清晰度之后走这一条: 相机开着就按新的一档重开, 没开着就什么都不做
+     *
+     * 界面那一侧不走桥 (它就在应用进程里), 所以这一个是给它用的直通入口 —— 与 `op=rule` 同一份实现
+     * ([rule]), 失败只记日志: 设置页拖一下滑块不该弹任何东西出来
+     */
+    internal fun reapply(context: Context) {
+        runCatching { rule(context, buildJsonObject { put("pixels", VideoLooks.pixels) }) }
+            .onFailure { Log.w(TAG, "the camera did not take the new capture size: ${it.message}") }
+    }
+
+    /**
+     * 规则变了: 相机开着就**重开一次**让它生效
+     *
+     * 只有"尺寸"这一条真的需要它 —— 张数与间隔是每一次 `op=snapshot` 现读的 (见 [snapshot]), 所以
+     * 改完立刻就是新的。尺寸不一样: 抓帧的 `ImageReader` 与那块预览缓冲都在开相机时按当时那一档建,
+     * 而定下来的缓冲尺寸改不了 (与换镜头同一个道理, 见 [ensure])
+     *
+     * 相机没开着时什么都不做 —— "下一次开"本来就会读新的值
+     */
+    private fun rule(context: Context, request: JsonObject): JsonObject {
+        val wanted = request.int("pixels", VideoLooks.pixels)
+            .coerceIn(VideoLooks.MIN_PIXELS, VideoLooks.MAX_PIXELS)
+        val live = device != null && session != null
+        if (!live || shotPixels == wanted) {
+            return buildJsonObject {
+                put("applied", false)
+                put("open", live)
+                put("size", if (shot.width > 0) "${shot.width}x${shot.height}" else "")
+                put("pending", live && shotPixels != wanted)
+                put(
+                    "text",
+                    if (!live) {
+                        "the camera is not open, so the next one will use $wanted px"
+                    } else {
+                        "the capture size is already the one on this setting (${shot.width}x${shot.height})"
+                    },
+                )
+            }
+        }
+        synchronized(lock) {
+            if (device != null || reader != null || thread != null) {
+                teardown(false)
+                // 重开要重摆那块预览缓冲: 它的尺寸是照抓帧那一档挑的, 缓冲区尺寸定下来就改不了
+                // (与换镜头那条路一样, 见 [ensure])
+                CameraWindow.hide()
+            }
+            opening = true
+            try {
+                bringUp(context, facing, false)
+            } catch (error: Throwable) {
+                teardown(false)
+                CameraWindow.hide()
+                throw error
+            } finally {
+                opening = false
+                handler?.let { onCamera -> addLateSurface(onCamera) }
+            }
+        }
+        return buildJsonObject {
+            put("applied", true)
+            put("open", true)
+            put("size", "${shot.width}x${shot.height}")
+            put("lens", lensName(facing))
+            put("text", "the camera was reopened at ${shot.width}x${shot.height} for $wanted px")
+        }
     }
 
     /** 现在什么样: 权限、摄像头开没开、小窗在不在、抓过几张、上一次出的什么问题 */
@@ -201,6 +339,16 @@ internal object LwCamera {
             put("frames", produced.size)
             // 丢帧是"取景比读帧快"的证据: 报一个数字, 而不是让人以为每一张都到手了
             put("lost", dropped)
+            // **取景那三条规则** (设置页「视频识别」那一段): 缺省张数、每张间隔、这一档清晰度的像素数
+            // —— `lw_look` 就是照这几个数给缺省的 (它自己没有设置可读), 而 `sizePending` 说的是
+            // "清晰度改了但还没重开相机, 所以下一次抓帧还是老尺寸"
+            put("lookCount", VideoLooks.count)
+            put("lookIntervalMs", VideoLooks.intervalMs)
+            put("lookPixels", VideoLooks.pixels)
+            // 取景的几张要不要拼成一张网格: **拼图是插件做的**, 而它读的是应用写在 host 目录里的
+            // 那个记号 (见 [VideoLooks.SHEET_KEY]) —— 这一项就是那个记号此刻在不在, 插件照它决定
+            put("lookSheet", VideoLooks.sheetMarkPresent(context))
+            put("sizePending", open && shotPixels != VideoLooks.pixels)
             put("previewError", previewError ?: "")
             put("lastError", lastError ?: "")
             put(
@@ -217,6 +365,11 @@ internal object LwCamera {
                         "preview buffer" to (if (preview.width > 0) "${preview.width}x${preview.height}" else "not chosen yet"),
                         "frames kept" to produced.size.toString(),
                         "frames dropped" to dropped.toString(),
+                        "frames per look" to VideoLooks.count.toString(),
+                        "between frames" to "${VideoLooks.intervalMs}ms",
+                        "one grid per look" to if (VideoLooks.sheetMarkPresent(context)) "yes" else "no",
+                        "quality tier" to "${VideoLooks.pixels} px"
+                            + (if (open && shotPixels != VideoLooks.pixels) " (the camera is still on the old size)" else ""),
                         "last preview problem" to (previewError ?: "none"),
                         "last problem" to (lastError ?: "none"),
                     ),
@@ -261,7 +414,10 @@ internal object LwCamera {
      */
     private fun snapshot(context: Context, request: JsonObject): JsonObject {
         PermissionGate.refusal(context, camera)?.let { throw IllegalStateException(it) }
-        val count = request.int("count", DEFAULT_COUNT).coerceIn(1, MAX_COUNT)
+        // 张数与间隔都读设置页那一份 (主人 2026-10-06 要的那三条里的两条): 调用方点名时听它的 ——
+        // 缺省值只有一处, 在 [VideoLooks], 而"越界怎么办"也只有那一处 ([VideoLooks.clampInterval])
+        val count = request.int("count", VideoLooks.count).coerceIn(1, MAX_COUNT)
+        val intervalMs = VideoLooks.clampInterval(request.int("intervalMs", VideoLooks.intervalMs))
         // `lens` 点名要哪一头: 没点名就用手上这一头 (镜头是**粘的** —— 上一眼看的是前摄, 这一眼就还在
         // 前摄, 换来换去每张都要多花一次开关设备的钱)
         val named = lensOf(request)
@@ -270,12 +426,16 @@ internal object LwCamera {
         val onCamera = handler ?: unavailable("taking a frame", "the camera thread is not up")
         val stamp = System.currentTimeMillis()
         val files = mutableListOf<File>()
+        // **量到的那几拍**: 要的是"墙上两张之间隔多久", 而一次抓帧本身要两三百毫秒, 所以真做到几拍
+        // 只有量出来才算数 (与 `lw_screenshot` 连拍同一条纪律: 报要的那个数就是一句假话)
+        val offsets = mutableListOf<Long>()
         val started = System.currentTimeMillis()
         try {
             synchronized(lock) {
                 capturing = true
                 runCatching { session?.stopRepeating() }
                 repeat(count) { index ->
+                    if (index > 0) sleepUntil(started, offsets.last(), intervalMs)
                     // 要的是**这一次**请求的那一帧: 上一趟留在队列里的 (比如超时之后才到的那张) 先丢掉,
                     // 不然交出去的会是上一张 —— 那是"拍到了"的假话
                     drainFrames()
@@ -290,6 +450,7 @@ internal object LwCamera {
                         "the camera handed over nothing within ${FRAME_TIMEOUT_MS}ms"
                             + (lastError?.let { " ($it)" } ?: ""),
                     )
+                    offsets += System.currentTimeMillis() - started
                     try {
                         val buffer = image.planes[0].buffer
                         val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
@@ -320,6 +481,10 @@ internal object LwCamera {
             // 这几张是**哪一头**拍的: 换过镜头之后, 不加这一项就分不清看图看的是哪一边
             put("lens", lensName(facing))
             put("lost", dropped)
+            // **要的间隔与量到的间隔都报**: 一次抓帧两百到四百毫秒, 所以绝大多数设备上都做不到
+            // 间隔短于"抓一张的耗时" —— 那时说"做到了"就是假话 (与连拍 `offsets` 同一条纪律)
+            put("intervalMs", intervalMs)
+            put("offsets", offsets.joinToString(","))
             put(
                 "text",
                 table(
@@ -327,11 +492,46 @@ internal object LwCamera {
                         "frames" to files.size.toString(),
                         "size" to "${shot.width}x${shot.height}",
                         "took" to "${elapsed}ms (${if (files.isEmpty()) 0 else elapsed / files.size}ms each)",
+                        "between frames" to describeGaps(offsets, intervalMs),
                         "files" to files.joinToString(", ") { it.name },
                     ) + if (dropped == 0) emptyList() else listOf("dropped" to "$dropped frame(s) were lost"),
                 ),
             )
         }
+    }
+
+    /**
+     * 隔到下一张该拍的那一刻为止
+     *
+     * 间隔说的是**墙钟上两张之间隔多久**, 不是"拍完再歇多久" —— 后者会让真实间隔随着这台设备忙闲
+     * 漂移 (一张快一张慢, 于是同一段过程交出来的时间轴是歪的)。所以这里算的是"从上一张那一刻起
+     * 该过多久", 已经过了就不再等
+     *
+     * @param started 这一趟的起点
+     * @param last 上一张落地时距 [started] 多少毫秒
+     */
+    private fun sleepUntil(started: Long, last: Long, intervalMs: Int) {
+        val want = last + intervalMs - (System.currentTimeMillis() - started)
+        if (want <= 0) return
+        try {
+            Thread.sleep(want)
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    /** 那几拍量出来是多少: 与要的那个数差得多就直说这台设备拍不了那么快 */
+    private fun describeGaps(offsets: List<Long>, intervalMs: Int): String {
+        if (offsets.size < 2) return "only one frame, so no gap to measure"
+        val gaps = offsets.zipWithNext { earlier, later -> later - earlier }
+        val wanted = intervalMs.toLong() * (gaps.size)
+        val measured = gaps.average().toLong()
+        val note = if (measured > intervalMs * 1.5) {
+            ", slower than asked: one capture costs a couple of hundred ms on its own"
+        } else {
+            ""
+        }
+        return "${gaps.joinToString(" / ")}ms, asked ${intervalMs}ms${note}"
     }
 
     /** 把摄像头还回去: 会话、设备、帧队列、小窗一起收; `clean` 时顺手删掉这一趟抓的文件 */
@@ -454,8 +654,12 @@ internal object LwCamera {
             .getOrElse { unavailable("reading the camera", it.message ?: it.toString()) }
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: unavailable("reading the camera", "it publishes no stream configuration map")
-        // 尺寸不是猜的: 从这张表里挑 JPEG 那一档, 取不超过 1080p 的最大一个 (抓帧不是拍大片)
-        shot = biggestUnder(map.getOutputSizes(ImageFormat.JPEG)?.toList().orEmpty(), MAX_SHOT_PIXELS)
+        // 尺寸不是猜的: 从这张表里挑 JPEG 那一档, 取**设置页那一档清晰度**以内最大的一个
+        // (见 [VideoLooks.pick]: 档位与"抓帧不是拍大片"是同一件事)
+        shotPixels = VideoLooks.pixels
+        val jpegSizes = map.getOutputSizes(ImageFormat.JPEG)?.toList().orEmpty()
+            .map { size -> size.width to size.height }
+        shot = VideoLooks.pick(jpegSizes, shotPixels)?.let { (width, height) -> Size(width, height) }
             ?: unavailable("opening the camera", "it publishes no JPEG size to capture into")
         // 预览面是 TextureView 的 SurfaceTexture (见 [CameraWindow]), 所以要问它那一档的尺寸;
         // 拿 SurfaceHolder 那一档去问是另一个 Surface 类, 在这里不对
@@ -835,12 +1039,6 @@ internal object LwCamera {
             " a foreground service of type camera: bring DSH-LW to the front and look again"
     }
 
-    /** 不超过给定像素数里最大的那一档 (抓帧不是拍大片: 1080p 的量级够识别, 也够快) */
-    private fun biggestUnder(sizes: List<Size>, maxPixels: Int): Size? = sizes
-        .filter { it.width * it.height <= maxPixels }
-        .maxByOrNull { it.width * it.height }
-        ?: sizes.minByOrNull { it.width * it.height }
-
     /** 离目标像素数最近的那一档 (预览只要看得见, 越小越省) */
     private fun closestTo(sizes: List<Size>, target: Int): Size? = sizes
         .filter { it.width > 0 && it.height > 0 }
@@ -873,11 +1071,15 @@ internal object LwCamera {
     }
 
     private const val FRAME_QUEUE = 3
-    private const val DEFAULT_COUNT = 3
-    private const val MAX_COUNT = 12
 
-    /** 抓帧不是拍大片: 1080p 那一档够识别, 也够快 */
-    private const val MAX_SHOT_PIXELS = 1920 * 1080
+    /**
+     * 一次取景最多几张
+     *
+     * **它不是"相机自己的缺省"**: 张数、间隔、清晰度这三条规则归 [VideoLooks] (设置页「视频识别」
+     * 那一段), 这里只留一个上限 —— 那份规则的校验 (`VideoLooks.countRange`) 与设置页的滑块都拿它当
+     * 上界, 两处各写一个 12 就迟早会漂开。缺省张数也读那一份 ([VideoLooks.count])
+     */
+    const val MAX_COUNT = 12
 
     /** 预览面只是给人看一眼, 480p 的量级就够 */
     private const val PREVIEW_TARGET_PIXELS = 640 * 480

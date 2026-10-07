@@ -1,16 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Generated from DSH's own mark (apps/web/public/favicon.svg in deepseek-harness).
-     Scale and offset fit the whale into the adaptive icon's 66x66 safe zone. -->
+     The whale takes 0.460 x 0.346 of the 108x108 canvas. That is the number to tune, and it is
+     solved rather than guessed: run tools/vector-ink.py with ink-width 0.46 and its write flag.
+     History, so nobody re-derives it the hard way: this started at 0.605 (the original hand-fitted
+     transform), was raised to 0.711 to match dsh's own icon.png (0.726), and the owner reported
+     BOTH of those as too big on a phone home screen, so the target is now the adaptive-icon
+     keyline scale: 0.46 wide, the 44 of 108 the Android guidelines draw for a glyph in a tile.
+     NOTE: keep this comment free of double hyphens, an XML comment cannot contain them. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <group
-        android:scaleX="1.3514"
-        android:scaleY="1.3514"
-        android:translateX="20.2781"
-        android:translateY="19.8627">
+        android:scaleX="1.0277"
+        android:scaleY="1.0277"
+        android:translateX="28.1319"
+        android:translateY="28.1456">
         <path
             android:fillColor="#1C2434"
             android:fillType="nonZero"

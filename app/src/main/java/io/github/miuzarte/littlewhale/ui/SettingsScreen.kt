@@ -1,8 +1,6 @@
 package io.github.miuzarte.littlewhale.ui
 
 import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,7 +8,6 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.speech.tts.Voice
-import android.widget.Toast
 import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
@@ -37,7 +34,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -50,12 +50,14 @@ import io.github.miuzarte.littlewhale.channel.NotificationSetting
 import io.github.miuzarte.littlewhale.channel.RemoteBackend
 import io.github.miuzarte.littlewhale.channel.RouteState
 import io.github.miuzarte.littlewhale.channel.ScreenshotBudget
+import io.github.miuzarte.littlewhale.tool.LwCamera
+import io.github.miuzarte.littlewhale.tool.VideoLooks
 import io.github.miuzarte.littlewhale.constants.UiSpacing
 import io.github.miuzarte.littlewhale.host.DshHost
-import io.github.miuzarte.littlewhale.host.HostSettings
 import io.github.miuzarte.littlewhale.host.HostStatus
 import io.github.miuzarte.littlewhale.overlay.BallGeometry
 import io.github.miuzarte.littlewhale.overlay.BallSpot
+import io.github.miuzarte.littlewhale.overlay.BallSwitch
 import io.github.miuzarte.littlewhale.overlay.OverlayState
 import io.github.miuzarte.littlewhale.scaffolds.ArrowSlider
 import io.github.miuzarte.littlewhale.scaffolds.LazyColumn
@@ -64,6 +66,7 @@ import io.github.miuzarte.littlewhale.scaffolds.SuperTextField
 import io.github.miuzarte.littlewhale.theme.MonetKeyColorOptions
 import io.github.miuzarte.littlewhale.theme.ThemeSettings
 import io.github.miuzarte.littlewhale.theme.ThemeStore
+import io.github.miuzarte.littlewhale.tool.LwEdgeSpeech
 import io.github.miuzarte.littlewhale.tool.LwOverlay
 import io.github.miuzarte.littlewhale.tool.LwSpeak
 import io.github.miuzarte.littlewhale.tool.LwTts
@@ -76,7 +79,6 @@ import io.github.miuzarte.littlewhale.util.PermissionRequests
 import io.github.miuzarte.littlewhale.wake.WakeWordDownload
 import io.github.miuzarte.littlewhale.wake.WakeWordState
 import io.github.miuzarte.littlewhale.wake.WakeWordWords
-import io.github.miuzarte.littlewhale.workspace.Workspace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -292,6 +294,13 @@ fun SettingsScreen() {
             }
 
             item {
+                SectionSmallTitle(stringResource(R.string.settings_section_look))
+                Card {
+                    LookItems()
+                }
+            }
+
+            item {
                 SectionSmallTitle(stringResource(R.string.settings_section_ocr))
                 Card {
                     OcrItems()
@@ -319,19 +328,11 @@ fun SettingsScreen() {
                 }
             }
 
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_workspace))
-                Card {
-                    WorkspaceItems()
-                }
-            }
-
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_network))
-                Card {
-                    NetworkItems()
-                }
-            }
+            // 工作区与网络这两段已经从这里撤掉 (主人 2026-10-06): 工作区落在哪是 host 启动时按
+            // Workspace.resolve 那三档自己挑的, 网络那个开关改完也要重启 host —— 两件事都是"平时
+            // 不用动"的, 留在这里只把下面那些常用的段推得更远。**能力一个都没删**: 三档解析、
+            // Workspace.requestAllFilesAccess、HostSettings.lanAccess 与上面 ⋮ 里那条重启 host 照旧,
+            // 只是不再有这两个设置入口 (要改是 `tools/lw-install.ps1` 与重启那一步的事)
 
             // 权限这一段放最后: 它是这一页最长的一段 (十七个能力), 放中间会把后面每一段都推到很远,
             // 而这些权限本来就是装完之后偶尔来调一次的东西
@@ -597,6 +598,103 @@ private fun NotificationItems() {
 private const val FULL_SCREEN_INTENT_SETTINGS = "android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT"
 
 /**
+ * 视频模式取景那三条: 每张间隔、截图张数、截图清晰度
+ *
+ * 与上面「截图」那两条是**两笔账**: 那两条管的是 `lw_screenshot` 那条路 (整屏画面缩到多少像素),
+ * 而这三条管的是视频模式那一台**自己开的相机** (见 `LwCamera` 与 `VideoLooks`): 抓几张 JPEG 帧、
+ * 两张之间隔多久、抓帧按多大挑尺寸
+ *
+ * 三条的形状各不相同, 理由是它们要对的数字性质不一样:
+ *
+ * - **间隔**连着滑 (中间那些值都能用), 吸附点只是帮着停到好看的几个数上; 它说的是"墙钟上两张之间
+ *   隔多久", 所以摘要里写着"这是要的那个数, 不是做到的那个数" —— 抓一张本身就要两三百毫秒
+ * - **张数**是整数档 (1..12), 与 `lw_look` 那个 `frames` 参数同一个上限; 它就是"缺省"这个意思
+ * - **清晰度**是三档 (与上面像素那条同一个道理): 每一档要对的是一张图交出去之后的处理预算, 中间的
+ *   值没有对应的预算可言。它要**重开相机**才生效, 所以拖完立刻让相机重开一次 (`camera op=rule`) ——
+ *   不然"我改了清晰度而它还是老样子"会是一个说不清的中间态
+ */
+@Composable
+private fun LookItems() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val levels = VideoLooks.levels
+    val last = levels.lastIndex
+    val levelNames = levels.map { stringResource(it.first, it.second) }
+    SwitchPreference(
+        title = stringResource(R.string.settings_look_sheet),
+        summary = stringResource(R.string.settings_look_sheet_summary),
+        checked = VideoLooks.sheet,
+        onCheckedChange = { VideoLooks.setSheet(context, it) },
+    )
+    ArrowSlider(
+        title = stringResource(R.string.settings_look_interval),
+        summary = stringResource(R.string.settings_look_interval_summary, VideoLooks.intervalMs),
+        value = VideoLooks.intervalMs.toFloat(),
+        onValueChange = { VideoLooks.setInterval(context, it.roundToInt()) },
+        valueRange = VideoLooks.intervalRange,
+        // 连续滑动: 吸附点只帮着停到常见的那几个数上, 中间的值照样给
+        steps = 0,
+        showKeyPoints = true,
+        keyPoints = VideoLooks.intervalKeyPoints,
+        magnetThreshold = VideoLooks.INTERVAL_MAGNET,
+        unit = "ms",
+        inputSummary = stringResource(
+            R.string.settings_look_interval_dialog,
+            VideoLooks.intervalRange.start.toInt(),
+            VideoLooks.intervalRange.endInclusive.toInt(),
+        ),
+        inputLabel = "ms",
+        inputFilter = { text -> text.filter(Char::isDigit) },
+        inputValueRange = VideoLooks.intervalRange,
+        onInputConfirm = { raw -> raw.toIntOrNull()?.let { VideoLooks.setInterval(context, it) } },
+    )
+    ArrowSlider(
+        title = stringResource(R.string.settings_look_count),
+        summary = stringResource(R.string.settings_look_count_summary, VideoLooks.count),
+        value = VideoLooks.count.toFloat(),
+        onValueChange = { VideoLooks.setCount(context, it.roundToInt()) },
+        valueRange = VideoLooks.countRange,
+        // 整数: 两端之间每一个数都是一个可选值 (Compose 那个 steps 的算法)
+        steps = (VideoLooks.countRange.endInclusive.toInt() - 2).coerceAtLeast(0),
+        showKeyPoints = false,
+        inputLabel = "frames",
+        inputFilter = { text -> text.filter(Char::isDigit) },
+        inputValueRange = VideoLooks.countRange,
+        onInputConfirm = { raw -> raw.toIntOrNull()?.let { VideoLooks.setCount(context, it) } },
+    )
+    ArrowSlider(
+        title = stringResource(R.string.settings_look_quality),
+        summary = stringResource(R.string.settings_look_quality_summary, VideoLooks.pixels),
+        value = VideoLooks.level.toFloat(),
+        onValueChange = { VideoLooks.setLevel(context, it.roundToInt().coerceIn(0, last)) },
+        valueRange = 0f..last.toFloat(),
+        steps = (levels.size - 2).coerceAtLeast(0),
+        showKeyPoints = true,
+        keyPoints = levels.indices.map { it.toFloat() },
+        displayFormatter = { levelNames[it.roundToInt().coerceIn(0, last)] },
+        inputSummary = levelNames.joinToString(" / "),
+        inputLabel = "px",
+        inputInitialValue = VideoLooks.pixels.toString(),
+        inputFilter = { text -> text.filter(Char::isDigit) },
+        inputValueRange = levels.first().second.toFloat()..levels.last().second.toFloat(),
+        onInputConfirm = { raw ->
+            val typed = raw.toIntOrNull() ?: 0
+            VideoLooks.setLevel(context, levels.indices.minBy { abs(levels[it].second - typed) })
+        },
+        // 改完立刻让相机按新的一档重开: 抓帧的尺寸是开相机那一刻定死的, 不重开就要等下一次
+        onValueChangeFinished = { scope.launch { LwCamera.reapply(context) } },
+    )
+    // 一段话说明这一半与那一半: 与上面截图那两条同一个口径 (超预算的图会在 host 那边重编码一次)
+    Column(modifier = Modifier.fillMaxWidth().padding(UiSpacing.Large)) {
+        Text(
+            text = stringResource(R.string.settings_look_note),
+            fontSize = 12.sp,
+            color = colorScheme.onSurfaceVariantSummary,
+        )
+    }
+}
+
+/**
  * 一屏画面交给模型之前要过的两条预算: 先按**像素**缩到一个尺寸, 再按**字节**缩到装得下
  *
  * 两条都用滑块而不是下拉, 但形状不一样, 因为它们要对的数字性质不一样:
@@ -691,6 +789,8 @@ private fun SpeakItems() {
     val scope = rememberCoroutineScope()
     var voices by remember { mutableStateOf<List<Voice>?>(null) }
     var speaking by remember { mutableStateOf(false) }
+    // 要打字的那几行 (API 四项 + Edge 的自定义音色): 一次开一个
+    var editing by remember { mutableStateOf<SpeakText?>(null) }
     // 引擎初始化要几百毫秒, 不能在组合里做: 放到 IO 上, 回来了再画音色那一段
     LaunchedEffect(Unit) {
         voices = withContext(Dispatchers.IO) { LwSpeak.chineseVoices(context) }
@@ -737,8 +837,11 @@ private fun SpeakItems() {
         onInputConfirm = { raw -> raw.toFloatOrNull()?.let { SpeakSettings.setRate(context, it) } },
     )
 
-    // 引擎两条: 系统那条即时但只有它自己的音色; 自带那条能换音色 (主人自己放模型) 但慢一截
+    // 引擎四条: 系统那条即时但只有它自己的音色; 自带那条能换音色 (主人自己放模型) 但慢一截;
+    // Edge 那条免费、在线、不要密钥; API 那条要自己填地址与密钥
     val onDevice = SpeakSettings.engine == SpeakSettings.Engine.ON_DEVICE
+    val edge = SpeakSettings.usesEdge()
+    val api = SpeakSettings.engine == SpeakSettings.Engine.API
     ArrowPreference(
         title = stringResource(R.string.settings_speak_engine_system),
         summary = stringResource(
@@ -759,6 +862,27 @@ private fun SpeakItems() {
             else -> stringResource(R.string.settings_speak_engine_on_device_summary)
         },
         onClick = { SpeakSettings.setEngine(context, SpeakSettings.Engine.ON_DEVICE) },
+    )
+    ArrowPreference(
+        title = stringResource(R.string.settings_speak_engine_edge),
+        summary = if (edge) {
+            stringResource(R.string.settings_speak_engine_edge_using, SpeakSettings.edgeVoice)
+        } else {
+            stringResource(R.string.settings_speak_engine_edge_summary)
+        },
+        onClick = { SpeakSettings.setEngine(context, SpeakSettings.Engine.EDGE) },
+    )
+    ArrowPreference(
+        title = stringResource(R.string.settings_speak_engine_api),
+        summary = when {
+            api && SpeakSettings.apiUrl.isNotBlank() ->
+                stringResource(R.string.settings_speak_engine_api_using, SpeakSettings.apiModel)
+
+            api -> stringResource(R.string.settings_speak_engine_api_pick)
+
+            else -> stringResource(R.string.settings_speak_engine_api_summary)
+        },
+        onClick = { SpeakSettings.setEngine(context, SpeakSettings.Engine.API) },
     )
 
     if (onDevice) {
@@ -803,7 +927,106 @@ private fun SpeakItems() {
             summary = stringResource(R.string.settings_speak_models_directory_summary, LwTts.root(context).absolutePath),
             onClick = rescan,
         )
+        // 音量: 放在这一段里, 因为它只对自带这条引擎有意义 —— 系统那条的增益在引擎自己手里, 应用
+        // 这一侧没有 API 能碰, 所以换到上面那条引擎时这一行干脆不出现, 而不是留个拖了没反应的滑块
+        //
+        // 基准是**这条音色本来的电平**: 100% 一个增益都不加, 100 往上才是加。这不是拍脑袋的刻度,
+        // 是 2026-10-06 在开发机上量出来的 (见 SpeakSettings 那一段注释)
+        val hint = stringResource(
+            when {
+                SpeakSettings.volume <= 0f -> R.string.settings_speak_volume_hint_muted
+                SpeakSettings.volume <= SpeakSettings.VOLUME_UNITY ->
+                    R.string.settings_speak_volume_hint_unity
+
+                else -> R.string.settings_speak_volume_hint_boosted
+            },
+        )
+        ArrowSlider(
+            title = stringResource(R.string.settings_speak_volume),
+            summary = stringResource(R.string.settings_speak_volume_summary, SpeakSettings.volume.toInt(), hint),
+            value = SpeakSettings.volume,
+            onValueChange = { SpeakSettings.setVolume(context, it) },
+            valueRange = SpeakSettings.volumeRange,
+            // 连续滑动: 吸附点只帮着停到好看的那几个数上 (100% 与 300% 都在里面)
+            steps = 0,
+            showKeyPoints = true,
+            keyPoints = SpeakSettings.volumeKeyPoints,
+            magnetThreshold = SpeakSettings.MAGNET,
+            displayFormatter = { "${it.toInt()}%" },
+            inputSummary = stringResource(
+                R.string.settings_speak_volume_dialog,
+                SpeakSettings.volumeRange.start.toInt(),
+                SpeakSettings.volumeRange.endInclusive.toInt(),
+            ),
+            inputLabel = "%",
+            inputInitialValue = SpeakSettings.volume.toInt().toString(),
+            inputValueRange = SpeakSettings.volumeRange,
+            onInputConfirm = { raw -> raw.toFloatOrNull()?.let { SpeakSettings.setVolume(context, it) } },
+        )
+    } else if (edge) {
+        // Edge 那条: 音色是它在线的那几个, 点一个就用; 还能自己填名字 (它那边有几百条)
+        LwEdgeSpeech.VOICES.forEach { (name, label) ->
+            ArrowPreference(
+                title = label,
+                summary = stringResource(
+                    if (SpeakSettings.edgeVoice == name) R.string.settings_speak_voice_current
+                    else R.string.settings_speak_voice_pick,
+                ),
+                onClick = { SpeakSettings.setEdgeVoice(context, name) },
+            )
+        }
+        ArrowPreference(
+            title = stringResource(R.string.settings_speak_edge_custom),
+            summary = SpeakSettings.edgeVoice,
+            onClick = { editing = SpeakText.EDGE_VOICE },
+        )
+        // 响度不在应用手里: 这一行说实话, 点它去系统声音设置 (媒体音量在那里)
+        ArrowPreference(
+            title = stringResource(R.string.settings_speak_volume),
+            summary = stringResource(R.string.settings_speak_online_volume),
+            onClick = { openSoundSettings(context) },
+        )
+    } else if (api) {
+        // API 那条: 地址与密钥是钥匙, 模型与音色是给服务看的
+        ArrowPreference(
+            title = stringResource(R.string.settings_speak_api_url),
+            summary = if (SpeakSettings.apiUrl.isBlank()) {
+                stringResource(R.string.settings_speak_api_url_empty)
+            } else {
+                stringResource(R.string.settings_speak_api_url_value, SpeakSettings.apiUrl)
+            },
+            onClick = { editing = SpeakText.API_URL },
+        )
+        ArrowPreference(
+            title = stringResource(R.string.settings_speak_api_key),
+            summary = stringResource(
+                if (SpeakSettings.apiKey.isBlank()) R.string.settings_speak_api_key_empty
+                else R.string.settings_speak_api_key_set,
+            ),
+            onClick = { editing = SpeakText.API_KEY },
+        )
+        ArrowPreference(
+            title = stringResource(R.string.settings_speak_api_model),
+            summary = SpeakSettings.apiModel,
+            onClick = { editing = SpeakText.API_MODEL },
+        )
+        ArrowPreference(
+            title = stringResource(R.string.settings_speak_api_voice),
+            summary = SpeakSettings.apiVoice,
+            onClick = { editing = SpeakText.API_VOICE },
+        )
+        ArrowPreference(
+            title = stringResource(R.string.settings_speak_volume),
+            summary = stringResource(R.string.settings_speak_online_volume),
+            onClick = { openSoundSettings(context) },
+        )
     } else {
+        // 系统那条也有音量这回事, 只是它不由应用定: 给一句实话, 而不是一个拖不动的控件
+        ArrowPreference(
+            title = stringResource(R.string.settings_speak_volume),
+            summary = stringResource(R.string.settings_speak_volume_system),
+            onClick = { openTtsSettings(context) },
+        )
         val listed = voices
         when {
             listed == null -> ArrowPreference(
@@ -845,12 +1068,15 @@ private fun SpeakItems() {
             }
         }
     }
-    // 引擎与语音包只能去系统那一页: 这里给的是跳转, 而不是一个做不到的下拉
-    ArrowPreference(
-        title = stringResource(R.string.settings_speak_system),
-        summary = stringResource(R.string.settings_speak_system_summary),
-        onClick = { openTtsSettings(context) },
-    )
+    // 引擎与语音包只能去系统那一页: 这里给的是跳转, 而不是一个做不到的下拉 (那两条在线引擎与
+    // 那一页无关, 所以选着它们时不摆这一行)
+    if (!edge && !api) {
+        ArrowPreference(
+            title = stringResource(R.string.settings_speak_system),
+            summary = stringResource(R.string.settings_speak_system_summary),
+            onClick = { openTtsSettings(context) },
+        )
+    }
     // 试听: 音色与语速是耳朵判断的东西, 看一眼数字没有意义 —— 而**正在念的时候这一行就是停止**,
     // 不然一段长回答只能等它念完 (两条引擎都停得下来, 见 LwSpeak.stop)
     ArrowPreference(
@@ -870,6 +1096,22 @@ private fun SpeakItems() {
             }
         },
     )
+    editing?.let { field ->
+        SpeakTextFieldDialog(
+            field = field,
+            onDismissRequest = { editing = null },
+            onConfirm = { value ->
+                when (field) {
+                    SpeakText.API_URL -> SpeakSettings.setApiUrl(context, value)
+                    SpeakText.API_KEY -> SpeakSettings.setApiKey(context, value)
+                    SpeakText.API_MODEL -> SpeakSettings.setApiModel(context, value)
+                    SpeakText.API_VOICE -> SpeakSettings.setApiVoice(context, value)
+                    SpeakText.EDGE_VOICE -> SpeakSettings.setEdgeVoice(context, value)
+                }
+                editing = null
+            },
+        )
+    }
 }
 
 /** 音色在列表里的样子: 名字加地区, 因为同一个引擎常有 zh-CN 与 zh-TW 两条 */
@@ -894,12 +1136,19 @@ private fun BallItems() {
     var showing by remember { mutableStateOf(OverlayState.showing) }
     var edge by remember { mutableStateOf(BallSpot.read(context)?.first ?: BallGeometry.EDGE_RIGHT) }
     var hostUp by remember { mutableStateOf(DshHost.status is HostStatus.Running) }
+    var hideProblem by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         while (true) {
             permission = Settings.canDrawOverlays(context)
             showing = OverlayState.showing
             edge = BallSpot.read(context)?.first ?: BallGeometry.EDGE_RIGHT
             hostUp = DshHost.status is HostStatus.Running
+            // **开关跟的是球的真实存在, 不是"上一次点了什么"** (2026-10-06): 菜单里、通知栏上、
+            // 或者服务自己那边都能把球收掉, 那几条路都不会回来改这个页面里的记忆值 —— 只认本地那一个
+            // 记号的话, 球被菜单关掉之后这个开关会一直画着"开", 而屏幕上什么都没有。
+            // 判据本身在 [BallSwitch] 里 (纯函数, 见 BallSwitchTest)
+            on = BallSwitch.onFor(showing = OverlayState.showing, remembered = BallSpot.on(context))
+            OverlayState.hideFailed?.let { hideProblem = it }
             delay(POLL_MS)
         }
     }
@@ -929,6 +1178,14 @@ private fun BallItems() {
                 Text(text = reason, modifier = Modifier.padding(top = UiSpacing.Medium))
             }
         }
+        // **关不掉不许假装关掉了** (2026-10-06): 那一次的毛病正是"开关画成关、而球还在屏幕上",
+        // 所以服务那边读回发现窗没摘下来时, 这里要把原因说出来
+        hideProblem?.let { reason ->
+            Text(
+                text = stringResource(R.string.settings_ball_hide_failed, reason),
+                modifier = Modifier.padding(top = UiSpacing.Medium),
+            )
+        }
     }
     SwitchPreference(
         title = stringResource(R.string.settings_ball_on),
@@ -936,43 +1193,66 @@ private fun BallItems() {
         checked = on,
         onCheckedChange = { wanted ->
             on = wanted
+            hideProblem = null
             LwOverlay.setOn(context, wanted)
             showing = OverlayState.showing
         },
     )
+    // 拖球那条经验 (主人 2026-10-06 让写在这儿): 球贴在屏幕最左/最右时, 直接往中间拖会先经过系统的
+    // **返回手势区** (屏幕左右边缘那一条竖带) —— 那一下被系统吃掉, 表现是"球没挪动, 反而退出了当前
+    // 应用"。先往上拖一点, 离开那条竖带再横着挪, 就不会撞上它
+    //
+    // 样子按主人点的来: **灰色小字**, 而且**上面空一行** —— 紧贴着上面那张卡片时, 最后一行会被卡片的
+    // 圆角与描边压住看着像被切掉; 左右缩进跟页面一致 (卡片没有水平缩进, 这一行是页面级文字)
+    Spacer(modifier = Modifier.height(UiSpacing.PageItem))
+    Text(
+        text = stringResource(R.string.settings_ball_drag_tip),
+        color = colorScheme.onSurfaceVariantActions,
+        fontSize = 12.sp,
+        modifier = Modifier.padding(horizontal = UiSpacing.PageHorizontal),
+    )
 }
 
 /**
- * 唤醒词: 词表、模型与那两个许可
+ * 唤醒词: 词表、模型与那个许可
  *
- * 四件事分四段说清, 因为它们的处置完全不同: **词表**是用户自己写的 (写错时 sherpa-onnx 会把整行
+ * 三件事分三段说清, 因为它们的处置完全不同: **词表**是用户自己写的 (写错时 sherpa-onnx 会把整行
  * 静默丢掉, 所以这里逐 token 核对后才写), **模型**是那 5.3 MB 的下载 (装完才对得上符号表), 而
- * **两个开关都是许可、不是"现在就常驻"**:
+ * **那个开关是许可、不是"现在就常驻"**:
  *
  * - 「允许唤醒」= 允不允许这个应用听着唤醒词 (缺省开), 它只决定服务起不起来
- * - 「允许常驻语音」= 命中唤醒词之后要不要真的把切段与出字铺开 (缺省**关**)
+ * - ~~「允许常驻语音」~~ = **已经删掉了** (2026-10-06): 那个许可开着时识别链一直不收, 对话会一直
+ *   进行下去。现在命中 (或球上点一下) 只买一句话, 闲置 10 s 由服务自己收回来, 没有开关可给
  *
  * 改动之前这里只有一个开关, 而它直接等于常驻监听 (`checked = WakeWordState.listening`) —— 主人
- * 2026-10-05 判定的那个错就落在这一行: 打开"允许唤醒"顺手把常驻麦克风也打开了, 现在这两个许可
- * **只写偏好、什么都不启动**, 运行时状态另外如实显示 (状态那一行说三件事: 只有唤醒词在守 / 常驻
- * 语音也在跑 / 许可开着而服务没起)
+ * 2026-10-05 判定的那个错就落在这一行: 打开"允许唤醒"顺手把常驻麦克风也打开了, 现在这个许可
+ * **只写偏好、什么都不启动**, 运行时状态另外如实显示 (状态那一行说三件事: 唤醒词在守着哪几个词 /
+ * 许可开着而服务没起 / 服务在跑而这一句的窗口也开着)
  *
- * 每秒看一眼: 下载进度、两个状态、命中数都是别处改的 (服务在另一个进程状态里跑), 不轮询界面就是
+ * 每秒看一眼: 下载进度、那个状态、命中数都是别处改的 (服务在另一个进程状态里跑), 不轮询界面就是
  * 死的 —— 这几条读的都是内存、两份偏好与四次 `File.length()`, 一秒一次的花销可以忽略
  */
 @Composable
 private fun WakeItems() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var words by remember { mutableStateOf(LwWakeWord.words(context)) }
+    // 编辑框的初值: 人存过就是那一份, **没存过就是真正的缺省那张词表** —— 不能给空
+    // (空框会让人以为"没有词", 而把敲进去的那一句当成"新增"), 也不能给另一份缺省
+    var words by remember {
+        mutableStateOf(LwWakeWord.words(context).ifEmpty { WakeWordWords.defaultText() })
+    }
     var names by remember { mutableStateOf(LwWakeWord.names(context)) }
     var allowWake by remember { mutableStateOf(LwWakeWord.allow(context)) }
-    var allowVoice by remember { mutableStateOf(LwWakeWord.allowVoice(context)) }
     var onHit by remember { mutableStateOf(LwWakeWord.onHit(context)) }
     var vibrate by remember { mutableStateOf(LwWakeWord.vibrate(context)) }
     var listening by remember { mutableStateOf(WakeWordState.listening) }
-    var voiceActive by remember { mutableStateOf(WakeWordState.voiceActive) }
+    var resident by remember { mutableStateOf(WakeWordState.voiceActive) }
     var hits by remember { mutableStateOf(WakeWordState.hits) }
+    // 省电模式那三件 (主人 2026-10-07): 手动开关 / 此刻生不生效 / 定时那一段的原文
+    var powerManual by remember { mutableStateOf(LwWakeWord.powerSaveManual(context)) }
+    var powerSave by remember { mutableStateOf(LwWakeWord.powerSave(context)) }
+    var powerWindow by remember { mutableStateOf(LwWakeWord.powerWindowText(context)) }
+    var editingWindow by remember { mutableStateOf(false) }
     var ready by remember { mutableStateOf(WakeWordDownload.readyCount(context)) }
     var note by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf(false) }
@@ -986,12 +1266,14 @@ private fun WakeItems() {
         WakeWordDownload.refresh(context)
         while (true) {
             allowWake = LwWakeWord.allow(context)
-            allowVoice = LwWakeWord.allowVoice(context)
             onHit = LwWakeWord.onHit(context)
             vibrate = LwWakeWord.vibrate(context)
             listening = WakeWordState.listening
-            voiceActive = WakeWordState.voiceActive
+            resident = WakeWordState.voiceActive
             hits = WakeWordState.hits
+            powerManual = LwWakeWord.powerSaveManual(context)
+            powerSave = LwWakeWord.powerSave(context)
+            powerWindow = LwWakeWord.powerWindowText(context)
             ready = WakeWordDownload.readyCount(context)
             names = LwWakeWord.names(context)
             delay(POLL_MS)
@@ -1001,11 +1283,15 @@ private fun WakeItems() {
     Column(modifier = Modifier.fillMaxWidth().padding(UiSpacing.Large)) {
         Text(
             text = when {
-                // 常驻语音真在跑: 这才是"一直开着麦克风"最重的那一个态, 放在最前面说
-                listening && voiceActive -> stringResource(R.string.settings_wake_state_voice)
+                // 省电模式开着时, 下面那两句说的都不是真相 (服务活着而麦克风是关着的) —— 这一档最先说
+                powerSave -> stringResource(R.string.settings_wake_state_power_save)
+                // 常驻那一档只会在视频模式里出现 (识别链留着 = 常驻语音在跑)
+                listening && resident -> stringResource(R.string.settings_wake_state_voice)
                 listening -> stringResource(
                     R.string.settings_wake_state_listening,
-                    names.joinToString("」「").ifEmpty { LwWakeWord.words(context) },
+                    // **念的是 `keywords.txt` 里那几个词** (真正在守的那一份), 不是偏好里那一份:
+                    // 2026-10-06 主人报的"设置说明的唤醒词和真实的不一致"就是这里念错了来源
+                    names.joinToString("」「").ifEmpty { WakeWordWords.displayName(WakeWordWords.DEFAULT) },
                 )
                 // 许可开着而服务没起: 这一句与"许可关着"必须分得开, 否则人不知道是许可没给还是没起来
                 allowWake && microphone && ready == total ->
@@ -1033,7 +1319,7 @@ private fun WakeItems() {
         summary = stringResource(R.string.settings_wake_allow_summary),
         checked = allowWake,
         onCheckedChange = { wanted ->
-            LwWakeWord.setAllow(context, wanted, allowVoice)
+            LwWakeWord.setAllow(context, wanted)
             allowWake = wanted
             note = if (wanted) {
                 when {
@@ -1051,20 +1337,68 @@ private fun WakeItems() {
             }
         },
     )
-    // 第二个开关是**另一个许可**, 而且默认关: 它只决定"命中之后要不要真的把常驻语音铺开",
-    // 打开它不会让麦克风多开一秒 —— 常驻那条链只在命中唤醒词之后才起来
+    // **第二个开关 (「允许常驻语音」) 拿掉了, 而常驻语音本身留着** (主人 2026-10-06 定的口径):
+    // 那个开关能在手机模式下把识别链打开, 结果就是对话一直进行下去 —— 主人判定多余的是那两个入口
+    // (它和浮标菜单里那行「一直听」), 不是这条链。现在**只有视频模式能要求它留着** (切模式那一步写
+    // `modes/voice-resident.on` 那个记号), 所以这里没有开关可给, 但状态那一行照旧如实说
+    //
+    // **省电模式那两行是 2026-10-07 主人点名加上的** ("增加省电模式开关, 及定时开关"): 它只停唤醒词
+    // 监听那一条 (麦克风整个关掉, 喊不醒), 而 host / 浮标 / 通知都留着、点球也照样能说一句 —— 所以它
+    // 与上面那个许可**并列**, 不是第二个"允许常驻语音"。定时那一段由主人自己填 (23:00-07:00)
     SwitchPreference(
-        title = stringResource(R.string.settings_wake_voice),
-        summary = stringResource(R.string.settings_wake_voice_summary),
-        checked = allowVoice,
+        title = stringResource(R.string.settings_wake_power_save),
+        summary = stringResource(R.string.settings_wake_power_save_summary),
+        checked = powerManual,
         onCheckedChange = { wanted ->
-            LwWakeWord.setAllow(context, allowWake, wanted)
-            allowVoice = wanted
-            note = null
-            // 改完得告诉正在跑的那个服务: 否则"我打开了它却要等下次重启"是个说不通的中间态
-            LwWakeWord.refresh(context)
+            powerManual = wanted
+            LwWakeWord.setPowerSave(context, wanted)
+            powerSave = LwWakeWord.powerSave(context)
+            // 关掉省电而监听没起时, 顺手把监听拉回来 —— 许可与模型都对得上才做, 缺什么下面那两行
+            // 会说清 (与「允许唤醒」那一条同一个判断次序)
+            note = when {
+                powerSave -> null
+                !allowWake || !microphone || ready < total -> null
+                WakeWordState.listening -> null
+                else -> runCatching { LwWakeWord.listen(context) }.exceptionOrNull()
+                    ?.let { throwable -> throwable.message ?: throwable.toString() }
+            }
         },
     )
+    ArrowPreference(
+        title = stringResource(R.string.settings_wake_power_window),
+        summary = when {
+            powerWindow.isEmpty() -> stringResource(
+                R.string.settings_wake_power_window_none,
+                stringResource(R.string.settings_wake_power_window_hint),
+            )
+
+            // 现在生效的是定时那一段 (手动开关关着): 说清"此刻在省电"
+            LwWakeWord.powerWindowActive(context) -> stringResource(
+                R.string.settings_wake_power_window_now,
+                powerWindow,
+            )
+
+            else -> stringResource(R.string.settings_wake_power_window_set, powerWindow)
+        },
+        onClick = { editingWindow = true },
+    )
+    if (editingWindow) {
+        PowerWindowDialog(
+            initial = powerWindow,
+            onDismissRequest = { editingWindow = false },
+            onConfirm = { text ->
+                editingWindow = false
+                note = runCatching { LwWakeWord.setPowerWindow(context, text) }
+                    .getOrElse { throwable -> throwable.message ?: throwable.toString() }
+                powerWindow = LwWakeWord.powerWindowText(context)
+                powerSave = LwWakeWord.powerSave(context)
+                // 定时那一段刚关掉 (或者改成"现在不在里面") 而监听没起: 让它照许可回来
+                if (!powerSave && !WakeWordState.listening && allowWake && microphone && ready == total) {
+                    runCatching { LwWakeWord.listen(context) }
+                }
+            },
+        )
+    }
     // 第三个设置: **命中之后干什么** (批次 4.4)。两条"切模式"走的是与说出来一样的那条命令路 ——
     // 命令词表只有一份, 在宿主插件里 (可行性稿 2.7), 这里再写一遍就成了第二份实现
     val hitActions = listOf(LwWakeWord.HIT_WAKE, LwWakeWord.HIT_VIDEO, LwWakeWord.HIT_PHONE)
@@ -1122,9 +1456,9 @@ private fun WakeItems() {
                 note = withContext(Dispatchers.IO) {
                     runCatching {
                         val said = WakeWordDownload.download(context)
-                        // 模型没下过时 keywords.txt 也还没写过: 补上缺省那一句
+                        // 模型没下过时 keywords.txt 也还没写过: 补上**缺省那张词表** (不是偏好里那一份)
                         if (LwWakeWord.names(context).isEmpty()) {
-                            LwWakeWord.setWords(context, LwWakeWord.words(context))
+                            LwWakeWord.setWords(context, WakeWordWords.defaultText())
                         }
                         // **许可是前提**: 没允许唤醒就只把模型放好, 不替人把监听起起来
                         // (改动之前这里无条件 listen(), 那是"开关 = 常驻监听"那个错的第二个入口)
@@ -1151,7 +1485,7 @@ private fun WakeItems() {
     ArrowPreference(
         title = stringResource(R.string.settings_wake_words),
         summary = if (names.isEmpty()) {
-            stringResource(R.string.settings_wake_words_none, WakeWordWords.DEFAULT)
+            stringResource(R.string.settings_wake_words_none, WakeWordWords.displayName(WakeWordWords.DEFAULT))
         } else {
             stringResource(R.string.settings_wake_words_now, names.joinToString(", "))
         },
@@ -1241,6 +1575,144 @@ private fun WakeWordDialog(
     }
 }
 
+/**
+ * 省电时段那个编辑框 (主人 2026-10-07: "定时开关…由用户自己定时间")
+ *
+ * 形状与词表那个一样: 一个文本框 + 取消/确定。**看不懂的写法不写** —— 由
+ * [io.github.miuzarte.littlewhale.tool.LwWakeWord.setPowerWindow] 拒绝, 拒绝的那一句由调用方念在
+ * 状态那一行上, 所以填错了这里什么都不变 (而不是存下一句谁也不认识的时间)
+ */
+@Composable
+private fun PowerWindowDialog(
+    initial: String,
+    onDismissRequest: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = stringResource(R.string.settings_wake_power_window),
+        summary = stringResource(R.string.settings_wake_power_window_summary),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismissRequest,
+    ) {
+        var text by rememberSaveable(initial) { mutableStateOf(initial) }
+        SuperTextField(
+            modifier = Modifier.padding(bottom = 16.dp),
+            value = text,
+            onValueChange = { text = it },
+            label = stringResource(R.string.settings_wake_power_window_hint),
+            // 空着时那行提示就是"该长什么样" (这一行本来就允许空 = 关掉定时)
+            useLabelAsPlaceholder = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        )
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                text = stringResource(R.string.button_cancel),
+                onClick = {
+                    haptic.contextClick()
+                    onDismissRequest()
+                },
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                text = stringResource(R.string.button_confirm),
+                onClick = {
+                    haptic.confirm()
+                    onConfirm(text)
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
+}
+
+/** 「说话」那一段里要打字的几行: API 的四项 + Edge 的自定义音色 */
+private enum class SpeakText { API_URL, API_KEY, API_MODEL, API_VOICE, EDGE_VOICE }
+
+/**
+ * 那几行的编辑框
+ *
+ * 标题与说明按 [field] 取; **密钥那一行用密码变换** —— 它不该明文躺在屏幕上 (存也只存在本应用的
+ * 偏好文件里, 回执与日志里只报"有没有", 见 LwSpeak.status)
+ */
+@Composable
+private fun SpeakTextFieldDialog(
+    field: SpeakText,
+    onDismissRequest: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    val title = stringResource(
+        when (field) {
+            SpeakText.API_URL -> R.string.settings_speak_api_url
+            SpeakText.API_KEY -> R.string.settings_speak_api_key
+            SpeakText.API_MODEL -> R.string.settings_speak_api_model
+            SpeakText.API_VOICE -> R.string.settings_speak_api_voice
+            SpeakText.EDGE_VOICE -> R.string.settings_speak_edge_custom
+        },
+    )
+    val summary = stringResource(
+        when (field) {
+            SpeakText.API_URL -> R.string.settings_speak_api_url_dialog
+            SpeakText.API_KEY -> R.string.settings_speak_api_key_dialog
+            SpeakText.API_MODEL -> R.string.settings_speak_api_model_dialog
+            SpeakText.API_VOICE -> R.string.settings_speak_api_voice_dialog
+            SpeakText.EDGE_VOICE -> R.string.settings_speak_edge_custom_dialog
+        },
+    )
+    val initial = when (field) {
+        SpeakText.API_URL -> SpeakSettings.apiUrl
+        SpeakText.API_KEY -> SpeakSettings.apiKey
+        SpeakText.API_MODEL -> SpeakSettings.apiModel
+        SpeakText.API_VOICE -> SpeakSettings.apiVoice
+        SpeakText.EDGE_VOICE -> SpeakSettings.edgeVoice
+    }
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = title,
+        summary = summary,
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismissRequest,
+    ) {
+        var text by rememberSaveable(initial) { mutableStateOf(initial) }
+        SuperTextField(
+            modifier = Modifier.padding(bottom = 16.dp),
+            value = text,
+            onValueChange = { text = it },
+            singleLine = true,
+            visualTransformation = if (field == SpeakText.API_KEY) {
+                PasswordVisualTransformation()
+            } else {
+                VisualTransformation.None
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        )
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                text = stringResource(R.string.button_cancel),
+                onClick = {
+                    haptic.contextClick()
+                    onDismissRequest()
+                },
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                text = stringResource(R.string.button_confirm),
+                onClick = {
+                    haptic.confirm()
+                    onConfirm(text)
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
+}
+
 /** 设置页那一段的轮询间隔: 只喂状态文字, 不用更快 */
 private const val POLL_MS = 1000L
 
@@ -1270,6 +1742,15 @@ private fun openTtsSettings(context: Context) {
                 Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                 Uri.fromParts("package", context.packageName, null),
             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }
+}
+
+/** 系统的「声音」页: 响度不在应用手里时那一行点它去这里 (媒体音量在那里) */
+private fun openSoundSettings(context: Context) {
+    runCatching {
+        context.startActivity(
+            Intent(Settings.ACTION_SOUND_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
     }
 }
@@ -1315,88 +1796,4 @@ private fun OcrItems() {
             )
         }
     }
-}
-
-/** 工作区落在哪, 以及怎么改它 */
-@Composable
-private fun WorkspaceItems() {
-    val context = LocalContext.current
-    val root = DshHost.workspace
-    val granted = Workspace.isManaging()
-    val kind = when (root?.kind) {
-        Workspace.Kind.Shared -> stringResource(R.string.settings_workspace_kind_shared)
-        Workspace.Kind.Media -> stringResource(R.string.settings_workspace_kind_media)
-        Workspace.Kind.Sandbox -> stringResource(R.string.settings_workspace_kind_sandbox)
-        null -> stringResource(R.string.settings_workspace_kind_none)
-    }
-    // 路径是数据不是文案, 拿不到就不占一行
-    val path = root?.directory?.absolutePath
-    ArrowPreference(
-        title = stringResource(R.string.settings_workspace_grant),
-        summary = stringResource(R.string.settings_workspace_grant_summary, kind) +
-            (path?.let { "\n$it" } ?: ""),
-        enabled = !granted,
-        onClick = {
-            Workspace.requestAllFilesAccess(context)
-        },
-    )
-}
-
-/** 别的设备怎么打开这个 GUI */
-@Composable
-private fun NetworkItems() {
-    val context = LocalContext.current
-    var lan by remember { mutableStateOf(HostSettings.lanAccess(context)) }
-    val remote = DshHost.remoteUrl
-    SwitchPreference(
-        title = stringResource(R.string.settings_lan),
-        summary = stringResource(R.string.settings_lan_summary),
-        checked = lan,
-        onCheckedChange = {
-            lan = it
-            HostSettings.setLanAccess(context, it)
-        },
-    )
-    // URL 与两个按钮不是设置项, 没有自带的内边距, 所以自己套上卡片里别的内容那一圈 16dp,
-    // 否则它们会贴着卡片边 (设置项自己带 16dp, 纯文字与按钮不带)
-    Column(modifier = Modifier.padding(UiSpacing.Large)) {
-        remote?.let { Text(text = it) }
-        // 分享只占四分之一, 剩下都给复制: 复制是常用的那个, 分享是偶尔发给另一台设备
-        Row(
-            modifier = Modifier.padding(top = UiSpacing.Medium),
-            horizontalArrangement = Arrangement.spacedBy(UiSpacing.Medium),
-        ) {
-            Button(
-                onClick = { remote?.let { shareRemoteUrl(context, it) } },
-                enabled = remote != null,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text(text = stringResource(R.string.settings_share))
-            }
-            Button(
-                onClick = { remote?.let { copyRemoteUrl(context, it) } },
-                enabled = remote != null,
-                modifier = Modifier.weight(3f),
-            ) {
-                Text(text = stringResource(R.string.settings_copy))
-            }
-        }
-    }
-}
-
-/** 把 LAN URL 放进剪贴板, 它带着 host 的 token, 没人会手敲 */
-private fun copyRemoteUrl(context: Context, url: String) {
-    context.getSystemService(ClipboardManager::class.java)
-        .setPrimaryClip(ClipData.newPlainText("dsh", url))
-    Toast.makeText(context, context.getString(R.string.settings_url_copied), Toast.LENGTH_SHORT).show()
-}
-
-/** 交给别的应用, 发给另一台设备比手抄一串 token 靠谱 */
-private fun shareRemoteUrl(context: Context, url: String) {
-    val send = Intent(Intent.ACTION_SEND)
-        .setType("text/plain")
-        .putExtra(Intent.EXTRA_TEXT, url)
-    val chooser = Intent.createChooser(send, context.getString(R.string.settings_share_chooser))
-        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    context.startActivity(chooser)
 }

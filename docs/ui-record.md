@@ -295,3 +295,43 @@ Card 里的按钮 (`复制 URL` / `重启 host` ×2 / `授予所有文件访问`
 - `lw_type` 默认是**插入到光标处** (`replace` 才覆盖), 所以往预填的 `2048` 上打字会变成 `20481024` —— 这不是 bug, 是那条工具的契约 (它本来就给模型一个 `replace` 参数), 顺带把上面那条范围校验验了
 - 收尾: 设备上那两条是 `screenshot-budget=1` (默认档) 与 `screenshot-bytes=1048576`
 
+## 第七轮 (2026-10-06): 撤掉「工作区」与「网络」两段, 朗读多一条音量滑块
+
+主人两句原话: 「当前的 tts 语音过小, 你在朗读里加上音量调节功能, 以当前为 10% 的基础算」与「再把设置里的工作区和网络两部分删除」
+
+### 撤掉两段
+
+`SettingsScreen` 里删的是**两张卡**与它们的两条 `SectionSmallTitle`: `WorkspaceItems` (授权所有文件访问 + 工作区落在哪) 与 `NetworkItems` (局域网开关 + LAN URL + 分享/复制两个按钮), 连带 `copyRemoteUrl` / `shareRemoteUrl` 两个只在 `NetworkItems` 里用的辅助函数, 以及 `settings_section_workspace` / `settings_workspace_*` / `settings_section_network` / `settings_lan*` / `settings_share` / `settings_copy` / `settings_url_copied` / `settings_share_chooser` 这一批键 (两份 strings 同步删, 键与顺序仍一一对上)
+
+**留下的与删掉的**:
+
+| 东西 | 处置 |
+| :-- | :-- |
+| `Workspace.resolve` 三档解析 / `isManaging` / `requestAllFilesAccess` | **留** —— 前两个是 host 启动时真的在跑的逻辑, 最后一个只有 UI 用过, 但没有它这条能力就彻底没有入口了 |
+| `HostSettings.lanAccess` / `DshHost.remoteUrl` | **留** —— host 仍按它决定绑不绑 0.0.0.0, `dsh_ready` 那行仍带 LAN URL |
+| 设置页右上角 ⋮ 里的「重启 DSH host」 | **留** —— 它现在是那条菜单里唯一的条目, 措辞改成"改了 host 读一次的东西 (工作区落在哪、局域网开关) 之后点它" |
+| 四个 import (`ClipData` / `ClipboardManager` / `Toast` / `HostSettings` / `Workspace`) | 删 (各自只剩被删掉的那处用) |
+
+**为什么删的是这两段**: 两件事都"平时不用动" —— 工作区落在哪是 host 启动时自己挑的 (拿到所有文件访问权限就 `/sdcard/DSH`, 否则退到 `Android/media/<pkg>/DSH` 或沙盒), 而局域网那个开关改完必须重启 host 才生效。它们排在朗读与权限之间, 把常用的段推得更远
+
+**代价如实说**: 撤掉之后设置页上再也开不了「所有文件访问」了, 只能 `adb shell appops set <pkg> MANAGE_EXTERNAL_STORAGE allow` 或者手点系统那页; 于是把这一条**加进了 `tools/lw-install.ps1 -Perms`** 的 appops 表 (原来那四条是 WRITE_SETTINGS / GET_USAGE_STATS / SYSTEM_ALERT_WINDOW / REQUEST_INSTALL_PACKAGES) —— 那是它在这台机器上唯一的顺手入口
+
+### 朗读那条音量滑块
+
+音色那一套下面多一条 `ArrowSlider`: 0~300%, 吸附点 0 / 50 / 100 / 150 / 200 / 300, 显示成 `NNN%`, 打字也收百分数。**只在使用自带音色时出现** (系统引擎那条的增益在引擎自己手里, 应用这一侧没有 API 能碰) —— 系统引擎那侧换成一行实话, 点它跳系统「文字转语音输出」页
+
+刻度的基准是量出来的, 不是拍的: 同一份 `vits-zh-ll` 在开发机上跑出来峰值 0.27 (-11 dBFS)、RMS 0.057 (-25 dBFS), 比正常语音低十几个 dB, 而 `LwTts.play` 原来一点增益都不加 —— 所以**100% 就是"现在这个电平"**, 往上才是加。上限 300% 是因为模型里最响的那个 speaker 量到 0.493, 乘 3 已经削顶; 换算放在播放那一侧 (`百分数 / 100`, 乘 `maxGain()`), 夹 int16 时顺带数夹了多少个样本并记一行日志
+
+### 那条滑块当初把设置页打崩了 (同日修掉, 值得单记一笔)
+
+**症状**: 装完 15:29 那一版之后, 应用在 15:30~15:31 连续崩了 6 次 (`dumpsys activity exit-info` 里 6 条 `reason=4 (APP CRASH(EXCEPTION))`); 主人的说法是"**下拉设置就会重启**"
+
+**根因**: 我给 `settings_speak_volume_summary` 的中文那句写了一个**裸 `%`** —— `%1$d%%; 100% 就是模型自己的电平`。`Resources.getString` 会把整条当 `Formatter` 格式串解析, **它不认 `%%` 当转义**(与 `String.format` 不同): 那个 `%` 会连着后面的"就"字一起去当一个转换符, 抛 `java.util.UnknownFormatConversionException: Conversion = '是'`, 主线程当场死。英文那份写的是 `%%`, 所以只有中文语言下崩
+
+**为什么现象是"下拉才崩"**: 崩的位置在 `SettingsScreen.kt:927` (`SpeakItems` 里那条音量滑块的 `inputSummary`), 而 **LazyColumn 的预取会在那一行还没进视野时就组合它** (`AndroidPrefetchScheduler` 在主线程上跑 `performPausableComposition`) —— 于是"往下滑到朗读那一段"就是触发条件, 而栈顶看着像"滑动把它弄崩的"
+
+**修法**: 三处带 `%` 的字符串统一写成规范形式 (中文 summary 与两份 dialog 是真的有裸 `%`, hint 那两条按"参数也会过 Formatter"一并写成 `%%`); 新增 `tools/check-bare-percent.py` —— 它认 `%1$d` 这类说明符、跳过合法的 `%%`, 拿改坏之前那两句试过确实报得出来。**规矩进 AGENTS.md**: 进 `stringResource(...)` 的百分号一律 `%%`
+
+**验证**: 重装之后同样的下拉动作做四次不再崩; `exit-info` 里最后一笔崩溃停在 15:37:24 (修之前的包), 之后只有 `PACKAGE UPDATED`
+
+

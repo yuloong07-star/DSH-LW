@@ -3,7 +3,7 @@ package io.github.miuzarte.littlewhale.tool
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
-import android.media.AudioTrack
+import android.media.MediaPlayer
 import android.util.Log
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
@@ -71,13 +71,13 @@ internal object LwTts {
     /**
      * 正在放的那一段
      *
-     * 留一个引用是为了**停得下来**: `AudioTrack` 播完由标记回调叫醒, 而掐断之后那个回调不会再来,
-     * 所以停的时候除了停 track, 还要把等待叫醒, 不然一次"停止"要等到音频自然放完才生效
+     * 留一个引用是为了**停得下来**: 播放那一侧在等它自己放完, 掐断时要把那个等待叫停 (原来用
+     * `AudioTrack` 的标记回调时也一样 —— 掐断之后那个回调不会再来)
      */
-    private class Playback(val track: AudioTrack, val latch: CountDownLatch)
+    private class Playing(val player: MediaPlayer)
 
     @Volatile
-    private var current: Playback? = null
+    private var current: Playing? = null
 
     /** 这一次念有没有被叫停 (被叫停时报的是"停了", 不是"没放完") */
     @Volatile
@@ -85,6 +85,10 @@ internal object LwTts {
 
     /** 音色放在哪: 工作区根的 `voices/`。设置页把这条路径显示出来, 不然没人知道该往哪拷 */
     fun root(context: Context): File = File(Workspace.resolve(context).directory, ROOT)
+
+    /** 播放用的临时 wav 放哪: 应用自己的 cache (放完就删, 不占用户的空间也不用任何权限) */
+    private fun tempRoot(context: Context): File =
+        File(context.cacheDir, "read").apply { mkdirs() }
 
     /**
      * 扫一遍有哪些音色
@@ -125,10 +129,19 @@ internal object LwTts {
     /**
      * 念一段, 回来一句人话
      *
+     * [volume] 是滑块百分数除以 [SpeakSettings.VOLUME_UNITY] 之后的倍数: 100% 就是 1.0 (一个数都不改,
+     * 等于这条模型本来的电平), 300% 就是 3.0, 上限见 [SpeakSettings.maxGain]
+     *
      * 半双工与系统那条共用一个标记 ([VoiceState.speaking]): 出声的时候采集链一个样本都不吃, 所以
      * 换成自带引擎也不会把喇叭里的字录回去
      */
-    fun speak(context: Context, voice: Voice, text: String, speed: Float): String {
+    fun speak(
+        context: Context,
+        voice: Voice,
+        text: String,
+        speed: Float,
+        volume: Float,
+    ): String {
         val tts = try {
             engine(voice)
         } catch (error: Throwable) {
@@ -136,7 +149,9 @@ internal object LwTts {
         }
         val pieces = LwSpeak.chunk(text, CHUNK_CHARS)
         if (pieces.isEmpty()) return "there is nothing to say"
+        val gain = gainOf(volume)
         val started = System.currentTimeMillis()
+        var frames = 0
         VoiceState.speaking = true
         playing.set(true)
         stopped = false
@@ -148,7 +163,8 @@ internal object LwTts {
                 // 那是报了一件没发生的事 (2026-10-05 在真机上就是这么露出来的)
                 if (stopped) return "stopped on request before saying \"${piece.take(SCRIBBLE)}\""
                 if (audio.samples.isEmpty()) throw IllegalStateException("the model produced no audio")
-                if (!play(audio.samples, audio.sampleRate, piece.length)) {
+                frames += audio.samples.size
+                if (!play(context, audio.samples, audio.sampleRate, piece.length, gain)) {
                     // 被掐断与"没放完"是两件事, 分开说
                     return if (stopped) {
                         "stopped on request while saying \"${piece.take(SCRIBBLE)}\""
@@ -173,6 +189,40 @@ internal object LwTts {
     val speaking: Boolean get() = playing.get()
 
     /**
+     * 滑块给的倍数换算成增益: 100% 是 1.0 (模型自己的电平), 300% 是 3.0
+     *
+     * 原来这里是 `coerceIn(0f, 1f) * maxGain()`, 它让 100% 直接变成 3 倍, 而 100% 以上全被夹到
+     * 同一个值 —— "想放大"这件事因此整条是坏的: 声音先被顶到上限, 旋钮再往上一点都不动
+     */
+    internal fun gainOf(volume: Float): Float = volume.coerceIn(0f, SpeakSettings.maxGain())
+
+    /** 交给 MediaPlayer 的临时 wav 的 44 字节头 (单声道 16 bit) */
+    private fun wavHeader(dataSize: Int, sampleRate: Int): ByteArray {
+        val header = ByteArray(44)
+        fun put(offset: Int, text: String) {
+            text.toByteArray(Charsets.US_ASCII).copyInto(header, offset)
+        }
+        fun putInt(offset: Int, value: Int) {
+            header[offset] = (value and 0xFF).toByte()
+            header[offset + 1] = ((value shr 8) and 0xFF).toByte()
+            header[offset + 2] = ((value shr 16) and 0xFF).toByte()
+            header[offset + 3] = ((value shr 24) and 0xFF).toByte()
+        }
+        put(0, "RIFF")
+        putInt(4, 36 + dataSize)
+        put(8, "WAVEfmt ")
+        putInt(16, 16)
+        header[20] = 1
+        header[22] = 1
+        putInt(24, sampleRate)
+        putInt(28, sampleRate * 2)
+        header[32] = 2
+        header[34] = 16
+        put(36, "data")
+        putInt(40, dataSize)
+        return header
+    }
+    /**
      * 掐断正在念的
      *
      * 三种情形分开说, 因为它们是三件事:
@@ -188,9 +238,7 @@ internal object LwTts {
         val busy = playing.get()
         stopped = true
         val held = current ?: return if (busy) "the reading was called off before it spoke" else null
-        runCatching { held.track.pause() }
-        runCatching { held.track.flush() }
-        held.latch.countDown()
+        runCatching { held.player.stop() }
         Log.i(TAG, "on-device playback stopped on request")
         return "the on-device playback was cut off"
     }
@@ -240,7 +288,7 @@ internal object LwTts {
                     tokens = tokens,
                     dictDir = dict,
                 ),
-                numThreads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
+                numThreads = THREADS,
                 provider = "cpu",
             )
 
@@ -252,7 +300,7 @@ internal object LwTts {
                     tokens = tokens,
                     dictDir = dict,
                 ),
-                numThreads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
+                numThreads = THREADS,
                 provider = "cpu",
             )
 
@@ -265,7 +313,7 @@ internal object LwTts {
                     dataDir = File(directory, "espeak-ng-data").takeIf { it.isDirectory }?.absolutePath.orEmpty(),
                     dictDir = dict,
                 ),
-                numThreads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
+                numThreads = THREADS,
                 provider = "cpu",
             )
         }
@@ -280,57 +328,96 @@ internal object LwTts {
     /**
      * 放一段采样, 等它真的放完
      *
-     * 用 MODE_STATIC: 一次推完整段 (一段最多 [CHUNK_CHARS] 个字, 几秒音频), 播完由标记回调叫醒 ——
-     * 比流式写省事, 也不会因为写得太快把尾巴截掉
+     * **走 MediaPlayer 而不是 AudioTrack** —— 这是 2026-10-06 在真机上量出来的结论:
+     *
+     * 原来那条路是 `AudioTrack` + `MODE_STATIC`, 而在这台设备上它**交出去的是静音**: 轨道照样
+     * 建起来、时长也照样走满、系统那侧报 `state:started` 且 `mutedState:none`, 可缓冲区里是零 ——
+     * `LwTts` 自己量出来的 RMS 是 `0 (-Infinity dBFS)`。同一段正弦拿 `MediaPlayer` 放出来是听得见的
+     * (音频自检那四声里, 听得见的正是 MediaPlayer 与 ToneGenerator 那两声), 而**系统那条能出声的
+     * TTS 引擎走的也是解码器这一类路**。所以这里改成: 把采样写成临时 wav 交给 MediaPlayer
+     *
+     * 代价是一次临时文件往返 (每段几十 KB, 落在应用自己的 cache 里, 放完就删), 换来的是"真的出声"
+     *
+     * [gain] 就是音量那一条: 1.0 是模型自己的电平, 往上乘就是调大。削顶仍然要夹住 (short 出界会绕
+     * 回去, 那声音不是变小而是变成噪声), 顺手把夹了多少个样本数出来 —— 音量滑块调到会破的那个位置
+     * 是能被看见的, 而不是只能靠耳朵
      */
-    private fun play(samples: FloatArray, sampleRate: Int, characters: Int): Boolean {
-        val frames = samples.size
-        val pcm = ShortArray(frames) { index ->
-            (samples[index].coerceIn(-1f, 1f) * 32767f).toInt().toShort()
+    private fun play(context: Context, samples: FloatArray, sampleRate: Int, characters: Int, gain: Float): Boolean {
+        val rate = if (sampleRate < MIX_RATE) MIX_RATE else sampleRate
+        val source = if (rate == sampleRate) samples else LwAudio.resample(samples, sampleRate, rate)
+        // 这一步就是"模型有声音而喇叭里全零"唯一会出错的地方, 见 LwAudio 上面那段
+        val converted = LwAudio.toPcm16(source, gain)
+        val pcm = converted.samples
+        val frames = pcm.size
+        if (converted.clipped > 0) {
+            Log.w(TAG, "gain ${"%.2f".format(gain)} clipped ${converted.clipped} of $frames samples")
         }
-        val track = AudioTrack.Builder()
-            .setAudioAttributes(
+        var rms = 0.0
+        for (value in pcm) rms += value.toDouble() * value
+        rms = if (frames == 0) 0.0 else kotlin.math.sqrt(rms / frames)
+        // 一行日志就够: 帧数、增益与**交给系统之前的真实电平** (0 就说明交出去的是静音)
+        Log.i(
+            TAG,
+            "playing $frames frames at ${rate}Hz (model $sampleRate) gain ${"%.2f".format(gain)}" +
+                " rms ${"%.0f".format(rms)} (${"%.1f".format(20 * kotlin.math.log10(rms / 32768.0))} dBFS)" +
+                " via MediaPlayer",
+        )
+        if (frames == 0) return false
+        val file = File.createTempFile("lw-read", ".wav", tempRoot(context))
+        val player = MediaPlayer()
+        val done: Boolean
+        try {
+            file.outputStream().use { stream ->
+                stream.write(wavHeader(frames * 2, rate))
+                val bytes = ByteArray(frames * 2)
+                for (index in 0 until frames) {
+                    val value = pcm[index].toInt()
+                    bytes[index * 2] = (value and 0xFF).toByte()
+                    bytes[index * 2 + 1] = ((value shr 8) and 0xFF).toByte()
+                }
+                stream.write(bytes)
+            }
+            player.setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build(),
             )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(sampleRate)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build(),
-            )
-            .setTransferMode(AudioTrack.MODE_STATIC)
-            .setBufferSizeInBytes(frames * 2)
-            .build()
-        val latch = CountDownLatch(1)
-        return try {
-            track.write(pcm, 0, pcm.size)
-            track.setNotificationMarkerPosition(frames)
-            track.setPlaybackPositionUpdateListener(
-                object : AudioTrack.OnPlaybackPositionUpdateListener {
-                    override fun onMarkerReached(ignored: AudioTrack?) = latch.countDown()
-                    override fun onPeriodicNotification(ignored: AudioTrack?) = Unit
-                },
-            )
-            track.play()
-            current = Playback(track, latch)
+            current = Playing(player)
+            player.setDataSource(file.absolutePath)
+            player.prepare()
+            player.start()
             // 预算按音频长度给, 再加一段余量: 到点就说没放完, 不无限等
-            val budget = (frames * 1000L / sampleRate) + PLAY_TAIL_MS
-            val finished = latch.await(budget, TimeUnit.MILLISECONDS)
-            if (!finished && !stopped) Log.w(TAG, "playback of $characters characters did not report finishing")
-            finished && !stopped
+            val budget = (frames * 1000L / rate) + PLAY_TAIL_MS
+            val deadline = System.currentTimeMillis() + budget
+            while (player.isPlaying && System.currentTimeMillis() < deadline) {
+                if (stopped) break
+                Thread.sleep(20)
+            }
+            done = !player.isPlaying && !stopped
+            if (!done && !stopped) Log.w(TAG, "playback of $characters characters did not report finishing")
         } finally {
             current = null
-            runCatching { track.stop() }
-            runCatching { track.release() }
+            runCatching { player.release() }
+            runCatching { file.delete() }
         }
+        return done
     }
 
     private const val ROOT = "voices"
     private const val TAG = "LwTts"
+
+    /** 交给系统的那条流用 48 kHz: 见 [play] 那段注释 */
+    private const val MIX_RATE = 48_000
+
+    /**
+     * 推理用几个线程
+     *
+     * **钉成 1 不是保守, 是这台设备上量出来的**: 这台 mt6989 上 sherpa-onnx 的多线程推理踩过两次
+     * 坑 —— 2026-10-05 的 ASR 频繁 SIGSEGV 最后也是单线程解决的, 而 2026-10-06 自带 TTS "推理跑完
+     * 但输出全是零"同样只在多线程下出现 (开发机 4 线程完全正常)。核数在这里没有意义, 出声才有
+     */
+    private const val THREADS = 1
 
     /** 单说话人模型都用 0 号; 多说话人的模型要挑声音时再说 */
     private const val SPEAKER = 0

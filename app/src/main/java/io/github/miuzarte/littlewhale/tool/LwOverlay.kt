@@ -7,6 +7,8 @@ import androidx.core.content.ContextCompat
 import io.github.miuzarte.littlewhale.channel.LwModes
 import io.github.miuzarte.littlewhale.host.DshHost
 import io.github.miuzarte.littlewhale.host.HostStatus
+import io.github.miuzarte.littlewhale.overlay.BallBox
+import io.github.miuzarte.littlewhale.overlay.BallMinutes
 import io.github.miuzarte.littlewhale.overlay.BallSpot
 import io.github.miuzarte.littlewhale.overlay.OverlayService
 import io.github.miuzarte.littlewhale.overlay.OverlayState
@@ -37,8 +39,13 @@ internal object LwOverlay {
         "state" -> state(context)
         // 宿主推来的「在想」: 一轮在跑 / 跑完了, 只改一个记号, 球那边 400 ms 读一次
         "phase" -> phase(request)
+        // 输入通道 (那块自己画的文字框): 开它, 或者把一句回答推进去
+        "channel" -> channel(context)
+        "reply" -> reply(context, request)
+        // 同一条推送, 但这一条不是回答: 比如"这句话没能送进会话" (画出来带一个 ⚠)
+        "note" -> note(context, request)
         else -> throw IllegalArgumentException(
-            "op has to be show, expand, collapse, hide, state or phase, not \"$op\"",
+            "op has to be show, expand, collapse, hide, state, phase, channel, reply or note, not \"$op\"",
         )
     }
 
@@ -55,8 +62,8 @@ internal object LwOverlay {
             put("y", OverlayState.y)
             put(
                 "detail",
-                "the ball is up: tap it to speak, hold it for the menu (keyboard, always-listening," +
-                    " the two modes, back to the app, close it) and drag it to an edge to dock it there",
+                "the ball is up: tap it to speak, hold it for the menu (keyboard input, screen mode," +
+                    " close the ball) and drag it to an edge to dock it there",
             )
         }
     }
@@ -90,15 +97,60 @@ internal object LwOverlay {
         }
     }
 
-    /** 关掉浮标: 存盘那个开关一起关 (否则下一次应用启动它又自己冒出来) */
+    /**
+     * 关掉浮标: **走服务自己那条 `ACTION_HIDE`**, 而不是在外面直接 `stopService`
+     *
+     * 这一条是 2026-10-06 那次修复的核心那次取舍: `stopService` 只把服务停掉, 而**服务停掉不会让它加
+     * 的窗自己消失** —— 真机实测到的正是"服务没了、`ball-on` 写成 false、球还留在桌面上"(摘窗只有
+     * 服务自己那侧做得到, [OverlayService.hideBall] 里四步: 摘窗、读回、写偏好、停服务)。所以这里
+     * 只发那一条动作, 让关闭这件事**只有一份实现**
+     *
+     * `stopService` 仍然要跟一下: 服务没在跑时 `startForegroundService` 会把它拉起来跑一遍
+     * `hideBall` 再停 (无害但绕), 而**服务真的不在时它就是唯一一条路** —— 那种情形下也没有窗要摘
+     */
     private fun hide(context: Context): JsonObject {
-        val stopped = context.stopService(Intent(context, OverlayService::class.java))
+        val asked = ask(context, wait = true)
+        return buildJsonObject {
+            put("hidden", true)
+            put("showing", OverlayState.showing)
+            put("running", OverlayState.running)
+            put("problem", OverlayState.hideFailed ?: "")
+            put("detail", if (asked.isNotEmpty()) asked else HIDDEN_DETAIL)
+        }
+    }
+
+    /**
+     * 发那条关闭动作, 并且**问一句"窗真的掉了没有"**
+     *
+     * 两个调用方, 而这个区别是要紧的:
+     *
+     * - **设置页那个开关不等人** ([wait] = false): 它在主线程上 (`SwitchPreference` 的
+     *   `onCheckedChange`), 在这里睡一秒半就是 ANR。它本来也不需要等 —— 那一段每秒轮询
+     *   [OverlayState.showing], 窗一掉开关自己就跟着回位
+     * - **工具与通道那条路等** ([wait] = true): 它跑在通道自己那条线程上, 而调用方要的正是那句回执
+     *   (`op=hide` 的答案里带 `problem`)。不等的话这条工具会在一瞬间回一句"关了", 而屏幕上那块窗还
+     *   要过几十毫秒才消失 —— 模型紧接着截一张图就会看到球还在
+     */
+    private fun ask(context: Context, wait: Boolean): String {
+        if (!OverlayState.running && !BallSpot.on(context)) return ""
+        val intent = Intent(context, OverlayService::class.java).setAction(OverlayService.ACTION_HIDE)
+        runCatching { ContextCompat.startForegroundService(context, intent) }
+            .onFailure { return "the hide action did not reach the service: ${it.message ?: it}" }
+        // 窗是服务那一侧摘的, 摘完它把 showing 与 running 都落下去 (最多等 WINDOW_GONE_MS)
+        val deadline = System.currentTimeMillis() + WINDOW_GONE_MS
+        while (wait && OverlayState.showing && System.currentTimeMillis() < deadline) {
+            runCatching { Thread.sleep(POLL_MS) }
+        }
+        // 兜底: 服务那时可能压根没在跑 (或者已经跑完了那一趟), 所以再直接停一次 —— 它是幂等的
+        val stopped = runCatching { context.stopService(Intent(context, OverlayService::class.java)) }
+            .getOrDefault(false)
         BallSpot.setOn(context, false)
         OverlayState.showing = false
         OverlayState.expanded = false
-        return buildJsonObject {
-            put("hidden", true)
-            put("detail", if (stopped) "the ball was stopped" else "no ball was running")
+        return when {
+            OverlayState.hideFailed != null -> "the ball did not come off: ${OverlayState.hideFailed}"
+            stopped -> "the ball was stopped"
+            else -> HIDDEN_DETAIL
         }
     }
 
@@ -114,12 +166,136 @@ internal object LwOverlay {
         }
     }
 
+    /**
+     * 输入通道 (那块 650 px 的文本框): 把它张开, 焦点给输入框
+     *
+     * 与 `expand` 的分工: `expand` 是面板 A 那块 WebView (整个会话界面), 这一条是主人 2026-10-05
+     * 点名的"自己新建一个文本框" —— 打字、回车发送、回答落在同一个通道里 (见 BoxView)
+     */
+    private fun channel(context: Context): JsonObject {
+        refusal(context)?.let { unavailable("opening the input channel", it) }
+        val reason = launch(context, expand = false)
+        if (reason != null) unavailable("opening the input channel", reason)
+        val intent = Intent(context, OverlayService::class.java)
+            .setAction(OverlayService.ACTION_CHANNEL)
+        runCatching { ContextCompat.startForegroundService(context, intent) }
+        BallSpot.setOn(context, true)
+        return buildJsonObject {
+            put("channel", true)
+            put("width", BallBox.WIDTH_PX)
+            put("lines", BallBox.MAX_LINES)
+            put(
+                "detail",
+                "the text channel is up (${BallBox.WIDTH_PX} px wide, at most ${BallBox.MAX_LINES} lines," +
+                    " it grows with the text and follows the ball); it closes as soon as a line goes" +
+                    " out, comes back by itself - without taking focus - when the reply arrives, and" +
+                    " closes for good after a double tap on empty space (the second tap within" +
+                    " ${BallMinutes.BOX_DOUBLE_TAP_MS}ms, a slower one starts the count again)",
+            )
+        }
+    }
+
+    /**
+     * 一轮的回答推回浮标那个通道 (见 host-plugin 的 `startReadAloud`)
+     *
+     * 通道没开着时**不丢**: 服务那边记着 ([OverlayState.pendingReply]), 而它会顺手把框张出来
+     * (主人 2026-10-06 的口径: 回答到了自动打开, 但不抢焦点)
+     */
+    private fun reply(context: Context, request: JsonObject): JsonObject =
+        push(context, OverlayService.ACTION_REPLY, request, "reply")
+
+    /**
+     * 一条**提示**推回浮标那个通道 (见 host-plugin 的 `reportNote`)
+     *
+     * 与 [reply] 是同一条路, 只是记号不同: 应用那侧把它画成一条 `⚠` 行, 所以"它说的"与"系统说哪里
+     * 不对"分得开。现在唯一一条来源是投不出去的那句话 —— 那种事在屏幕上本来一个字都没有
+     */
+    private fun note(context: Context, request: JsonObject): JsonObject =
+        push(context, OverlayService.ACTION_NOTE, request, "note")
+
+    /**
+     * 两条推送的实际动作: **球没在跑时不许把服务拉起来** (2026-10-06)
+     *
+     * 它们是宿主每一轮回答都会发的一类, 而 `startForegroundService` 一起服务, `onStartCommand` 就会
+     * `showBall` —— 于是一个刚被主人关掉的球会被下一轮回答自己推回屏幕上, 那正是"关掉浮标不生效"里
+     * 最难查的一半。通道本来就是"浮标的输入口", 浮标不在时这句话没有落脚处, 如实说一句就够了 (那一句
+     * 也不会丢: 球再被叫出来时 [OverlayState.pendingReply] / [OverlayState.pendingNote] 那两条路照旧补上)
+     */
+    private fun push(context: Context, action: String, request: JsonObject, what: String): JsonObject {
+        val text = request.string("text").trim()
+        if (text.isEmpty()) throw IllegalArgumentException("op=$what needs the text to show")
+        // **哪一场发来的** (`op=reply` 才带, 2026-10-06 加): 回复框记住它, 之后从框里发出去的那句话
+        // 就点名投回这一场。`op=note` 不带, 读出来是空串, 应用那一侧按"没点名"处理
+        val from = request.string("session").trim()
+        if (!OverlayState.running) {
+            return buildJsonObject {
+                put("delivered", 0)
+                put("channel", false)
+                put("replies", OverlayState.replies)
+                put("detail", "the ball is down, so nothing was pushed; it will show up the next" +
+                    " time the ball comes up and the channel opens")
+            }
+        }
+        val intent = Intent(context, OverlayService::class.java)
+            .setAction(action)
+            .putExtra(OverlayService.EXTRA_TEXT, text)
+            .putExtra(OverlayService.EXTRA_SESSION, from)
+        try {
+            ContextCompat.startForegroundService(context, intent)
+        } catch (error: Throwable) {
+            unavailable("putting $what into the channel", error.message ?: error.toString())
+        }
+        return buildJsonObject {
+            put("delivered", text.length)
+            put("channel", OverlayState.channel)
+            put("replies", OverlayState.replies)
+            put(
+                "detail",
+                if (OverlayState.channel) {
+                    "it is in the floating text channel"
+                } else {
+                    "the channel is closed; it is kept and opens the channel as soon as the service" +
+                        " picks it up"
+                },
+            )
+        }
+    }
+
     private fun state(context: Context): JsonObject {
         val host = DshHost.status
         return buildJsonObject {
             put("permission", Settings.canDrawOverlays(context))
             put("showing", OverlayState.showing)
+            // **服务在不在**与**球在不在**是两件事 (2026-10-06 真机实测的那条: 服务没了而窗还在),
+            // 所以两个都要报出来 —— 只看一个的话"关掉浮标"失败时根本说不清失败在哪一半
+            put("running", OverlayState.running)
+            put("hideProblem", OverlayState.hideFailed ?: "")
             put("expanded", OverlayState.expanded)
+            put("channel", OverlayState.channel)
+            put("replies", OverlayState.replies)
+            // 这两条是排查"状态说开着、屏幕上看不见"用的: 逻辑开着 != 那块窗真的挂上了
+            put("attached", OverlayState.channelAttached)
+            put("channelHeight", OverlayState.channelHeight)
+            put("peeked", OverlayState.peeked)
+            // 收边那几道闸的读数 (为什么没收边, 这几个数一起看)
+            put("ballPhase", OverlayState.ballPhase)
+            put("dragging", OverlayState.dragging)
+            put("busy", OverlayState.busy)
+            // **这一拍算出来的那一档** (`waiting` / `asleep` / `peeking`) 与它为什么这么判
+            // (held / menu / listening / keyboard / channel / activity 那几种): 主人 2026-10-06 报的
+            // 三条都是靠这一对数定位的, 所以它必须有
+            put("ballWait", OverlayState.ballWait)
+            // 键盘算不算"正在用它": 主人点过名的那一条 (键盘输入不属于空闲)
+            put("keyboard", OverlayState.keyboard)
+            put("idleMs", OverlayState.idleMs)
+            put("peekCalls", OverlayState.peekCalls)
+            put("peekBlocked", OverlayState.peekBlocked)
+            // 双击打断记了几笔 (主人 2026-10-06 加的那一支): 与 peekCalls 一样, 触摸类的东西要有个数
+            put("interrupts", OverlayState.interrupts)
+            // 输入通道那块框闲置了多久 (0 = 框不在屏上): 到 BallMinutes.BOX_IDLE_MS 它自己收
+            put("boxIdleMs", OverlayState.boxIdleMs)
+            put("ballWindowX", OverlayState.ballWindowX)
+            put("lastMoveTo", OverlayState.lastMoveTo)
             put("remembered", BallSpot.on(context))
             put("x", OverlayState.x)
             put("y", OverlayState.y)
@@ -149,6 +325,8 @@ internal object LwOverlay {
      * 开关关着时这里什么都不做 (失败只记日志: 界面不该因为一颗球起不来而不出来)
      */
     internal fun ensure(context: Context) {
+        // **这一行是"关掉之后不许被它拉回来"的那道闸**: 浮标那个开关关掉之后, 这条启动路径是唯一
+        // 还会把球放出来的地方 (MainActivity 每次起来都叫它), 少了它就是"关掉、重启应用、球又回来了"
         if (!BallSpot.on(context)) return
         if (refusal(context) != null) return
         val intent = Intent(context, OverlayService::class.java).apply {
@@ -158,14 +336,15 @@ internal object LwOverlay {
         runCatching { ContextCompat.startForegroundService(context, intent) }
     }
 
-    /** 设置页那个开关走这一条: 回一句话 (放出去了没有 / 缺哪一条), 与工具那边说的是同一句 */
+    /**
+     * 设置页那个开关走这一条: 回一句话 (放出去了没有 / 缺哪一条), 与工具那边说的是同一句
+     *
+     * 关的方向与 `lw_overlay op=hide` **同一份实现** ([ask]): 只写偏好是不够的 —— 存盘那个记号管的是
+     * "下一次应用起来要不要把球放出来", 而**屏幕上那块窗要有人摘** (真机实测: 只写偏好 + 停服务,
+     * 球照样留在桌面上, 见 [OverlayService.hideBall])
+     */
     internal fun setOn(context: Context, on: Boolean): String {
-        if (!on) {
-            val stopped = context.stopService(Intent(context, OverlayService::class.java))
-            BallSpot.setOn(context, false)
-            OverlayState.showing = false
-            return if (stopped) "the ball is gone" else "no ball was running"
-        }
+        if (!on) return ask(context, wait = false).ifEmpty { HIDDEN_DETAIL }
         val reason = refusal(context) ?: launch(context, expand = false)
         if (reason != null) return reason
         return "the ball is up: tap it to speak, hold it for the menu, drag it to an edge to dock it there"
@@ -193,4 +372,11 @@ internal object LwOverlay {
             "the overlay permission is not granted: turn on 显示在其他应用上层 for this app in the" +
                 " system settings, or run `appops set ${context.packageName} SYSTEM_ALERT_WINDOW allow`"
         }
+
+    /** 关球那条路的两个数: 等窗真掉下去的上限与检查的节拍 (摘窗是毫秒级的活, 这里只是不许无限等) */
+    private const val WINDOW_GONE_MS = 1_500L
+    private const val POLL_MS = 50L
+
+    /** 没有球可关时回的那一句 (与"关掉了"分开说: 两件事对主人不一样) */
+    private const val HIDDEN_DETAIL = "no ball was running"
 }

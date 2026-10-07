@@ -12,6 +12,8 @@ libsu = "6.0.0"
 junit = "4.13.2"
 junitVersion = "1.3.0"
 espressoCore = "3.7.0"
+# Edge 在线朗读走 WebSocket, 而安卓 SDK 里没有 WebSocket 客户端; 手写一次 RFC 6455 握手不值当
+okhttp = "5.2.3"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -27,6 +29,9 @@ androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-
 androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+
+# WebSocket 客户端: 「Edge 在线」那条引擎要用 (见 tool/LwEdgeTts.kt)
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 
 # Miuix comes from Maven Central; SFA's composite build against the source tree is
 # only needed when patching Miuix itself. Never edit the Miuix library.

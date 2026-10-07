@@ -25,9 +25,14 @@ import kotlinx.serialization.json.put
  * {"seq":7,"at":1759600000000,"text":"今天天气怎么样","source":"voice","wake":true}
  * ```
  *
- * **`wake` 是"这一句要开一个新对话"那个记号** (主人 2026-10-05 定): 只有唤醒词命中之后的**头一句**
- * 带它, 宿主那侧的 `voiceDeliver` 认到就跳过"正在跑的轮优先"那条规矩直接新建一个会话, 它只给头
- * 一句 —— 一句话被 VAD 切成两段时两段都带就会开出两个对话
+ * **`wake` 是"这一句是唤醒之后的头一句"那个记号**: 只有**头一句**带它 —— 一句话被 VAD 切成两段时
+ * 两段都带就会多标一句, 所以 [WakeWordService] 那边读一次就清。**2026-10-06 主人改了口径** ("只要
+ * 是 1 小时内, 无论点球/喊唤醒词 都只在同一场对话", **2026-10-07 这个数改成 20 分钟**): 它只是个
+ * 记号, 挑会话由宿主那侧按 `session.json` 那笔账定, 唤醒头句不再另开一场
+ *
+ * **`to` 是"这一句投给哪一场对话"那个点名** (同一天那条例外): 回复框在屏上时, 框里的键盘输入与
+ * 开语音说的那一句都带上"发出那条回复的会话" —— 宿主那侧把它排在时间那笔账前面。没有回复框时
+ * 这个键是缺的, 读起来与没写一样
  *
  * **`seq` 是给读者去重用的**: 文件满了会从尾部留下若干行重写一遍, 于是读者的字节游标可能指到
  * 新文件之外。只靠游标去重会在那一刻重放, 而带上序号之后"已经投递过的那条"永远认得出。所以
@@ -41,6 +46,27 @@ internal object VoiceInbox {
     /** 目录名: 与宿主那侧 `voice/inbox.jsonl` 是同一个约定, 谁都不许单边改 */
     const val DIRECTORY = "voice"
     const val FILE_NAME = "inbox.jsonl"
+
+    /** 浮标那一场对话的账本 (宿主写, [currentSession] 读): 与 `inbox.jsonl` 同一个目录 */
+    const val SESSION_FILE = "session.json"
+
+    /** 默认来源: 认出来的话 */
+    const val SOURCE_VOICE = "voice"
+
+    /**
+     * 键盘那条路写进来的 (浮标上那块文字框): 与语音**同一个队列、同一个入口**
+     *
+     * 分成两个来源只是为了让宿主那边能说清"这一句是打的还是说的", 投递的去向完全一样
+     */
+    const val SOURCE_KEYBOARD = "keyboard"
+
+    /**
+     * 球自己写出去的 (现在只有一句: [VoiceCommands.INTERRUPT], 见 [OverlayService.interruptBall])
+     *
+     * 它**不是主人说的一句话**, 而是一个手势换来的命令 —— 分成第三个来源是为了排查时一眼看得出
+     * "这一句是双击球来的", 而不是"主人说了什么被打断了"
+     */
+    const val SOURCE_BALL = "ball"
 
     /** 超过这个大小就从尾部留 [KEEP_LINES] 行重写: 上千句话才可能走到, 到了也不该无限涨 */
     private const val CAP_BYTES = 1 shl 20
@@ -66,13 +92,23 @@ internal object VoiceInbox {
      * 回 null 表示**没写进去** (目录建不出来、磁盘满了), 调用方要如实说 —— "投出去了"与"写失败
      * 了"对主人是两件完全不同的事
      *
-     * [fresh] 是"这一句开一个新对话"那个记号: 只有唤醒词命中之后的头一句传 true, 而**只有 true 才
-     * 写进那一行** —— 读者认的是一个"在不在"而不是一个布尔值, 所以老版本写的行 (没有这个键) 读起来
-     * 与 `wake: false` 是同一个意思, 不会有新旧两种行要分辨
+     * [fresh] 是"这一句是唤醒之后的头一句"那个记号: 只有头一句传 true, 而**只有 true 才写进那一行**
+     * —— 读者认的是一个"在不在"而不是一个布尔值, 所以老版本写的行 (没有这个键) 读起来与
+     * `wake: false` 是同一个意思, 不会有新旧两种行要分辨; 而**它不决定新开一场** (见文件头那一段)
+     *
+     * [to] 是**回复框点名的那一场会话** (见文件头): 空 / 空白就是"没点名", 那样连键都不写 ——
+     * 宿主那一侧读不到这个键与读到空串是一个意思
      */
-    fun append(context: Context, text: String, source: String = "voice", fresh: Boolean = false): Long? {
+    fun append(
+        context: Context,
+        text: String,
+        source: String = "voice",
+        fresh: Boolean = false,
+        to: String? = null,
+    ): Long? {
         val line = text.trim()
         if (line.isEmpty()) return null
+        val pointed = to?.trim().orEmpty()
         val target = file(context)
         synchronized(lock) {
             return try {
@@ -86,6 +122,7 @@ internal object VoiceInbox {
                     put("text", line)
                     put("source", source)
                     if (fresh) put("wake", true)
+                    if (pointed.isNotEmpty()) put("to", pointed)
                 }
                 target.appendText("$record\n")
                 nextSeq
@@ -106,6 +143,25 @@ internal object VoiceInbox {
             if (seq != null) return seq
         }
         return 0
+    }
+
+    /**
+     * 浮标现在那一场对话是哪个会话 (`$DSH_HOME/voice/session.json`), 没有就是 null
+     *
+     * 那一份是**宿主写的** ([host-plugin] 的 `voiceSessionBump`: 每投一句就把它改成那一场), 应用这一侧
+     * 只读它 —— 它在这里的用处只有一个: "回应用"要回到**浮标那一场对话**(主人 2026-10-06), 而应用这一侧
+     * 要让会话界面切过去就必须知道是哪一个会话
+     *
+     * 读不出来 (文件不在 / 半行 / 字段不认识) 一律回 null, 那一档"回应用"就只把界面放到前面 —— 宁可少
+     * 做一步, 也不猜一个会话 id 让界面跳到别处去
+     */
+    fun currentSession(context: Context): String? {
+        // 与 [file] 同一个目录: 宿主那侧算的是 `join(dirname(inbox), 'session.json')`
+        val target = File(file(context).parentFile, SESSION_FILE)
+        val raw = runCatching { target.takeIf { it.isFile }?.readText() }.getOrNull() ?: return null
+        val id = runCatching { json.parseToJsonElement(raw).jsonObject["id"]?.jsonPrimitive?.content }
+            .getOrNull()
+        return id?.takeIf { it.isNotBlank() }
     }
 
     /** 从尾部留 [KEEP_LINES] 行重写: 丢的是旧句子, 而 `seq` 让读者不会因此重放 */

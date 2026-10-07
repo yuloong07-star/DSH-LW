@@ -220,11 +220,15 @@ if ($Perms) {
     }
 
     # 特殊访问那几条走 appops: 应用侧查的是同一个 op, 所以这里设了它就显示"已允许"
+    #
+    # MANAGE_EXTERNAL_STORAGE 在这张表里是**功能性的**而不是顺带: 它决定工作区落在 /sdcard/DSH
+    # 还是退到 Android/media 或沙盒, 而 2026-10-06 设置页撤掉「工作区」段之后就没有那个按钮了
     $ops = @(
         'WRITE_SETTINGS',
         'GET_USAGE_STATS',
         'SYSTEM_ALERT_WINDOW',
-        'REQUEST_INSTALL_PACKAGES'
+        'REQUEST_INSTALL_PACKAGES',
+        'MANAGE_EXTERNAL_STORAGE'
     )
     foreach ($op in $ops) {
         Adb shell "appops set $Package $op allow" | Out-Null

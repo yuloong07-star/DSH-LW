@@ -9,6 +9,10 @@ import androidx.compose.runtime.setValue
 import io.github.miuzarte.littlewhale.channel.PrivilegedBridge
 import io.github.miuzarte.littlewhale.workspace.Workspace
 import java.io.File
+import java.io.IOException
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.util.concurrent.TimeUnit
 
 /**
@@ -34,6 +38,19 @@ object DshHost {
      * spelled out here rather than in each of them (the voice inbox is the first such file)
      */
     const val HOME_DIR = "dsh-home"
+
+    /**
+     * 这台 host 自己那些小配置文件的目录 (`$DSH_HOME/lw`)
+     *
+     * **它存在是为了"应用这一半与插件那一半读同一份账"**: 插件跑在 host 的进程里, 读不到应用
+     * 的偏好 (那是另一个进程的 `SharedPreferences`), 而桥那一侧也没有一条"给我读个偏好"的调用。
+     * 于是凡是**两半都要知道**的开关就落在这里的一个文件上 (视频模式那个"要不要拼网格"是第一条;
+     * 视频模式那个常驻语音记号在 `modes/` 下, 是同一个道理的先例)
+     *
+     * 目录不存在时 `mkdirs` 一次 —— 它是 app 自己那个沙盒里的路径, 写不进去只说明盘满了
+     */
+    fun settingsDirectory(context: Context): File =
+        File(File(context.filesDir, HOME_DIR), "lw").apply { mkdirs() }
 
     /** Host output lines kept for the status screen */
     private const val LOG_LINES = 300
@@ -84,6 +101,33 @@ object DshHost {
         }
         val application = context.applicationContext
         Thread({ begin(application) }, "dsh-host-start").apply { isDaemon = true }.start()
+    }
+
+    /**
+     * 那个监听口现在有没有人在听
+     *
+     * **为什么需要这一步** (2026-10-06 真机上抓到的): app 只知道**自己这个进程**spawn 过的那个
+     * `Process` 对象, 而 host 是子进程 —— app 被强停/被杀之后子进程可能活着变成孤儿 (Android 不会
+     * 顺手杀它), 端口还在它手里。那时新起的 host 一 bind 就死:
+     *
+     * ```
+     * dsh: startup failed: 2 required plugins did not activate
+     *     Error: listen EADDRINUSE: address already in use 127.0.0.1:3080
+     * ```
+     *
+     * 表现是"球能点、界面打得开, 但**没有一个工具在**、语音发出去也没有回音" —— 因为插件一个都没挂上。
+     * 所以起之前先探一次: 有人在听就说明**已经有一个 host 活着** (它只可能是我们自己上一次留下的),
+     * 那就别起第二个 —— 让端口留给它, 而它的插件本来就是好的
+     */
+    private fun portIsTaken(): Boolean = try {
+        ServerSocket().use { probe ->
+            probe.reuseAddress = false
+            probe.bind(InetSocketAddress(InetAddress.getLoopbackAddress(), PORT), 1)
+        }
+        false
+    } catch (problem: IOException) {
+        Log.i(TAG, "port $PORT is already taken, so a host is up: ${problem.message}")
+        true
     }
 
     /** Stop the host and wait briefly for the process to go away */
@@ -145,6 +189,14 @@ object DshHost {
         val root = Workspace.resolve(application)
         workspace = root
         log.add("workspace ${root.directory.absolutePath} (${root.kind})")
+        // **已经有人在听那个口就不要再起一个** (见 [portIsTaken]): 端口属于一个活着的 host —— 最可能
+        // 是我们上一次留下的孤儿, 而它的插件是好的; 硬起第二个只会得到 EADDRINUSE, 然后"工具一个都
+        // 没有、语音发出去没有回音" (2026-10-06 真机上就是这么断的)
+        if (portIsTaken()) {
+            status = HostStatus.Running("http://127.0.0.1:$PORT/")
+            log.add("port $PORT already answers, so the host that owns it is kept")
+            return
+        }
         spawn(application, root)
     }
 

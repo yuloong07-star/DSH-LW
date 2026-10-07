@@ -29,8 +29,16 @@ class WakeWordWordsTest {
      * 规则 (声母长的先匹配, 调号 a/o/e 优先、iu 落 u、ui 落 i、其余落最后一个元音, 轻声不带调号) 写出来
      */
     private val cases = linkedMapOf(
-        // 缺省那一句, 也是设置页那个输入框里本来就有的
-        WakeWordWords.DEFAULT to "d à f éi y ú d à f éi y ú @大肥鱼大肥鱼",
+        // 缺省那一条, 也是缺省那张词表的第一条 (2026-10-06 主人定回「肥鱼肥鱼」, 六音节那一版
+        // 「大肥鱼大肥鱼」作废)。这一行的期望值读的就是 `WakeWordWords.DEFAULT`, 而
+        // `tools/check-wake-words.mjs` 另有两条判据: 整张缺省表必须与插件那一份同字, 而它的第一条
+        // 就是这里这一个
+        WakeWordWords.DEFAULT to "f éi y ú f éi y ú @肥鱼肥鱼",
+        // 缺省表里那三条容错读音 (f / h 与 ü / i 两处口音合并, 见 `WakeWordWords.DEFAULT_WORDS`):
+        // 它们就是缺省词表的第二到第四条, 这里逐条钉住, 改了缺省而没改它们就会当场红
+        "肥鱼肥鱼=hui2 yu2 hui2 yu2" to "h uí y ú h uí y ú @肥鱼肥鱼",
+        "肥鱼肥鱼=fei2 yi2 fei2 yi2" to "f éi y í f éi y í @肥鱼肥鱼",
+        "肥鱼肥鱼=hui2 yi2 hui2 yi2" to "h uí y í h uí y í @肥鱼肥鱼",
         // 上游 keywords.txt 里那两个例子
         "你好军哥=ni3 hao3 jun1 ge1" to "n ǐ h ǎo j ūn g ē @你好军哥",
         "小爱同学=xiao3 ai4 tong2 xue2" to "x iǎo ài t óng x ué @小爱同学",
@@ -127,12 +135,24 @@ class WakeWordWordsTest {
     /** 整段文本: 换行 / 分号 / 全角分号都当分隔, 空行丢掉 */
     @Test
     fun `整段文本按行与分号切开`() {
-        val text = "大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2\n\n小爱同学=xiao3 ai4 tong2 xue2；啊=a1"
+        // 第一行用**缺省那一条**而不是写死的老词: 缺省改过几次 (大肥鱼大肥鱼 -> 肥鱼肥鱼 -> 大肥鱼
+        // 大肥鱼 -> 肥鱼肥鱼), 写死的字符串会让这一条在改缺省时莫名其妙地红 —— 而它想验的是
+        // "分隔符与空行", 不是某个词
+        val text = "${WakeWordWords.DEFAULT}\n\n小爱同学=xiao3 ai4 tong2 xue2；啊=a1"
         val lines = WakeWordWords.lines(text, table)
         assertEquals(3, lines.size)
-        assertEquals(cases.getValue("大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2"), lines[0])
+        assertEquals(cases.getValue(WakeWordWords.DEFAULT), lines[0])
         assertEquals(cases.getValue("小爱同学=xiao3 ai4 tong2 xue2"), lines[1])
         assertEquals(cases.getValue("啊=a1"), lines[2])
+    }
+
+    /** 缺省那张词表: 本体加三条容错, 四条各不相同, 而且都认得 */
+    @Test
+    fun `缺省词表四条都认得`() {
+        val lines = WakeWordWords.lines(WakeWordWords.defaultText(), table)
+        assertEquals(4, lines.size)
+        assertEquals(4, lines.distinct().size)
+        assertEquals(cases.getValue(WakeWordWords.DEFAULT), lines[0])
     }
 
     /**

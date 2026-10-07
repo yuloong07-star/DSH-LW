@@ -13,8 +13,32 @@ package io.github.miuzarte.littlewhale.wake
  */
 internal object WakeWordWords {
 
-    /** 缺省那一句: 设置页与插件两边的缺省必须一致, 它认的是词表内容不是谁写的 */
-    const val DEFAULT = "大肥鱼大肥鱼=da4 fei2 yu2 da4 fei2 yu2"
+    /**
+     * 缺省那一条: 设置页与插件两边的缺省必须一致, 它认的是词表内容不是谁写的
+     *
+     * **2026-10-06 主人定的是「肥鱼肥鱼」** (要求原话: "你看一下设置里的默认唤醒词是不是
+     * '肥鱼肥鱼', 不是就改成它"), 六音节那一版「大肥鱼大肥鱼」作废。它是 [DEFAULT_WORDS] 的第一条,
+     * 也就是本体, 后面三条是它的容错读音 —— 两份实现分家过一次 (说明里写着一个词而设备上守着另一个),
+     * 所以 `check-wake-words.mjs` 里有两条判据: 两边整张表同字, 以及第一条就是它
+     */
+    const val DEFAULT = "肥鱼肥鱼=fei2 yu2 fei2 yu2"
+
+    /**
+     * 整张缺省词表: 第一条是本体, 后面三条是容错读音
+     *
+     * 三条容错各改一处口音, 挑的是普通话里最常见的两种合并 —— 声母 f / h (肥 -> huí) 与韵母 ü / i
+     * (鱼 -> yí), 最后一条两个都改。四条共用同一个显示名, 所以设置页与通知里那句"正在听「…」"
+     * 在去重之后仍然只有一个「肥鱼肥鱼」(见 `LwWakeWord.names` 与 `WakeWordState.keywords`)
+     */
+    internal val DEFAULT_WORDS = listOf(
+        "肥鱼肥鱼=fei2 yu2 fei2 yu2",
+        "肥鱼肥鱼=hui2 yu2 hui2 yu2",
+        "肥鱼肥鱼=fei2 yi2 fei2 yi2",
+        "肥鱼肥鱼=hui2 yi2 hui2 yi2",
+    )
+
+    /** 写进 keywords.txt 的那份缺省: 一行一条, 就是 [DEFAULT_WORDS] */
+    fun defaultText(): String = DEFAULT_WORDS.joinToString("\n")
 
     /** 声母: 长的在前, 免得 zh 被拆成 z + h */
     private val INITIALS = listOf(

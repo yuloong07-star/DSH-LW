@@ -40,15 +40,30 @@ import java.util.Arrays
  *
  * 它跑在采集线程上, 所以自己只做 VAD (几十微秒)。切出来的整段话交给 [onSegment], 而那一段的识别
  * 是调用方的事 —— 在采集线程上认一段话会把采集卡住几百毫秒, 那就是丢音频
+ *
+ * 它还把"这一窗 VAD 说有人声"照会给 [onVoice] (`Vad.isSpeechDetected`, 只在真有人声的窗口上叫):
+ * 那是唤醒窗口的闲置计时另一个输入 —— 没有它的话, 一口气不停顿地说得比那个上限还长, 会在说到一半
+ * 时被看门狗收回 (VAD 要静音 [MIN_SILENCE_SECONDS] 才出字, 那十几秒在计时的眼里就是"没人说话")
  */
 internal class SpeechSegmenter private constructor(
     private val vad: Vad,
     private val onSegment: (FloatArray) -> Unit,
+    private val onVoice: () -> Unit,
 ) : AudioCapture.Sink {
 
     /** 攒窗口用的那一块, 一直是同一个 */
     private val window = FloatArray(WINDOW_SIZE)
     private var filled = 0
+
+    /**
+     * 已经放掉了没有再 ([close] 调了两次的时候不许第二次碰原生)
+     *
+     * 关掉那一下是在另一条线程上做的 (服务的主线程), 而 [accept] 跑在采集线程上 —— 两件事都在动
+     * 原生那个 `Vad`, 所以这个记号是 `@Volatile`: 置起来之后采集那一侧**下一帧**就看得见, 不会拿
+     * 一具已经放掉的躯壳去调 `acceptWaveform` (2026-10-06 真机上七次 SIGSEGV 的那一条)
+     */
+    @Volatile
+    private var closed = false
 
     /** 已经切出去几段, 供状态显示 */
     @Volatile
@@ -61,6 +76,7 @@ internal class SpeechSegmenter private constructor(
         private set
 
     override fun accept(samples: FloatArray) {
+        if (closed) return
         var offset = 0
         while (offset < samples.size) {
             val take = minOf(WINDOW_SIZE - filled, samples.size - offset)
@@ -70,6 +86,7 @@ internal class SpeechSegmenter private constructor(
             if (filled == WINDOW_SIZE) {
                 filled = 0
                 vad.acceptWaveform(window)
+                markVoice()
                 drain()
             }
         }
@@ -82,16 +99,27 @@ internal class SpeechSegmenter private constructor(
      * 一个整窗口交进去, 再让 VAD 把剩下的段吐出来
      */
     fun flush() {
+        if (closed) return
         if (filled > 0) {
             Arrays.fill(window, filled, WINDOW_SIZE, 0f)
             filled = 0
             vad.acceptWaveform(window)
+            markVoice()
         }
         runCatching { vad.flush() }
         drain()
     }
 
+    /**
+     * 放掉原生那一份, **只放一次**
+     *
+     * 幂等是必须的: 收尾这条路有两个调用方 ([flushVoice] 与 [stopListening] 里那次兜底), 而第二次
+     * `release()` 一块已经放掉的内存不是一个可恢复的错误 —— 它要么当场崩, 要么留下一个更晚才崩的
+     * 野指针
+     */
     fun close() {
+        if (closed) return
+        closed = true
         runCatching { vad.release() }
     }
 
@@ -110,6 +138,7 @@ internal class SpeechSegmenter private constructor(
      * 不是线程安全的
      */
     fun abandon() {
+        if (closed) return
         filled = 0
         runCatching { vad.reset() }
     }
@@ -126,6 +155,16 @@ internal class SpeechSegmenter private constructor(
             lastWasTruncated = segment.size >= (MAX_SPEECH_SECONDS * AudioCapture.SAMPLE_RATE * 0.9f).toInt()
             onSegment(segment)
         }
+    }
+
+    /**
+     * 这一窗 VAD 说有人声就照会一次
+     *
+     * 跑在采集线程上, 所以那一头只许做"记一个时刻"这种几十纳秒的事 (服务那侧写的就是一个
+     * `@Volatile` 的 long)
+     */
+    private fun markVoice() {
+        if (vad.isSpeechDetected()) onVoice()
     }
 
     companion object {
@@ -167,7 +206,7 @@ internal class SpeechSegmenter private constructor(
         }
 
         /** 建一个切段器; 模型坏了或原生库起不来就抛, 由调用方翻译成人话 */
-        fun open(model: File, onSegment: (FloatArray) -> Unit): SpeechSegmenter {
+        fun open(model: File, onSegment: (FloatArray) -> Unit, onVoice: () -> Unit): SpeechSegmenter {
             val config = VadModelConfig(
                 sileroVadModelConfig = SileroVadModelConfig(
                     model = model.absolutePath,
@@ -183,7 +222,7 @@ internal class SpeechSegmenter private constructor(
                 provider = "cpu",
                 debug = false,
             )
-            return SpeechSegmenter(Vad(assetManager = null, config = config), onSegment)
+            return SpeechSegmenter(Vad(assetManager = null, config = config), onSegment, onVoice)
         }
 
         private fun digestOf(file: File): String {
