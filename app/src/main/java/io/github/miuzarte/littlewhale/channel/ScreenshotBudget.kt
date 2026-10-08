@@ -39,6 +39,14 @@ object ScreenshotBudget {
 
     private const val BYTE_KEY = "screenshot-bytes"
 
+    /**
+     * 指代不明时自动附一张主屏截图 (批次 4 的需求 9)
+     *
+     * 这一条**不是**预算, 但它是"截图那一段"里的一个开关, 而且它要跟着预算一起被宿主插件读到
+     * (插件在投递一句话之前问一次 `screenshot op=status`) —— 所以它与那两个数住在同一个偏好文件里
+     */
+    private const val AUTO_KEY = "screenshot-auto-shot"
+
     /** 默认档的下标, 也就是没选过时用的那一档 */
     private const val DEFAULT = 1
 
@@ -84,6 +92,15 @@ object ScreenshotBudget {
     var bytes: Int by mutableStateOf(Picture.DEFAULT_MAX_BYTES)
         private set
 
+    /**
+     * 用户那句话指代不明 (这个 / 这张 / 屏幕上 / 照片里…) 时, 投递前自动附一张主屏截图
+     *
+     * 缺省**开**: 这一条要解决的正是"模型看不见主人手指着的东西", 而关掉之后退回"模型自己决定要不要
+     * 截一张" (提示词那一侧仍然写着这条规矩)。它在插件那侧读不到时也按开处理 (见 `autoScreenShot`)
+     */
+    var autoShot: Boolean by mutableStateOf(true)
+        private set
+
     /** 滑块现在在哪 (KiB) */
     val kib: Float get() = bytes.toFloat() / KIB
 
@@ -92,6 +109,13 @@ object ScreenshotBudget {
         val stored = preferences(context)
         index = stored.getInt(KEY, DEFAULT)
         bytes = stored.getInt(BYTE_KEY, Picture.DEFAULT_MAX_BYTES)
+        autoShot = stored.getBoolean(AUTO_KEY, true)
+    }
+
+    /** 收下"指代不明时自动截图"这一档, 先让界面用上再落盘 */
+    fun setAutoShot(context: Context, value: Boolean) {
+        autoShot = value
+        preferences(context).edit().putBoolean(AUTO_KEY, value).apply()
     }
 
     /** 收下新的像素档, 先让界面用上再落盘 */

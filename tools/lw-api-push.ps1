@@ -20,7 +20,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-Location $RepoRoot
-$tmp = 'D:\apk\apipush'
+$tmp = 'D:\apk\.lwtmp\apipush'
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $blobFile = Join-Path $tmp 'blob.bin'
 $jsonFile = Join-Path $tmp 'body.json'

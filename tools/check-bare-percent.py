@@ -6,6 +6,8 @@
 
 判据: 一个 % 后面如果既不是 `%`, 也不是 `数字$` 开头、也不是 `s/d/f/...` 这类转换符, 那它就是一个
 裸 %, 必须写成 `%%` (或者给那条 string 加 formatted="false")
+
+跑法: python tools/check-bare-percent.py     (扫 app/src/main/res/values*/strings.xml)
 """
 
 import re

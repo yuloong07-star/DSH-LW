@@ -107,7 +107,10 @@ if (-not $ScriptOnly) {
     Judge '常驻链收回来了 (voiceActive false)' ((Field $state 'voiceActive') -eq 'false') "voiceActive=$(Field $state 'voiceActive')"
 }
 
-# 3. 设备端那三个切换脚本: **一个脚本 = 一个模式的整个切换** (提示词 + 相机 + 常驻语音一次做完)
+# 3. 设备端那两个切换脚本: **一个脚本 = 一个模式的整个切换** (提示词 + 相机 + 常驻语音一次做完)
+#
+# 识屏那一份 (screen.sh / screen.md) 在 2.5.0 批次 4 退休了: 模式没了, 那块屏由手机模式管 —— 所以
+# 这一节下面那条判据也一并删掉, 而"退休之后设备上那两份还在不在"由装机那一步的读数看 (见回执)
 Write-Output ''
 Write-Output '-- 设备端脚本 video.sh (切进视频模式)'
 $on = Sh "run-as $package sh -c 'sh files/dsh-home/modes/video.sh'" 2>&1
@@ -121,16 +124,6 @@ if ($listening) {
 } elseif ($Marker) {
     Write-Output '   记号写下了而服务没在跑 —— 回执那句 "the marker is set, but the wake word service is not listening" 就是这一档'
 }
-
-Write-Output ''
-Write-Output '-- 设备端脚本 screen.sh (切进识屏模式: 那两半都收回去, 而且不碰相机)'
-$screen = Sh "run-as $package sh -c 'sh files/dsh-home/modes/screen.sh'" 2>&1
-Write-Output "   -> $screen"
-Start-Sleep -Milliseconds 1800
-$state = Status
-Judge 'screen.sh 之后在识屏模式' ((ActiveMode) -eq 'screen') "active=$(ActiveMode)"
-Judge 'screen.sh 之后记号没了' (-not (Marker)) 'voice-resident.on 已删除'
-Judge 'screen.sh 之后链收了' ((Field $state 'voiceActive') -eq 'false') "voiceActive=$(Field $state 'voiceActive')"
 
 Write-Output ''
 Write-Output '-- 设备端脚本 phone.sh (退回手机模式)'

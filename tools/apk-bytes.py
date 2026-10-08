@@ -1,4 +1,7 @@
-"""Find the bytes in an APK that no zip entry accounts for."""
+"""Find the bytes in an APK that no zip entry accounts for.
+
+用法: python tools/apk-bytes.py <path/to/app.apk>     (在设备上跑, 量的是签名块那类"账外字节")
+"""
 import os
 import sys
 import zipfile

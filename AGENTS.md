@@ -101,7 +101,11 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **缩进与段间距统一由脚手架的 `LazyColumn` 给** (`scaffolds/LazyColumn.kt`: 页面左右 12dp + `itemSpacing` 12dp + 横屏限宽 + overscroll + 滚到底触感), **Card 不写水平外边距**; Miuix 的 `Card` 不带内边距, 带内边距的是设置项自己 (16dp), 所以**别再套一层 `padding(16.dp)`** (那就是 32dp); 按钮一律 `fillMaxWidth()`
 - 过渡风格只有 `Miuix` / `AOSP` 两项, **没有 "无"**; AOSP 那套手感是搬来的 `ui/CrossActivityTransition.kt` (Miuix 0.9.4 的 `NavTransitions` 里没这个预设), 选中时 `cornerClipMode` 跟着换成 `All`
 - 系统栏图标深浅由 `theme/SystemBars.kt` 按**实际渲染出来的配色**定, 在 `MiuixTheme` 里调一次; **顶栏没有模糊也没有那个选项** (画面自己不透明, 糊了没人看得见)
-- **设置页右上角有一个 ⋮**: 要重启 host 才生效的改动全收在那一个菜单里 (现在这一条就是「重启 DSH host」), 以后加选项就是往那个 `items` 里再加一条; 注意 **material3 不是本项目的依赖** (只有 `material3-window-size-class`), 没有 `androidx.compose.material3.DropdownMenu` 可用
+- **设置页右上角有一个 ⋮**: "不用常驻一页"的事全收在那一个菜单里 —— 2026-10-08 起是**检测更新 / 捐赠 / 关于 / 重启 DSH host** 四条, 以后加选项就是往那个 `items` 里再加一条; 它们三个对话框由 `ui/AboutDialogs.kt` 画, 同一刻只开一个 (设置页拿着一个 `AboutPage?`); 注意 **material3 不是本项目的依赖** (只有 `material3-window-size-class`), 没有 `androidx.compose.material3.DropdownMenu` 可用
+- **设置页是两层分组 + 逐段可折叠** (2026-10-08): 一级是 `GroupTitle` (常用 / 能力), 二级是 `SectionTitle` (段名 + 一句摘要, 那一行整行可点 = 收起/展开, 折角是 `MiuixIcons.ChevronForward` 转 90 度 —— `ExpandLess` / `ExpandMore` 那两颗在模拟器上量出来是"两个断开的角", 认不出是一颗箭头); 每一段由 `LazyListScope.settingsSection(...)` 生成, **收起来的段存在页面那一层的 `collapsed` 集合里** (`rememberSaveable` + `listSaver`, 转屏不丢), 缺省全展开。**省电那一段排在第一个** (它原来是「唤醒词」里的三行): 省电模式 / 省电时段 / 省电时停自动指令都属于"现在别听我说话"这一笔账, 与"许可不允许唤醒"分开
+- **捐赠那一页是随包的** (`ui/DonateScreen` + `app/src/main/assets/donate.html`): ⋮ 与「关于」里那一行都走 `navigator.push(Screen.Donate)`, 在应用内用 WebView 渲染 (`file:///android_asset/`), **不联网也不跳浏览器**; 那一页零 `<script>`, 所以那个 WebView **不开 JS**; 仓库里原来那份 `docs/donate.html` 2026-10-08 已删 (提交 `4f21025`), 页面内容只此一份。**捐赠地址没有任何"可填"的入口** (主人 2026-10-08: "不要让别人填地址, 这是我自己的捐赠项目") —— 要改那一页就换 `assets/donate.html` 并重新出包
+- **系统返回键由 `AppNav` 那个 `BackHandler` 自己弹一层** (2026-10-08 修): `BackHandler` 是**后登记的先赢** (LIFO), 而它写在 `NavDisplay` 后面, 于是库里"还有上一页就 pop"那一个永远轮不到 —— 现象是**设置页与捐赠页上按返回什么都不发生**。现在那一行是 `if (backStack.size > 1) navigator.pop() else onBack()`, 主页上仍走「再按一次退出」(把任务放到后台, 不是退出)
+- **一轮在跑时那颗球必须全露着, 而且写着「正在想」** (2026-10-08 主人点名"确保"): 判据是两处代码合起来的 —— 宿主的 `startBallPhase` 在账上有人时每 20 s 重推一次 `overlay op=phase thinking` (应用重启、那一次推送丢了都靠它补), 而应用侧 `OverlayService.refresh` 只要状态词不是空就 `unpeek()` 并把 `BallPhase` 置成 `VOICE` (**那三个字不在收边那六道闸里, 但它让球先滑出来**: 有词就不许半隐)。实测: 球收着 (`ballWindowX=1017`) 时推一次 thinking, 2 s 内回到 `954` 并保持; 这时**双击球**就是把那一轮打断 (`OverlayService.interruptBall` 往 `voice/inbox.jsonl` 写一条 `{"text":"打断当前回答","source":"ball"}`, 宿主那条 `runVoiceInterrupt` 再去 `agent.cancel`)
 - **设置页没有「工作区」与「网络」两段** (2026-10-06 撤掉, 见 `docs/ui-record.md` 第七轮): 工作区落在哪是 host 启动时按 `Workspace.resolve` 那三档自己挑的, 网络那个开关 (局域网) 改完也要重启 host —— 两者都是"平时不用动"的。**能力一个都没删**: `Workspace` 三档解析 / `Workspace.requestAllFilesAccess` / `HostSettings.lanAccess` 与 ⋮ 里那条重启照旧, 只是不再有这两个设置入口 (要开所有文件访问就 `tools/lw-install.ps1`, 要开局域网就写偏好 + 重启 host)
 - **「截图」那段是两条预算, 都是滑块** (见 `channel/ScreenshotBudget.kt`): **像素**三档 (低 262144 = dsh 的 `imagePixelBudget: low`、默认 640000 = dsh 的缺省、高 1690000 = DeepSeek 那头的处理预算), **字节** 256 KiB~1 MiB 连续可滑 (吸附点 256/512/768/1024, 打字给到 4096)。两条给的都是 **app 这一半** (截图产生时缩到多少), 路由那一半 (`imagePixelBudget` / `imageMaxBytes`) 在 dsh 自己的 `settings.yaml` 里, **app 读不到也写不到** —— app 这一半超过路由那一半没用, 只会把注定要被重编码的图交出去 (超了要在 host 那边重编码, 多一次往返也多一次质量损失), 所以滑块上端就停在路由缺省那个数。滑块是搬来的 SFA `ArrowSlider` (`scaffolds/`, 点标题那一行可打字给精确值)
 - **`AndroidView` 里的 WebView 必须显式设 `layoutParams`** (MATCH_PARENT / MATCH_PARENT), 否则它处在 `WRAP_CONTENT` 状态, **所有 viewport unit 都解析成 0** —— dsh 用 `100vh` / `100dvh` 量弹窗、菜单、设置页与目录选择器, 一塌就是空面板
@@ -157,7 +161,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 **1.0.2 又加了这些**, 都在同一个插件里, 由 `simpleTool` 那个工厂生成 (它们的形状一样): `lw_notify` / `lw_vibrate` / `lw_clipboard` / `lw_share` / `lw_open_file` / `lw_download` / `lw_device` / `lw_battery` / `lw_storage` / `lw_running` / `lw_volume` / `lw_media` / `lw_net` / `lw_system` / `lw_sensor` / `lw_location` / `lw_permissions` / `lw_power` / `lw_app_control` / `lw_wait_for` / `lw_ui_dump` / `lw_gesture` / `lw_pinch`
 
-**1.0.3 加的 (共 48 个工具)**: `lw_scroll` (走无障碍的滚动动作, 不注入触摸) / `lw_keep_awake` (`PARTIAL_WAKE_LOCK`, 谁开谁关) / `lw_key_combo` (`input keycombination`, 二到四个键) / `lw_intent` (`openUrl` 打开 http(s) 链接, `intent` 按动作或组件起一个 activity) / `lw_files` (工作区里的列 / 读 / 写, 每一条都带上"手机怎么看这个文件") / `lw_media_scan` (让媒体库看见一个路径) / `lw_take_photo` (系统相机拍一张, 落在工作区的 `photos/`) / `lw_notifications` (读通知栏与清通知) / `lw_events_subscribe` 与 `lw_events_wait` (事件订阅: 等到一件事发生, 而不是反复读屏)。另外 `lw_app_control` 多了 `enable` / `disable` / `setHome`, `lw_screenshot` 多了分区 (`x` / `y` / `width` / `height`) 与连拍 (`count` 最多 12 张 · `intervalMs` · `sheet`), `lw_type` 多了 `x` / `y` (先按那一点再打字), `lw_notify` 多了 `banner` (全屏 intent)。**`disable` 与那四条破坏性的一样要人点一下确认** —— 它比停应用更粘: 被停用的应用从桌面上消失, 要有人记得回去打开
+**1.0.3 加的 (共 48 个工具)**: `lw_scroll` (走无障碍的滚动动作, 不注入触摸) / `lw_keep_awake` (`PARTIAL_WAKE_LOCK`, 谁开谁关) / `lw_key_combo` (`input keycombination`, 二到四个键) / `lw_intent` (`openUrl` 打开 http(s) 链接, `intent` 按动作或组件起一个 activity) / `lw_files` (工作区里的列 / 读 / 写, 每一条都带上"手机怎么看这个文件") / `lw_media_scan` (让媒体库看见一个路径) / `lw_take_photo` (系统相机拍一张, 落在工作区的 `photos/`) / `lw_notifications` (读通知栏与清通知) / `lw_events_subscribe` 与 `lw_events_wait` (事件订阅: 等到一件事发生, 而不是反复读屏)。另外 `lw_app_control` 多了 `enable` / `disable` / `setHome`, `lw_screenshot` 多了分区 (`x` / `y` / `width` / `height`) 与连拍 (`count` 最多 12 张 · `intervalMs` · `sheet`), `lw_type` 多了 `x` / `y` (先按那一点再打字), `lw_notify` 多了 `banner` (全屏 intent)。**`disable` 与那四条破坏性的一样算危险档** (2026-10-08 起改由提示词层问用户, 见「破坏性操作」那一节) —— 它比停应用更粘: 被停用的应用从桌面上消失, 要有人记得回去打开
 
 **`lw_files` 是三条路里最容易被写成重复的那一条**: 这个会话自己就带着 `read` / `write` / `glob` / `grep` / `bash` (`packages/fs/*` + `packages/shell/*`), 而工作区就是那套工具的家 (进程 cwd 与 home 都在那儿), 所以"在工作区里读写一个文件"模型本来就会做 —— 加三个同名的工具只会让它在两个都行的选择之间犹豫。所以它**只做 app 这一侧拿得到的三件事**: 手机怎么看这个文件 (媒体库有没有它、系统认的 mime、一张图多大), 一个不随会话目录漂移的锚 (工作区是 `Workspace.resolve` 解析出来的, 而会话的目录是用户在界面里选的), 以及**写完顺手让系统看见** (两步动作模型只会记住一步)。围栏照计划书: 只认工作区里的路径, 越界一律拒
 
@@ -167,7 +171,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 - **每个能力先过权限闸** (`util/PermissionGate` + `PermissionCatalog`): 缺权限时回的是"缺哪一条、怎么给", **不假装成功** —— 这台设备上"退出码 0 而什么都没发生"已经坑过一次 (无障碍那条), 所以写入一律**写完读回**再报结果
 - **答案由应用那一侧写**: 桥回来的 `result.text` 才是给人看的那一句 (只有它知道权限、设备、退出码), 插件用 `answerOf` 原样念, 不自己编话
-- **只有 app uid 真做不到的才走特权**: 卸载 / 清数据 / 停应用 / 装包 / 停用 / 飞行模式 / 移动数据 / 蓝牙 / 熄屏。它们在特权进程里过一张**写死的白名单表** (`channel/LwSystemCommandTable.kt`), 应用送过去的只是一个操作名与几个参数 —— 那张表就是"模型能不能凑出一条任意命令"这个问题的答案 (**1.0.3 起那张表里还有 `enable` / `setHome` / `openUrl` / `intent` / `keyCombo` 五条**; 通用的 `intent` 是唯一一条参数上限放宽到 8 的, 因为动作、数据、组件与目标屏放不进四个)。**破坏性那五条还要人点一下** (见下)
+- **只有 app uid 真做不到的才走特权**: 卸载 / 清数据 / 停应用 / 装包 / 停用 / 飞行模式 / 移动数据 / 蓝牙 / 熄屏。它们在特权进程里过一张**写死的白名单表** (`channel/LwSystemCommandTable.kt`), 应用送过去的只是一个操作名与几个参数 —— 那张表就是"模型能不能凑出一条任意命令"这个问题的答案 (**1.0.3 起那张表里还有 `enable` / `setHome` / `openUrl` / `intent` / `keyCombo` 五条**; 通用的 `intent` 是唯一一条参数上限放宽到 8 的, 因为动作、数据、组件与目标屏放不进四个)。**破坏性那五条调用即执行, 闸门在提示词层** (见下)
 
 
 **每个动作都显式带 `displayId`**, 没有"默认打选中的那块" —— 选中的是用户随时能改的, 而模型手里的坐标是它在某一块屏上量出来的。**用户没说用哪块屏就用虚拟屏**: `displayId 0` 是别人手里那台手机, 动它就是把它从人手里拿走, 而那块屏自己的形状是能给的 (`resize` / `rotate`), 主屏的不行 —— 这条写在 `DISPLAY_ID` 那个共用参数与 `lw_screen` 的描述里
@@ -181,7 +185,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **按键与打字是另外两条路**: `input keyevent` / `input text` 撞的是与 `am` 同一堵墙 (INJECT_EVENTS), 而 BACK / HOME / 音量这类**平台自己处理**的键不在任何屏的树里 —— 所以按键走特权进程 (`INPUT_KEY`), **键传名字不传编号**, 表从 `android/keycodes.h` 生成 (`tools/gen-keycodes.mjs`): 名字不认识可以拒, 编号不认识就是**另一个键** (5 是打电话, 26 是电源键); `HOME` / `POWER` / `SLEEP` / `SOFT_SLEEP` 只在主屏放行 (我们的屏没有 launcher, 发完 HOME 那块屏 `state OFF` 而截图照旧交旧帧)。**打字优先走无障碍**: `ACTION_SET_TEXT` 写焦点字段的文本, 中文与 emoji 都行, 也不需要 IME; 整块屏没有任何字段时才退回按键 (`INPUT_TEXT`, 只有 ASCII, 中文直接拒), 两条路用 `via: field|keys` 分开
 - **`tap` / `swipe` / 按住都阻塞到设备收下为止** (队列保顺序, `.get()` 保"做完了"), 而预览的手指仍然只往队列里丢: 工具返回后模型马上会截图看结果, 所以"已排队"对它没用
 - **`swipe` 是一次事务**: 特权侧按 `durationMs` 均分 12 步, **每一步至少睡一帧 (16 ms)** —— 一批同毫秒的 move 在平台看来是跳, 分帧读输入的应用 (Unity 那种) 会把"按下又抬起"当成**一次点击**; 分步放到 app 侧又会让手势快慢随 binder 负载漂移
-- **按住多久是一个参数, 不再是一个布尔** (`lw_tap(hold=…)` / `lw_key(hold=…)`): 值是**字符串**, 认 `"1s"` / `"500ms"` / `"1.5s"` / 裸数字 (按秒), 也认 `short` (600ms) / `medium` (1.5s) / `long` (3s); 上限 10s。**三个名字都压在平台自己的长按阈值 (500ms) 之上那一小段**, 因为那才是分界线, 真要用 `"8s"` 写出来 (8 秒的电源键在很多机器上是硬重启, 不该有一个 `long` 随手就能碰到)。设备侧: 长按 = 按住那么久 + UP 带 `FLAG_LONG_PRESS`; 只差一点点的 (500-650ms) 补到 650ms, 因为平台的检测器就在那一刻跑; `lw_tap(text=…)` 带 hold 时优先用节点的 `ACTION_LONG_CLICK`, 树里没有就用**按住的手指**落在它的矩形上。**按住也算动手, 所以也归刹车管** (真手指一来当场抬手)
+- **按住多久是一个参数, 不再是一个布尔** (`lw_tap(hold=…)` / `lw_key(hold=…)`): 值是**字符串**, 认 `"1s"` / `"500ms"` / `"1.5s"` / 裸数字 (按秒), 也认 `short` (600ms) / `medium` (1.5s) / `long` (3s); 上限 10s。**三个名字都压在平台自己的长按阈值 (500ms) 之上那一小段**, 因为那才是分界线, 真要用 `"8s"` 写出来 (8 秒的电源键在很多机器上是硬重启, 不该有一个 `long` 随手就能碰到)。设备侧: 长按 = 按住那么久 + UP 带 `FLAG_LONG_PRESS`; 只差一点点的 (500-650ms) 补到 650ms, 因为平台的检测器就在那一刻跑; `lw_tap(text=…)` 带 hold 时优先用节点的 `ACTION_LONG_CLICK`, 树里没有就用**按住的手指**落在它的矩形上
 - **截图落 `<工作区>/screenshots/screen-<id>.png`** (特权进程先写 app 的 cache, app 再拷进工作区): 模型的文件工具只在工作区里解析路径, 留在 cache 里就是能告诉它路径、它永远打不开
 - **截图在产生时同时缩到两个预算** (像素与字节都按设置页那两条): **只按像素缩不够** —— 一整屏游戏画面在 536x1192 就能压到 1.29 MB, 而超了预算就要在 host 那边重编码, 多一次往返也多一次质量损失。`Picture.fit` 会对同一个画面编码到装得下为止 (猜一版 → 量真实字节 → 往预算内放大回去, 最多 4 轮)。**1.0.3 之前这条还会把整轮请求打死**: 那时的 `sharp` 是只解 PNG 的替身, 重编码必抛, 抛出被包成 `TRANSPORT` (可重试), 重试 5 次后本轮失败, 而那张图留在上下文里, 之后每轮都再失败一次 —— 现在 host 侧真能重编码了, 但"截图时就缩到预算内"仍然是省事的那条路。滑块是搬来的 SFA `ArrowSlider` (`scaffolds/`, 点标题那一行可打字给精确值)
 - **截图的描述里写明了它会很小** (1080x2400 可能只有 536x1192), 所以"读屏用 `lw_ui` / `lw_ocr`, 截图只用来'像人一样看一眼'"这句话进了 `lw_screenshot` 的描述
@@ -191,17 +195,22 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **桥验的是应用那一侧, 插件那一层要另验**: `defineTool` 的参数表 -> `drop(args)` -> 一行 JSON -> `answerOf` 这段只有在模型调用时才走到, 所以有 `tools/lw-plugin-call.mjs` —— 它用与自检同一个注册表把工具取出来直接 `execute`, 不花模型的钱 (2026-10-04 就是它试出 `lw_media_scan` 只认绝对路径而 `lw_files` 认相对路径这条不一致)。用法: 先把端口 forward 到本机, 再 `LW_CHANNEL_ENDPOINT=127.0.0.1:<端口> LW_CHANNEL_TOKEN=<token> node tools/lw-plugin-call.mjs lw_files '{"op":"list"}'`
 - **两个 PS 脚本与 `push-host.mjs` 里的 adb 路径是开发机那一台的** (`B:\Software\AndroidSDK\...`), 换机器时用 `$env:LW_ADB` 覆盖, 不用改文件
 
-## 主屏 (displayId 0) 与触摸刹车
+## 主屏 (displayId 0)
 
 **`displayId 0` 就是手机自己那块屏**: 看与动都能指它, 与虚拟屏走同一套调用。它**不进 `screens` 列表** (不是我们建的, 没有预览也没有暂停), 尺寸每次现读 (跟着旋转变), 截图走不带 `-d` 的 `screencap`, `release 0` 有一句专门的拒绝理由
 
-**刹车管的是人, 而且只管主屏**: 特权进程 (`channel/LwTouchWatch.kt`) 直读触摸屏的 evdev 节点, 摸到玻璃就算数。**注入的事件不进 `/dev/input`** (注入口在 input reader 之后), 这是"真手指"与"模型的手"能被分开的地基。app 侧动手前问一次 (手指按着或 1000 ms 内有触摸就拒), 特权侧拖动中每 8 ms 问一次 (250 ms 窗口), 真手指一来**当场抬手**并回一句 "cut short after N ms"
+**2026-10-08 起, 触摸刹车 (软停) 整个删掉了** —— 主人点名的决定。原来那套是: 特权进程直读触摸屏的 evdev 节点 (`channel/LwTouchWatch.kt`), 摸到玻璃就算数, 于是 app 侧动手前问一次、拖动中每 8 ms 问一次, 真手指一来就**拒绝调用 / 当场把手势掐断**, 并回一句让模型收手。现在这些一个字都不剩:
 
-- **监视不起来就不许动主屏**: `watching == false` 时 `requireUserNotDriving` 直接拒 (理由带设备原话); 看的不拦, 虚拟屏也不受影响。这是自觉的取舍 —— 审批全放行下没有别的兜底
-- **虚拟屏不设这道闸**: 人在手机上摸的时候模型照样可以画别的屏, 那两道闸仍是菜单里的「暂停接受控制」与「虚拟屏触摸控制」。判据不去看触摸落在哪, 所以"用户在自己的 GUI 里打字"与"用户在抢屏幕"靠那 1 s 窗口区分
-- **只有软停**: 手势中止 + 动作被拒 + 工具报错, 由模型收手; 硬停 (`exec.agent.cancel({kind:'hook'})`) 没做。抬手 1 s 之后就能再动手, 想更粘 (锁住到用户显式放开) 是另一个决定
+- **没有任何应用层刹车**: 模型的屏幕调用不会因为"用户正在用手机"被拒, 一个手势一旦开始就跑到底。按住与拖动的时长还在, 但它们不再被中途打断
+- **看的那一条路从来就没拦过**: `lw_screenshot` / `lw_ui` / `lw_ocr` 照旧
+- **还剩什么**: 虚拟屏那两道**用户自己开的闸** —— 菜单里的「暂停接受控制」与「虚拟屏触摸控制」(那道闸只管虚拟屏, 主屏本来就不归它管)。主屏现在只靠**提示词层**的规矩: 模型要先说清自己在动主屏, 动作做完要如实回报
+- **删掉的东西**: `channel/LwTouchWatch.kt` (整个文件) / `TOUCH_STATE` 那条事务 / `LwInput` 里的 `watch` 与 `brake` 参数 (协议里那几个 `brake` 标志一起没了) / `VirtualScreen` 的 `requireUserNotDriving` / `lw_probe` 里的 `touch watch:` 那一行, 以及工具描述里那几句承诺
 
-没有真手指也能测: `tools/lw-fake-touch.sh` 往 evdev 节点写事件伪造一只 (`sendevent` 进的是 input core, 所以监视看得见)。**伪造的手指会被系统当真**, 挑一个被点到也无所谓的界面
+**留着的量具**: `tools/lw-fake-touch.sh` 还能往 evdev 节点写事件伪造一只真手指 (`sendevent` 进的是 input core)。它现在的用处反过来了 —— 伪造一只按着的手指, 然后看主屏调用**照样成功**, 就是"软停真没了"的那条判据。**伪造的手指会被系统当真**, 挑一个被点到也无所谓的界面
+
+**2026-10-08 起, 指代不明的一句话会自己带上一张主屏截图** (2.5.0 批次 4, 需求的第 9 条): 宿主插件那条投递链 (`voiceDeliver`) 在把浮标输入框 / 语音来的那一句送进会话之前, 先看它有没有那几种指着东西说的口气 —— 词表是 `SCREEN_REF_WORDS` (这个 / 这张 / 这个图 / 这张图 / 屏幕上 / 屏幕里 / 照片里 / 图里 / 这份, **子串命中**, 与命令表那套整句相等正好相反), 命中就按 `displayId 0` 截一张, 把图块与正文一起放进**同一条用户消息** (正文一个字不改, 界面上那张图与主人自己发的长得一样)。两道闸: **视频模式里不附** (那时「屏幕」指镜头), 设置页「截图」段那条「指代不明时自动截图」关着也不附 (插件读它走 `screenshot op=status`, 读不到按开 —— 与朗读那条链同一个口径)。**GUI 里打字的那条路拦不到** (那些消息走 dsh 自己的 rpc), 那一半由 `assets/modes/phone.md` 第 31 条兜底。读数在 `lw_voice op=inbox` 的 `autoShot` 里 (试了几条 / 附上几条 / 最近一条为什么没附), 判据在 `tools/check-auto-shot.mjs` (13 条)。
+
+**识屏模式在同一批里摘掉了**: 模式只剩手机与视频两个。原因就是上面这一条 —— "看手机自己那块屏"本来也在手机模式里 (display 0), 而"用户得先切一个模式, 模型才看得见屏"是多余的心智负担。三处都清了: `LwModes` 的常量与 `ALL` (`SCREEN_RETIRED` 那个常量留着, 只为把老机器 `.active` 里的 `screen` 迁回手机模式) / 浮标菜单那一行 / `assets/modes/screen.md` 与 `screen.sh` (仓库里删掉, 设备上由 `seed` 的退役名单删)。命令词表那一侧: **"退出 / 关闭 / 关掉识屏模式"仍然当收工回手机模式**, 而"打开识屏模式"不再是命令 —— 它照普通一句话进会话。
 
 ## 语音 (两档引擎)
 
@@ -342,18 +351,29 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **运行时权限**要弹窗点, 应用里的入口是设置页「权限」段 (`PermissionRequests` → `MainActivity` 里的 launcher), **电脑上也可以用 `tools/lw-install.ps1 -Perms` 一次给掉** (`pm grant`)
 - **特殊访问**系统不接受运行时申请, 只能去一页系统设置里点; `-Perms` 用 `appops set` 代劳 (`WRITE_SETTINGS` / `GET_USAGE_STATS` / `SYSTEM_ALERT_WINDOW` / `REQUEST_INSTALL_PACKAGES`), 电池优化用 `dumpsid deviceidle whitelist`
 
-**声明但这一版没有功能用的**: 通讯录 / 短信 / 通话记录 / 日历那一批。写进清单是刻意的 ("都加上"), 但它们没有任何工具去读, 所以 `PermissionCatalog.declaredOnly` 把它们单列出来 —— 页面上不该让人以为它们在用
+**声明但这一版没有功能用的**: 通讯录 / 短信 / 通话记录那一批 (日历 2026-10-08 起从这一档挪走了: `lw_calendar` 真的用它, 所以它是 `runtime` 里的一条独立能力)。写进清单是刻意的 ("都加上"), 但它们没有任何工具去读, 所以 `PermissionCatalog.declaredOnly` 把它们单列出来 —— 页面上不该让人以为它们在用
 
 `util/PermissionCatalog` 是唯一的一份表: 设置页照着它列, `lw_permissions` 照着它报, 所以不会出现"设置页说已允许而工具说不支持"
 
-## 破坏性操作的确认
+## 破坏性操作 (2026-10-08 起改口径)
 
-`forceStop` / `clearData` / `uninstall` / `install` / `disable` 这五条**不由模型说了算**: 应用会在屏幕上弹一个 `OverlayDialog`, 点了「确定」才执行, **100 秒没人点就回一句"没人确认", 什么都不做** (`ui/DestructiveConfirm`, `LwSystemCommand.destructive`)。`disable` 是 1.0.3 加进来的第五条 —— 它比停应用更粘, 被停用的应用从桌面上消失
+`forceStop` / `clearData` / `uninstall` / `install` / `disable` 这五条**调用即执行**: 应用侧那道
+`OverlayDialog` 与它的 100 秒等待**已经撤掉** (`ui/DestructiveConfirm.kt` 删除, `LwSystemCommand`
+里不再有等待那一段)。`disable` 仍算这一档 —— 它比停应用更粘, 被停用的应用从桌面上消失
 
-两个实现上的要点:
+**唯一那道闸在提示词层**: 模型必须先问用户一次 (含糊时要点名包名与后果), 得到明确的"是"才调。
+这条规矩落在三处, 改口径时三处一起改:
 
-- **桥改成一次请求一个线程** (`PrivilegedBridge.callers`): 以前是 accept 循环上串行处理, 等一个人点 100 秒会把别的调用全冻住
-- **屏幕关着的时候弹窗看不见, 于是它不会执行** —— 这是要的: 半夜没人看手机的时候, 谁也不能悄悄把另一个应用卸掉。它与「审批全放行」不冲突, 因为审批 answerer 管的是 dsh 自己的审批流, 这道闸在应用进程里, 模型绕不过去
+- `host-plugin/index.mjs` 里 `lw_app_control` 的工具描述
+- `skills/android-device-control/SKILL.md` 六·3 那条红线
+- `assets/modes/phone.md` 15 与 `presets/mobile-use/cordis.patch.yml` 15 (识屏那一份在 2.5.0 批次 4 删了)
+
+要记住的两件事实:
+
+- **这一层拦不住模型**: 工具描述与提示词都是"请求", 一次越权的调用没有任何东西会挡住它。做危险动作前
+  要留痕 (至少让回执说清做了什么) 的意义因此更大
+- **`enable` / `setHome` 不在这一档** (它们本来也是一调就做); 反过来, "审批全放行"那一条与这件事无关
+  —— 它管的是 dsh 自己的审批流, 从来不是这道闸
 
 ## 审批 (全部放行)
 
@@ -368,7 +388,7 @@ ctx.on('approval/request', (_request, _next) => Promise.resolve('allowed-once'),
 要记住的两个:
 
 - **`ApprovalOutcome` 封闭且 fail-closed**: 只有 `allowed-once / rejected / cancelled / unavailable`, answerer 缺失 / 不拥有该请求 / 抛异常 / 返回不合规统统变 `unavailable`, 而消费者**只要不是 `allowed-once` 就拒绝**。所以 **`danger-full-access` 这个预设名有歧义**, 它是"没人回答 → 全拒绝"而**不是全放行**。而策略为 `never` 时服务在派发之前就 `return 'rejected'`, 连 prepend 的 answerer 都不会被叫到 —— 这一行的定位是**保险**: 一旦会话换成带 `ask` 的预设, 它才是"问了没人答 → 拒绝"与"直接放行"之间的那一步
-- **放行了就必须有别的刹车**: **审计照记** (`approval/asked` / `decided` 是 log-only, 不进模型 transcript, 但进会话日志, 别为了"反正都放行"就绕过 `ctx.approval`, 那样连审计都没了); **人是唯一且只能靠触摸刹车** (见「主屏与触摸刹车」); **主屏操作尤其危险**, 因为虚拟屏内的操作至少被那个 display 关着
+- **放行了就必须有别的刹车**: **审计照记** (`approval/asked` / `decided` 是 log-only, 不进模型 transcript, 但进会话日志, 别为了"反正都放行"就绕过 `ctx.approval`, 那样连审计都没了); **主屏操作尤其危险**, 因为虚拟屏内的操作至少被那个 display 关着。**2026-10-08 起触摸刹车也删了** (见「主屏 (displayId 0)」那一节): 应用侧现在**没有任何**拦住主屏操作的东西, 只剩提示词层的规矩
 
 ## dsh 工具怎么加
 
@@ -406,6 +426,37 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
 ```
 
 **可以参考的文档 (都有中文版)**: `docs/cookbook/extension-cookbook.zh.md`, `docs/cookbook/adding-a-tool.zh.md`, `docs/user/develop/basic/tool.zh.md`, `docs/cordis-primer.zh.md`
+
+## 技能与快捷指令 (2026-10-08, 2.5.0 批次 7)
+
+两样都是"给模型看的工作流", 落点不同:
+
+| | 技能 | 快捷指令 |
+| :-- | :-- | :-- |
+| 是什么 | dsh 自己的机制: 一份 `SKILL.md`, 模型按需加载 | 本仓自己的: 一个 md 文件 = 一条工作流 |
+| 住哪 | `$DSH_HOME/skills/<name>/SKILL.md` | `$DSH_HOME/quick-commands/<名字>.md` |
+| 源在哪 | 仓库 `skills/` (只有随包那几份进 APK) | 仓库 `quick-commands/` |
+| 谁读 | 模型 (frontmatter 的 `name` / `description`) | 模型 (`lw_quick op=read`) 与人 (设置页列表) |
+| 谁写 | 人 | 模型 (`lw_quick op=write`) + 人在设置页删 |
+
+要记住的:
+
+- **随包那几份是构建拷进去的**: `app/build.gradle.kts` 的 `copySeedAssets` 把 `shippedSkills` 与
+  `shippedQuickCommands` 那几张表拷进 `assets/`, 首启由 `host/LwSeed.kt` 落进 `$DSH_HOME`。
+  **显式列名字而不是整目录拷**: `skills/android-device-control` 这一版不随包 (它只在仓库里, 装机时
+  要另外推), 要收口就把它加进那张表
+- **技能"缺什么补什么"、样例快捷指令"只发一次"**: 技能与 `modes/*.md` 同一条规矩 (主人改过的不会被
+  覆盖); 样例靠 `$DSH_HOME/.lw-seed` 那个记号, 主人删掉就不再回来 —— 这两条差别是刻意的
+- **改完技能要重新装机才有新的一份**: 设备上那份只在缺的时候才写 (与 `modes/phone.md` 同一个已知
+  行为), 迭代时要么删掉设备上那一份, 要么直接 push 进去
+- **`lw_quick` 的 op 名单两份实现**: `tool/LwQuick.kt` 的 `OPERATIONS` / `MODEL_OPERATIONS` 与
+  `host-plugin` 里那条 `enum`, 漂开由 `tools/check-quick-commands.mjs` 拦; **删除只在桥上**
+  (`op=delete`), 给模型的只有 list / read / write
+- **点一下 = 投一句话, 不是在这里跑**: 设置页那条路往 `voice/inbox.jsonl` 写一行 (来源 `quick`),
+  正文就是规范句「用快捷指令: <名字>」, 于是"当前会话没有就新建 / 20 分钟内接同一场 / 正在跑就
+  steer"三条语义自动成立。**那条规范句在两种语言里都是中文** (它是要给模型读的, 不是给人读的界面文案)
+- **日程那条工具**: `lw_calendar` 六条 op (`list` / `events` / `read` / `create` / `update` / `free`),
+  走 app 进程的 `ContentResolver`; 写入落在第一本可写日历 (可用 `calendarId` 指名), **没有可写的就拒**
 
 ## 工作区与存储
 

@@ -14,6 +14,15 @@ data class InputDevice(
     val xMax: Int,
     val yMin: Int,
     val yMax: Int,
+    /**
+     * 这两条轴**此刻的值**
+     *
+     * 它不是"顺便读到的": 内核只上报变化过的值, 所以一个一直没动的坐标在整场录制里一帧都不会出现
+     * (`getevent -p` 里那个 `value` 是唯一能问到它的地方)。录制那边拿它当起点 —— 不种下去的话, 一条
+     * 只上下动、左右没动过的手指会被记成 x = 0 (2026-10-08 实测踩到的)
+     */
+    val xValue: Int = 0,
+    val yValue: Int = 0,
     /** Position plus tracking id, i.e. multitouch protocol B, which the primary panel speaks */
     val protocolB: Boolean,
     /** The panel reports absolute coordinates, i.e. it is a touchscreen and not a mouse or pad */
@@ -53,7 +62,9 @@ object InputDevices {
     private val DEVICE = Regex("""^add device \d+:\s*(\S+)""")
     private val NAME = Regex("""^\s*name:\s*"(.*)"\s*$""")
     private val SECTION = Regex("""^\s*([A-Z]{2,3})\s*\(\d{4}\):(.*)$""")
-    private val ABS_ENTRY = Regex("""([0-9a-fA-F]{4})\s*:\s*value\s+-?\d+,\s*min\s+(-?\d+),\s*max\s+(-?\d+)""")
+    private val ABS_ENTRY = Regex(
+        """([0-9a-fA-F]{4})\s*:\s*value\s+(-?\d+),\s*min\s+(-?\d+),\s*max\s+(-?\d+)""",
+    )
     private val HEX = Regex("""\b[0-9a-fA-F]{4}\b""")
 
     private const val SECTION_ABS = "ABS"
@@ -66,6 +77,7 @@ object InputDevices {
         var path: String? = null
         var name = ""
         var section: String? = null
+        // 每个 ABS 码留下 value / min / max 三个数 (顺序与那张表里的一致)
         val abs = mutableMapOf<Int, IntArray>()
         val keys = mutableSetOf<Int>()
         var direct = false
@@ -117,8 +129,11 @@ object InputDevices {
 
             when (section) {
                 SECTION_ABS -> ABS_ENTRY.find(content)?.let {
-                    abs[it.groupValues[1].toInt(16)] =
-                        intArrayOf(it.groupValues[2].toInt(), it.groupValues[3].toInt())
+                    abs[it.groupValues[1].toInt(16)] = intArrayOf(
+                        it.groupValues[2].toInt(),
+                        it.groupValues[3].toInt(),
+                        it.groupValues[4].toInt(),
+                    )
                 }
 
                 SECTION_KEY -> HEX.findAll(content).forEach { keys += it.value.toInt(16) }
@@ -158,10 +173,12 @@ object InputDevices {
         val multiTouch = ABS_MT_POSITION_X in abs && ABS_MT_POSITION_Y in abs
         return InputDevice(            path = path,
             name = name,
-            xMin = x[0],
-            xMax = x[1],
-            yMin = y[0],
-            yMax = y[1],
+            xMin = x[1],
+            xMax = x[2],
+            yMin = y[1],
+            yMax = y[2],
+            xValue = x[0],
+            yValue = y[0],
             protocolB = multiTouch && ABS_MT_TRACKING_ID in abs,
             direct = direct,
             touchKey = BTN_TOUCH in keys,

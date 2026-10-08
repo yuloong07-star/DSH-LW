@@ -18,6 +18,18 @@ val dshCheckout = rootProject.layout.projectDirectory.dir("third_party/deepseek-
 val hostTree = layout.buildDirectory.dir("host-tree")
 val hostAssets = layout.buildDirectory.dir("generated/host-assets")
 
+// 首启要落到 $DSH_HOME 里的那两项 (三份技能 + 两条样例快捷指令) 也是构建产物: 源在仓库根的
+// `skills/` 与 `quick-commands/`, 拷成 assets 的形状由下面的 copySeedAssets 做。**显式列这几份,
+// 不整目录拷** —— `skills/android-device-control` 这一版不随包 (主人 2026-10-08 选的),
+// 要收口时把它加进那张表就行, 见 docs/DSH-LW-2.5.0-批次7-开发计划.md
+val seedAssets = layout.buildDirectory.dir("generated/seed-assets")
+
+/** 随包发的技能: 目录名 = frontmatter 里的 `name` */
+val shippedSkills = listOf("web-search", "weather", "calendar")
+
+/** 随包发的样例快捷指令: 文件名去掉 `.md` 就是它在设置页里的名字 */
+val shippedQuickCommands = listOf("制定旅游计划", "今天要做什么")
+
 
 // 语音转写要的那套 sherpa-onnx 不在 Maven 上: 上游只把它发成 GitHub Release 里的 AAR, 所以这
 // 一个依赖由构建自己取。app/libs/sherpa-onnx.aar 放了本地文件就用那一份 (离线构建、或用自己
@@ -129,6 +141,26 @@ val zipHostTree = tasks.register<Exec>("zipHostTree") {
     inputs.file(rootProject.file("tools/zip-host.mjs"))
     inputs.dir(hostTree)
     outputs.dir(hostAssets)
+}
+
+/**
+ * 把随包的技能与样例快捷指令拷成 assets 的形状
+ *
+ * 用 `Copy` 而不是让 app 直接读仓库的那两处: APK 里只有 assets, 而源必须是一份 (仓库那份),
+ * 所以这里拷一次, 而不是在仓库里再放一份副本等着它漂开
+ */
+val copySeedAssets = tasks.register<Copy>("copySeedAssets") {
+    group = "littlewhale"
+    description = "Copy the shipped skills and sample quick commands into the apk's assets"
+    val skills = rootProject.layout.projectDirectory.dir("skills")
+    val commands = rootProject.layout.projectDirectory.dir("quick-commands")
+    shippedSkills.forEach { name ->
+        from(skills.file("$name/SKILL.md")) { into("skills/$name") }
+    }
+    shippedQuickCommands.forEach { name ->
+        from(commands.file("$name.md")) { into("quick-commands") }
+    }
+    into(seedAssets)
 }
 
 android {
@@ -256,6 +288,8 @@ android {
     // generated directory is named as a plain file and the dependency on the task filling it is
     // declared below
     sourceSets["main"].assets.srcDir(hostAssets.get().asFile)
+    // 随包的技能与样例快捷指令同理: 源在仓库里, 进包的形状由 copySeedAssets 拼
+    sourceSets["main"].assets.srcDir(seedAssets.get().asFile)
 }
 
 // Every variant's asset merge has to wait for the archive. `tasks.named` fails the build if AGP
@@ -267,7 +301,10 @@ android {
 androidComponents {
     onVariants { variant ->
         tasks.matching { it.name == "merge${variant.name.replaceFirstChar(Char::uppercaseChar)}Assets" }
-            .configureEach { dependsOn(zipHostTree) }
+            .configureEach {
+                dependsOn(zipHostTree)
+                dependsOn(copySeedAssets)
+            }
     }
 }
 

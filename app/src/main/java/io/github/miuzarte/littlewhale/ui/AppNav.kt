@@ -2,26 +2,14 @@ package io.github.miuzarte.littlewhale.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.SnackbarDuration
-import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.nav.core.NavCornerClipMode
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
@@ -30,7 +18,6 @@ import top.yukonga.miuix.kmp.nav.core.rememberNavBackStack
 import top.yukonga.miuix.kmp.nav.core.rememberNavSystemCornerRadius
 import top.yukonga.miuix.kmp.nav.transition.NavSwipeDirection
 import top.yukonga.miuix.kmp.nav.transition.NavTransitions
-import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.squircle.LocalSquircleEnabled
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
@@ -50,6 +37,10 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object Settings : Screen
+
+    /** 捐赠那一页: 随包发进来的 `assets/donate.html` (见 [DonateScreen]) */
+    @Serializable
+    data object Donate : Screen
 }
 
 /** 谁想换页就问它, 页面自己不持有返回栈 */
@@ -126,43 +117,6 @@ fun LittleWhaleApp() {
         }
     }
 
-    /**
-     * 破坏性操作等人点一下
-     *
-     * 挂在整个应用这一层而不是某一页里: 模型要卸应用的时候, 人可能正看着设置页, 也可能停在主页
-     */
-    @Composable
-    fun confirm() {
-        val pending = DestructiveConfirm.pending
-        OverlayDialog(
-            show = pending != null,
-            title = stringResource(R.string.destructive_confirm_title),
-            summary = pending?.let { "${it.what}\n\n${it.target}" } ?: "",
-            onDismissRequest = { pending?.decide(false) },
-            onDismissFinished = {},
-        ) {
-            Text(
-                text = stringResource(R.string.destructive_confirm_hint, DESTRUCTIVE_WAIT_SECONDS),
-                color = colorScheme.onBackgroundVariant,
-                modifier = Modifier.padding(bottom = 16.dp),
-            )
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                TextButton(
-                    text = stringResource(R.string.button_cancel),
-                    onClick = { pending?.decide(false) },
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.width(20.dp))
-                TextButton(
-                    text = stringResource(R.string.destructive_confirm_ok),
-                    onClick = { pending?.decide(true) },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.textButtonColorsPrimary(),
-                )
-            }
-        }
-    }
-
     MiuixTheme(controller = controller) {
         // 系统栏图标要跟着实际渲染出来的配色, 手动钉成深色时也得跟着变
         ApplySystemBarsAppearance(LocalActivity.current?.window)
@@ -192,22 +146,19 @@ fun LittleWhaleApp() {
             ) {
                 entry<Screen.Home>(swipeDismiss = swipe) { HostScreen() }
                 entry<Screen.Settings>(swipeDismiss = swipe) { SettingsScreen() }
+                entry<Screen.Donate>(swipeDismiss = swipe) { DonateScreen() }
             }
-            // 破坏性操作的确认框挂在整个应用这一层: 不管当时在哪一页, 模型要卸应用都得先让人点一下
-            confirm()
-            // **返回键的最后一道**: NavDisplay 的 onBack 在返回栈空的时候不一定被叫到 (实现在库
-            // 里, 不保证), 而没被叫到的那一下是平台的默认行为 —— 把这个 activity 关掉, 于是 host
-            // 与虚拟屏一起没了。这个 handler 在 Composition 里登记, 比库自己的早, 所以那一下会被
-            // 这里吃掉: 要么弹提示, 要么把任务放到后台, 两者都不结束任何东西
-            BackHandler { onBack() }
+            // **返回键的最后一道**: 没被接住的那一下是平台的默认行为 —— 把这个 activity 关掉, 于是
+            // host 与虚拟屏一起没了。所以这里兜底: 要么弹提示, 要么把任务放到后台, 两者都不结束任何
+            // 东西
+            //
+            // **它必须自己先让返回栈弹一层** (2026-10-08 修): `BackHandler` 是**后登记的先赢** (LIFO),
+            // 而这一行排在 `NavDisplay` 后面, 于是库里那个"还有上一页就 pop"的 handler 永远轮不到 ——
+            // 现象就是**系统返回键在设置页与捐赠页上什么都不做** (只能点左上角那个 ←, 或者开着"横滑
+            // 返回"时右滑)。原来那句注释以为这里登记得比库早, 那是错的
+            BackHandler {
+                if (backStack.size > 1) navigator.pop() else onBack()
+            }
         }
     }
 }
-
-/**
- * 等人点一下的上限, 秒
- *
- * 与 `DestructiveConfirm` 里那个常量说的是同一件事 (那边是毫秒, 那边判超时): 这是个文件级的常数,
- * 因为 `confirm` 是个 composable, 里面只能有表达式
- */
-private const val DESTRUCTIVE_WAIT_SECONDS = 100

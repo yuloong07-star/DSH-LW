@@ -124,6 +124,105 @@ internal object BallMinutes {
      */
     fun summonIsFresh(now: Long, summonedAt: Long): Boolean =
         summonedAt != 0L && now - summonedAt in 0..SUMMON_FRESH_MS
+
+    /* ── 防误触那一条 (2026-10-08 主人: "增加 ball 各操作的防误触") ──────────────
+     *
+     * 球上现在挂着手势五档 (单击 / 双击 / 三击 / 长按 / 拖), 全都落在同一颗 48 dp 的球上 —— 手一抖
+     * 就可能把"说话"、"打断"、"开键盘"、"出菜单"里的某一个做掉。下面这四个数是把那一档收紧的地方,
+     * 而它们的判据都写成纯函数/常量, 没有设备也能量 (见 BallTest)
+     */
+
+    /**
+     * 长按出菜单要按住多久: **650 ms**
+     *
+     * 平台自己的 `ViewConfiguration.getLongPressTimeout()` 是 400~500 ms 那一档, 而那对一颗随时都
+     * 在屏上的球来说太短了 —— 慢一点的单击 (按下、觉得不对、松开) 会被判成长按并弹出菜单。取 650 ms
+     * 是"比平台的默认长一档, 又还没有长到让人以为球卡住"
+     */
+    const val BALL_PRESS_MS = 650L
+
+    /**
+     * 判定"这一下是拖动"的门槛: **至少 12 dp**
+     *
+     * 平台那个 `scaledTouchSlop` 只有 8 dp 上下, 手在球上按一下时抖两下就过线了 —— 于是本该是单击的
+     * 那一下变成"拖了一下没动地方", 而拖动是不出单击动作的 (见 [BALL_DROP_GUARD_MS] 与 BallView)
+     */
+    const val BALL_SLOP_DP = 12
+
+    /**
+     * 三击那一串必须在多久之内走完: **450 ms**
+     *
+     * 三击是"打开键盘输入"(2026-10-07 主人点名的那一个手势), 而它是这套手势里最容易被误触的: 空闲时
+     * 随手戳三下就是一块盖住半个屏幕的框。收紧的办法是给**整串**一个总时长 (不是只看相邻两下):
+     * 第一下之后 450 ms 内数到第三下才算三击, 超过就停在双击那一档 (而双击在多数档里没有动作)
+     */
+    const val TRIPLE_SPAN_MS = 450L
+
+    /**
+     * 刚拖完的那一下不算单击: **250 ms**
+     *
+     * 拖动松手会吸附到边上 ([OverlayService.snapToEdge]), 而人常常在松手之后又补一下 —— 那一下如果
+     * 算单击, 球就会在刚放好的位置上开口说话。这一条只挡"紧接着的那一下", 隔久了照旧
+     */
+    const val BALL_DROP_GUARD_MS = 250L
+
+    /**
+     * 刚拖完的那一下算不算单击 (纯函数, 见 BallTest)
+     *
+     * [feel] 是设置页那一档灵敏度 (见 [BallFeel]): 标准档那一条闸是关着的 ([BallFeel.dropGuardMs]
+     * 为 0), 于是这里一律答"不算" —— 关掉的手段是"窗口是 0", 不是另一份判断
+     */
+    fun tapAfterDropIsFresh(
+        now: Long,
+        droppedAt: Long,
+        feel: BallFeel = BallFeel.GUARD,
+    ): Boolean {
+        val window = feel.dropGuardMs
+        return window > 0L && droppedAt != 0L && now - droppedAt in 0..window
+    }
+}
+
+/**
+ * 浮标手势的灵敏度: **两套常数, 一份来源** (主人 2026-10-08: 防误触那一条与"做成设置页一档")
+ *
+ * 那颗球上挂着五档手势 (单击 / 双击 / 三击 / 长按 / 拖), 全都落在同一个 48 dp 上, 而"多严"这件事
+ * 因人而异: 手稳的人嫌 650 ms 的长按等得久, 一只手拿东西的人嫌平台的 400 ms 太容易弹菜单。所以
+ * 两套常数都写在这里 (与那几个 `BALL_*` 挨着, 不散到调用方), 设置页只选一个名字
+ *
+ * **取值的方向是 0 = 这一档不启用这条闸**, 于是"关掉"与"用平台的"不需要第二份判断:
+ *
+ * | 档 | 长按 | 拖动门槛 | 三击总时长 | 刚拖完那一下 |
+ * | :-- | :-- | :-- | :-- | :-- |
+ * | [STANDARD] 标准 | 平台的 `longPressTimeout` (400~500 ms) | 平台的 `scaledTouchSlop` (8 dp 上下) | 不看总时长 | 不挡 |
+ * | [GUARD] 防误触 (缺省) | 650 ms | 12 dp | 450 ms | 250 ms |
+ *
+ * 双击窗口 ([BallMinutes.DOUBLE_TAP_MS]) 与那两档防连击窗口 ([BallTaps.guard]) **两档共用**: 前者是
+ * 主人 2026-10-06 点名的 300 ms, 后者是"第一下已经把事做掉了, 第二下不该再算一次"那条账 —— 它们与
+ * 灵敏度不是一件事, 收紧它们会把手快的正常操作也吃掉
+ */
+internal enum class BallFeel {
+    /** 标准: 手感优先, 三个门槛都交给平台那一档 */
+    STANDARD,
+
+    /** 防误触: 缺省, 三个门槛都按 2026-10-08 那四个数收紧 */
+    GUARD;
+
+    /** 长按门槛, 0 = 用平台的 `ViewConfiguration.getLongPressTimeout()` */
+    val pressMs: Long get() = if (this == GUARD) BallMinutes.BALL_PRESS_MS else 0L
+
+    /** 判定"这一下是拖动"的门槛, 0 = 用平台的 `scaledTouchSlop` */
+    val slopDp: Int get() = if (this == GUARD) BallMinutes.BALL_SLOP_DP else 0
+
+    /** 三击那一串的总时长, 0 = 不看总时长 (只看相邻两下) */
+    val tripleSpanMs: Long get() = if (this == GUARD) BallMinutes.TRIPLE_SPAN_MS else 0L
+
+    /** 刚拖完那一下的挡窗, 0 = 不挡 */
+    val dropGuardMs: Long get() = if (this == GUARD) BallMinutes.BALL_DROP_GUARD_MS else 0L
+
+    companion object {
+        /** 存盘用的名字, 与设置页那两项一一对应 */
+        fun of(name: String?): BallFeel = if (name == STANDARD.name) STANDARD else GUARD
+    }
 }
 
 /**
@@ -254,20 +353,44 @@ internal object BallTaps {
      *
      * @param lastTapAt 上一次**算数的**点击时刻 (0 = 还没有过)
      * @param chain 这一下之前那串连击已经数到几次 (0 = 上一记之后已经隔开了)
+     * @param chainFrom 这一串连击**头一下**的时刻 (0 = 不知道): 三击看的是整串的总时长, 见下
      *
      * 判据的先后就是它的意思: **先看"是不是接着上一记"** (300 ms 之内), 是就往下数 (第 2 下是双击,
      * 第 3 下起是三击 —— 四连击也算三击, 那只是主人多戳了一下); 不是再看"是不是离得太近" (防连击那
      * 个窗口), 太近的**既不计数也不动作**; 都不是才是新的一次单击
+     *
+     * **2026-10-08 给三击加了一条总时长** ([TRIPLE_SPAN_MS]): 只看相邻两下的话, "一下一下慢慢戳三下"
+     * 也算三击, 而三击要开的是一块盖住半屏的输入框 —— 那是最值得防的一处误触。所以第三下要落在
+     * "头一下之后 450 ms 之内", 超了就**停在双击**那一档 (它在多数状态里没有动作, 于是什么都不做)。
+     * [chainFrom] 缺省等于 [lastTapAt], 于是"只看相邻两下"那种老调用仍然自洽 (总时长就等于这一隔)
+     *
+     * [feel] 是设置页那一档灵敏度: 标准档把总时长这条闸整个关掉 ([BallFeel.tripleSpanMs] 为 0),
+     * 那时三击就是"三下连着且每一下都贴着上一记" —— 与收紧之前那一版相同
      */
-    fun kind(word: BallWord?, now: Long, lastTapAt: Long, chain: Int = 0): BallTap {
+    fun kind(
+        word: BallWord?,
+        now: Long,
+        lastTapAt: Long,
+        chain: Int = 0,
+        chainFrom: Long = lastTapAt,
+        feel: BallFeel = BallFeel.GUARD,
+    ): BallTap {
         if (lastTapAt == 0L) return BallTap.SINGLE
         val gap = now - lastTapAt
         return when {
-            gap <= BallMinutes.DOUBLE_TAP_MS -> if (chain + 1 >= 3) BallTap.TRIPLE else BallTap.DOUBLE
+            gap <= BallMinutes.DOUBLE_TAP_MS -> {
+                if (chain + 1 < 3) BallTap.DOUBLE
+                else if (inTripleSpan(now, chainFrom, feel.tripleSpanMs)) BallTap.TRIPLE
+                else BallTap.DOUBLE
+            }
             gap < guard(word) -> BallTap.TOO_SOON
             else -> BallTap.SINGLE
         }
     }
+
+    /** 三击那一串的总时长够不够: 这一档没开那条闸 (窗口为 0) 时一律算够 */
+    private fun inTripleSpan(now: Long, chainFrom: Long, span: Long): Boolean =
+        span <= 0L || chainFrom == 0L || now - chainFrom <= span
 
     /**
      * 框外那两下算不算一次双击: 真 = 这一下就是窗口内的第二下 (**关掉那块框**)

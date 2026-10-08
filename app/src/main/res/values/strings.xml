@@ -21,7 +21,46 @@
     <string name="settings_restart_host">Restart DSH host</string>
     <string name="settings_restart_host_summary">For when what the host reads once (where the workspace lands, the LAN switch) changed</string>
 
+    <string name="settings_menu_update">Check for updates</string>
+    <string name="settings_menu_donate">Donate</string>
+    <string name="settings_menu_donate_summary">Opens the bundled donation page</string>
+    <string name="settings_menu_about">About</string>
+    <string name="settings_close">Close</string>
+
+    <string name="settings_group_common">Everyday</string>
+    <string name="settings_group_ability">Abilities</string>
+    <string name="settings_section_expand">Expand this section</string>
+    <string name="settings_section_collapse">Collapse this section</string>
+
+    <string name="settings_section_power">Power save</string>
+    <string name="settings_section_power_summary">What gets switched off to save power</string>
+    <string name="settings_power_state_idle">Not saving power: the wake word listens as the Wake word section allows</string>
+
+    <string name="settings_about_title">About LittleWhale</string>
+    <string name="settings_about_version">Version %1$s (%2$d)</string>
+    <string name="settings_about_update">Check for updates</string>
+    <string name="settings_about_update_summary">Reads the tag of the newest release on GitHub and compares it</string>
+    <string name="settings_about_source">Update source</string>
+    <string name="settings_about_source_default">The built-in one</string>
+    <string name="settings_about_donate">Donate</string>
+
+    <string name="settings_update_title">Check for updates</string>
+    <string name="settings_update_summary">It only looks, it never installs: a newer release opens the browser and you decide</string>
+    <string name="settings_update_checking">Asking %1$s ...</string>
+    <string name="settings_update_latest">Already the newest (%1$s)</string>
+    <string name="settings_update_newer">Version %1$s is out; this build is %2$s</string>
+    <string name="settings_update_failed">Could not reach it: %1$s</string>
+    <string name="settings_update_published">Published %1$s</string>
+    <string name="settings_update_apk">Package %1$s, about %2$s</string>
+    <string name="settings_update_open">Go download</string>
+    <string name="settings_update_retry">Try again</string>
+
+    <string name="settings_source_title">Update source</string>
+    <string name="settings_source_summary">The GitHub release API URL, for example %1$s; empty goes back to the built-in one</string>
+    <string name="settings_donate_title">Donate</string>
+
     <string name="settings_section_appearance">Appearance</string>
+    <string name="settings_section_appearance_summary">Colours, corners and how dark it is</string>
     <string name="settings_theme_follow_system">Follow system</string>
     <string name="settings_theme_light">Light</string>
     <string name="settings_theme_dark">Dark</string>
@@ -37,6 +76,7 @@
     <string name="settings_squircle_summary">Use smooth rounded rectangles on rounded UI elements</string>
 
     <string name="settings_section_navigation">Navigation</string>
+    <string name="settings_section_navigation_summary">Going back, and how pages slide in</string>
     <string name="settings_transition">Transition style</string>
     <string name="settings_transition_summary">Animation style for page transitions</string>
     <string name="settings_transition_miuix">Miuix</string>
@@ -45,6 +85,7 @@
     <string name="settings_swipe_back_summary">Swipe a pushed page to go back</string>
 
     <string name="settings_section_channel">Privileged channel</string>
+    <string name="settings_section_channel_summary">Anything that touches the screen needs it</string>
     <string name="settings_channel_reading">Reading...</string>
     <string name="settings_channel_connected">Connected: %1$s, uid %2$d</string>
     <string name="settings_channel_disconnected">Not connected (%1$s)</string>
@@ -57,17 +98,22 @@
     <string name="settings_channel_connecting">Connecting...</string>
 
     <string name="settings_section_accessibility">Accessibility</string>
+    <string name="settings_section_accessibility_summary">Reads the text on screen and where it sits</string>
     <string name="settings_accessibility">Let DSH read the screen through the accessibility service</string>
     <string name="settings_accessibility_summary">Once on, the model reads the text and the exact position of every control on the screen</string>
     <string name="settings_accessibility_manual">Open accessibility settings</string>
 
     <string name="settings_section_notifications">Notifications</string>
+    <string name="settings_section_notifications_summary">Reads the shade, and posts notifications</string>
     <string name="settings_notifications">Let DSH read the notification shade</string>
     <string name="settings_notifications_summary">Once on, the model can list what is in the shade and dismiss it; turning it on also lets a notification come up as a banner over the lock screen</string>
     <string name="settings_notifications_manual">Open notification access settings</string>
     <string name="settings_notifications_banner">Open full-screen notification settings</string>
 
     <string name="settings_section_screenshot">Screenshots</string>
+    <string name="settings_section_screenshot_summary">How far a picture is shrunk before the model sees it</string>
+    <string name="settings_screenshot_auto">Screenshot what is being pointed at</string>
+    <string name="settings_screenshot_auto_summary">When a line says "this", "this picture", "on the screen" or "in the photo", attach a picture of the phone\'s own screen to it before it is sent (never in video mode)</string>
     <string name="settings_screenshot_budget">Screenshot budget</string>
     <string name="settings_screenshot_budget_summary">Scale a screenshot to this many pixels before the model sees it</string>
     <string name="settings_budget_low">Low (%1$d)</string>
@@ -78,8 +124,12 @@
     <string name="settings_screenshot_bytes_dialog">In KiB, and typing goes up to %2$d; a value over the slider top %1$d needs imageMaxBytes raised in settings.yaml first</string>
 
     <string name="settings_section_look">Video recognition</string>
+    <string name="settings_section_look_summary">How many frames, and how far apart</string>
+    <string name="settings_look_owner">Video mode holder</string>
+    <string name="settings_look_owner_free">Nobody is holding the camera: looking and switching to video mode are not blocked</string>
+    <string name="settings_look_owner_busy">Session %1$s has held the camera since %2$s; tap this row to release it</string>
     <string name="settings_look_interval">Between frames</string>
-    <string name="settings_look_interval_summary">%1$d ms between one frame and the next; one capture costs 200-400 ms on its own, so this is what it asks for, not what it gets</string>
+    <string name="settings_look_interval_summary">%1$d ms between one frame and the next; one capture costs a couple of hundred milliseconds on its own, so this is what it asks for, not what it gets</string>
     <string name="settings_look_interval_dialog">In milliseconds, from %1$d to %2$d</string>
     <string name="settings_look_count">Frames per look</string>
     <string name="settings_look_count_summary">%1$d frame(s) each time the camera is asked to look; the agent can name another number for one call, and this is the default it starts from</string>
@@ -93,14 +143,15 @@
     <string name="settings_look_note">These are the app\'s half of the video mode camera: how many frames, how far apart, how big, and whether they also come back as one grid. The route has its own budgets in settings.yaml (imagePixelBudget, imageMaxBytes), and a picture over those is re-encoded on the host before the model sees it</string>
 
     <string name="settings_section_ocr">OCR</string>
+    <string name="settings_section_ocr_summary">Reads text out of pixels</string>
     <string name="settings_ocr_backend">Runs on: %1$s</string>
     <string name="settings_ocr_probe">Self check</string>
     <string name="settings_ocr_probe_busy">Checking...</string>
 
     <string name="mode_phone">phone mode</string>
     <string name="mode_video">video mode</string>
-    <string name="mode_screen">screen mode</string>
     <string name="settings_section_wake">Wake word</string>
+    <string name="settings_section_wake_summary">Say the word and it listens</string>
     <string name="settings_wake_status">Listening</string>
     <string name="settings_wake_state_listening">Listening for %1$s; a hit or a tap on the ball listens for one sentence</string>
     <string name="settings_wake_state_voice">Listening for %1$s, and the resident chain is running too (what video mode asks for: it keeps listening after a sentence)</string>
@@ -133,6 +184,8 @@
     <string name="settings_wake_power_window_hint">23:00-07:00</string>
     <string name="settings_wake_power_window_bad">That does not read as a time range; write one like 23:00-07:00 (hours 0-23, minutes 0-59)</string>
     <string name="settings_wake_power_window_empty">Identical start and end is an empty window, which would never save power; pick another time or clear the line to turn the schedule off</string>
+    <string name="settings_wake_power_save_automation">Power save also stops the automatic commands\' watches</string>
+    <string name="settings_wake_power_save_automation_summary">Only the expensive ones stop (weather, place, foreground app); notifications and time carry on. Takes effect once the automatic commands land</string>
     <string name="settings_wake_need_model">The wake word model is not downloaded yet; the download row below is what gets it</string>
     <string name="settings_wake_action">After a hit</string>
     <string name="settings_wake_action_summary">What a hit does beyond buzzing, beeping and bringing the app forward. The two mode rows go through the same command path as saying it out loud, and that table lives on the host side in one place</string>
@@ -144,8 +197,13 @@
     <string name="wake_badge_listening">Listening</string>
     <string name="wake_badge_stop">Tap to stop listening</string>
     <string name="settings_section_ball">Floating ball</string>
+    <string name="settings_section_ball_summary">One ball, tap it to talk</string>
     <string name="settings_ball_on">Keep the ball on screen</string>
     <string name="settings_ball_on_summary">On: a small ball stays over other apps - tap it to speak, hold it for a menu, drag it to an edge to tuck it away. It needs the display-over-other-apps permission, and a missing one is named instead of failing quietly</string>
+    <string name="settings_ball_feel">Gesture sensitivity</string>
+    <string name="settings_ball_feel_summary">How long a press counts, how far a finger may drift, how quick a triple tap must be; now: %1$s</string>
+    <string name="settings_ball_feel_standard">Standard</string>
+    <string name="settings_ball_feel_guard">Guard</string>
     <string name="settings_ball_state_up">The ball is up, docked %1$s</string>
     <string name="settings_ball_state_down">The ball is not on screen right now</string>
     <string name="settings_ball_permission">The display-over-other-apps permission is missing, so the switch above will not put a ball up</string>
@@ -171,20 +229,17 @@
     <string name="ball_state_speaking">Speaking</string>
     <string name="ball_menu_title">Ball · %1$s</string>
     <string name="ball_menu_return">Back to the app</string>
-    <string name="ball_menu_screen_on">Screen mode: on</string>
-    <string name="ball_menu_screen_off">Screen mode: off</string>
+    <string name="ball_menu_release_camera">Release video mode</string>
     <string name="ball_menu_close">Close the ball</string>
     <string name="ball_voice_stopped">Not listening to this one any more; tap again to start it</string>
     <string name="ball_voice_stop_failed">It did not stop: the foreground service did not take that command</string>
-    <string name="ball_mode_no_host">The host is not up, so that mode command cannot go out</string>
     <string name="ball_ask_no_host">The host is not up yet, so this line is queued: it goes out once the host is running</string>
-    <string name="ball_mode_cannot_queue">The inbox is not writable, so that line was not sent</string>
-    <string name="ball_mode_asked">Asked it to switch to %1$s</string>
     <string name="ball_speak_no_model">The wake word model is not downloaded yet; use that row in the settings page</string>
     <string name="ball_speak_speaking">A reply is being spoken, so it is not listening</string>
     <string name="ball_speak_failed">Starting the voice chain failed: %1$s</string>
     <string name="ball_interrupt_failed">The interrupt did not go out: the voice inbox is not writable</string>
     <string name="settings_section_speak">Speaking</string>
+    <string name="settings_section_speak_summary">How replies are read out</string>
     <string name="settings_speak_auto">Speak replies aloud</string>
     <string name="settings_speak_auto_summary">On: every finished reply is spoken out loud. Off: nothing is spoken on its own, while asking for a line (lw_speak) and the Listen row below still work</string>
     <string name="settings_speak_stop">Stop</string>
@@ -249,12 +304,68 @@
     <string name="settings_speak_preview_summary">Says one line with the voice and rate above, so the choice can be judged by ear</string>
     <string name="settings_speak_sample">This is how a reply will be spoken.</string>
 
+    <string name="settings_section_lock">Lock screen</string>
+    <string name="settings_section_lock_summary">Waking the screen up, then walking through your own unlock</string>
+    <string name="settings_lock_wake_screen">Light up the screen when the wake word is heard</string>
+    <string name="settings_lock_wake_screen_summary">The wake word is heard with the screen off too; without this, that hit lands in a dark room. The privileged channel is the first route (KEYCODE_WAKEUP), the app\'s own wake lock is the second, and a full-screen notification is the last one</string>
+    <string name="settings_lock_auto_unlock">Unlock the phone when the wake word is heard</string>
+    <string name="settings_lock_auto_unlock_summary">Walks your own recorded unlock through, so a wake word reaches the home screen. This hands the unlock password to this app: fingerprints and faces cannot be replayed by an app, and a pattern is experimental. Off by default, every replay leaves a line in the notifications, and three failures in a row turn it off again</string>
+    <string name="settings_lock_record">Record the unlock</string>
+    <string name="settings_lock_record_none">Nothing recorded yet; tap to walk your own unlock through once</string>
+    <string name="settings_lock_record_done">%1$d step(s), in place since %2$s; the password slot holds %3$s</string>
+    <string name="settings_lock_record_running">Recording: walk through the unlock on the phone (%1$d step(s) so far)</string>
+    <string name="settings_lock_record_dialog">Record the unlock</string>
+    <string name="settings_lock_record_dialog_summary">Type the password or PIN here if this phone has one (leave it empty for a phone that only needs a swipe). Starting locks the screen; then walk through the unlock on the phone the way you always do, and it stops by itself once the phone is open. The taps that type a password are never written down: everything from the first tap on is dropped from the recording and this password is sent instead, encrypted with a Keystore key and never kept as plain text</string>
+    <string name="settings_lock_record_start">Lock the screen and record</string>
+    <string name="settings_lock_script">Import an unlock script</string>
+    <string name="settings_lock_script_none">Write the unlock out as a script instead of walking through it; the box starts from a template</string>
+    <string name="settings_lock_script_done">%1$d step(s) are in place; open this to read them as a script, edit them and put them back</string>
+    <string name="settings_lock_script_dialog">Import an unlock script</string>
+    <string name="settings_lock_script_dialog_summary">One step per line, and blank lines or anything after a # is ignored. The verbs are key, tap, swipe, stroke, text and wait - for example \"swipe 0.5 0.85 0.5 0.2 700\". Coordinates are 0 to 1 ratios of the screen rather than pixels, so 540 1200 is refused. text means \"a password is typed here\" and takes no argument: the password is never written into a script, it goes into the encrypted slot from the field below. This replaces whatever was recorded or imported before</string>
+    <string name="settings_lock_script_password">Password / PIN, if the script has a text step</string>
+    <string name="settings_lock_script_confirm">Import</string>
+    <string name="settings_lock_imported">imported %1$d step(s): %2$s</string>
+    <string name="settings_lock_import_failed">nothing was imported: %1$s</string>
+    <string name="settings_lock_replay">Try it once</string>
+    <string name="settings_lock_replay_summary">Lights the screen up, walks the recording through once, and says how far it got</string>
+    <string name="settings_lock_replay_running">Trying it now...</string>
+    <string name="settings_lock_clear">Forget the recording</string>
+    <string name="settings_lock_clear_summary">Deletes the steps, the plain copy of them in the workspace, the encrypted password and its Keystore key</string>
+    <string name="settings_lock_cleared">the recording is gone, and the encrypted password went with its Keystore key</string>
+    <string name="settings_lock_note_none">Nothing has been tried yet. The recording keeps only the moves: the password goes into the encrypted slot, and the taps that typed it are dropped on purpose</string>
+
+    <string name="settings_section_automation">Automatic commands</string>
+    <string name="settings_section_automation_summary">When something happens, do something (say a line, or open a conversation to work)</string>
+    <string name="settings_automation_placeholder">Not built yet: conditioned commands are the eighth batch of 2.5.0; this release only makes room for them</string>
+
+    <string name="settings_section_quick">Quick commands</string>
+    <string name="settings_section_quick_summary">The workflows that run from one tap, one Markdown file each</string>
+    <string name="settings_quick_empty">No quick commands yet. They live in %1$s; tap New below, say in one line what it should do, and the model writes it</string>
+    <string name="settings_quick_no_summary">(no summary line)</string>
+    <string name="settings_quick_new">New quick command</string>
+    <string name="settings_quick_new_summary">Say in one line what it should do; the model writes the body</string>
+    <string name="settings_quick_new_title">New quick command</string>
+    <string name="settings_quick_new_dialog_summary">One line is enough: what should this quick command do. The model picks the name and writes the steps, and it shows up on this page once it is written</string>
+    <string name="settings_quick_new_hint">For example: move this week\'s meetings to the morning</string>
+    <string name="settings_quick_create">Let the model write it</string>
+    <string name="settings_quick_action_summary">Run: hand it to the current conversation (a new one when there is none) and the model follows it. Delete: removes the file, with no way back</string>
+    <string name="settings_quick_run">Run this one</string>
+    <string name="settings_quick_delete">Delete this one</string>
+    <string name="settings_quick_run_sentence">用快捷指令: %1$s</string>
+    <string name="settings_quick_create_prompt">请把下面这件事做成一条快捷指令, 用 lw_quick op=write 写进 quick-commands, 名字你起一个短的中文名, 正文只写工作流 (先加载哪个技能, 再一步一步做什么): %1$s</string>
+    <string name="settings_quick_sent">Handed over: it joins the current conversation, opens one when there is none, or steers the turn already running</string>
+    <string name="settings_quick_send_failed">It could not be handed over (the queue file is not writable), so nothing reached the conversation</string>
+    <string name="settings_quick_deleted">Deleted "%1$s"</string>
+    <string name="settings_quick_delete_failed">"%1$s" was not deleted: the file is gone or could not be removed</string>
+    <string name="settings_quick_note">A tap hands the command to the conversation; the queue is the voice one, so "no conversation means a new one, and twenty minutes stays in the same one" still holds</string>
+
     <string name="screen_window_hide">Hide the screen window</string>
     <string name="screen_window_show">Show the screen window</string>
 
     <string name="exit_hint_again">Press back again to exit</string>
 
     <string name="settings_section_permissions">Permissions</string>
+    <string name="settings_section_permissions_summary">Whether each ability works right now</string>
     <string name="settings_permissions_summary">These permissions are switched on and off by the user, and DSH-LW is free to build on them.</string>
     <string name="settings_permission_granted">Granted</string>
     <string name="settings_permission_denied">Not granted</string>
@@ -264,8 +375,4 @@
 
     <string name="notification_channel_tools">Tool notifications</string>
     <string name="notification_channel_tools_description">Notifications the model posts with lw_notify</string>
-
-    <string name="destructive_confirm_title">Confirm this</string>
-    <string name="destructive_confirm_hint">This runs only if you tap OK; waiting %1$d seconds</string>
-    <string name="destructive_confirm_ok">OK</string>
 </resources>

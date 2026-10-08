@@ -68,6 +68,14 @@ internal object VoiceInbox {
      */
     const val SOURCE_BALL = "ball"
 
+    /**
+     * 快捷指令那两条路写进来的 (2.5.0 批次 7): 设置页点一下, 或者点「新建」投一段创建提示词
+     *
+     * 它也不是主人随口说的一句, 而是**从一个文件 / 一个按钮来的工作流请求** —— 投递去向与语音、键盘
+     * 完全一样 (当前会话没有就新建, 20 分钟内接同一场), 分一个来源只为了排查时看得出这一句是哪来的
+     */
+    const val SOURCE_QUICK = "quick"
+
     /** 超过这个大小就从尾部留 [KEEP_LINES] 行重写: 上千句话才可能走到, 到了也不该无限涨 */
     private const val CAP_BYTES = 1 shl 20
     private const val KEEP_LINES = 200

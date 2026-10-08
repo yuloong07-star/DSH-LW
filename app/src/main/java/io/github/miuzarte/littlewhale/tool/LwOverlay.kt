@@ -277,6 +277,13 @@ internal object LwOverlay {
             put("attached", OverlayState.channelAttached)
             put("channelHeight", OverlayState.channelHeight)
             put("peeked", OverlayState.peeked)
+            // **三块窗各自在哪儿 + 这一屏多大** (2026-10-08 加的): 主人报的"横竖屏切换时文本框与球
+            // 极大偏移、球消失"只有坐标说得清。规格 `x;y;宽;高` (屏幕自身像素), 与 lw_screenshot 那套
+            // 坐标同一个口径 —— 转屏前后各读一次, "偏到哪儿去了"就是两个数的差
+            put("screen", OverlayState.screen ?: "")
+            put("ballRect", OverlayState.ballRect ?: "")
+            put("stripRect", OverlayState.stripRect ?: "")
+            put("boxRect", OverlayState.boxRect ?: "")
             // 收边那几道闸的读数 (为什么没收边, 这几个数一起看)
             put("ballPhase", OverlayState.ballPhase)
             put("dragging", OverlayState.dragging)

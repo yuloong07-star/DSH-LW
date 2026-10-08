@@ -21,7 +21,46 @@
     <string name="settings_restart_host">重启 DSH host</string>
     <string name="settings_restart_host_summary">改了 host 读一次的东西 (工作区落在哪、局域网开关) 之后点它</string>
 
+    <string name="settings_menu_update">检测更新</string>
+    <string name="settings_menu_donate">捐赠</string>
+    <string name="settings_menu_donate_summary">打开随包的捐赠页</string>
+    <string name="settings_menu_about">关于</string>
+    <string name="settings_close">关闭</string>
+
+    <string name="settings_group_common">常用</string>
+    <string name="settings_group_ability">能力</string>
+    <string name="settings_section_expand">展开这一段</string>
+    <string name="settings_section_collapse">收起这一段</string>
+
+    <string name="settings_section_power">省电</string>
+    <string name="settings_section_power_summary">省电的时候关掉什么</string>
+    <string name="settings_power_state_idle">没在省电: 唤醒词按「唤醒词」那一段的许可守着</string>
+
+    <string name="settings_about_title">关于 LittleWhale</string>
+    <string name="settings_about_version">版本 %1$s (%2$d)</string>
+    <string name="settings_about_update">检测更新</string>
+    <string name="settings_about_update_summary">读 GitHub 上最新那条 Release 的版本号比一比</string>
+    <string name="settings_about_source">更新源</string>
+    <string name="settings_about_source_default">用缺省那一条</string>
+    <string name="settings_about_donate">捐赠</string>
+
+    <string name="settings_update_title">检测更新</string>
+    <string name="settings_update_summary">只查不装: 查到新版本就打开浏览器, 装不装由你决定</string>
+    <string name="settings_update_checking">正在查 %1$s ...</string>
+    <string name="settings_update_latest">已经是最新的 (%1$s)</string>
+    <string name="settings_update_newer">有新版本 %1$s, 手上是 %2$s</string>
+    <string name="settings_update_failed">没查到: %1$s</string>
+    <string name="settings_update_published">发布于 %1$s</string>
+    <string name="settings_update_apk">安装包 %1$s, 约 %2$s</string>
+    <string name="settings_update_open">去下载</string>
+    <string name="settings_update_retry">重试</string>
+
+    <string name="settings_source_title">更新源</string>
+    <string name="settings_source_summary">GitHub Release 的 API 地址, 例如 %1$s; 留空就回到缺省</string>
+    <string name="settings_donate_title">捐赠</string>
+
     <string name="settings_section_appearance">外观</string>
+    <string name="settings_section_appearance_summary">深浅色、主题色与圆角</string>
     <string name="settings_theme_follow_system">跟随系统</string>
     <string name="settings_theme_light">浅色</string>
     <string name="settings_theme_dark">深色</string>
@@ -37,6 +76,7 @@
     <string name="settings_squircle_summary">在圆角 UI 元素上使用平滑的圆角矩形</string>
 
     <string name="settings_section_navigation">导航</string>
+    <string name="settings_section_navigation_summary">返回手势与页面过渡</string>
     <string name="settings_transition">过渡风格</string>
     <string name="settings_transition_summary">页面过渡动画样式</string>
     <string name="settings_transition_miuix">Miuix</string>
@@ -45,6 +85,7 @@
     <string name="settings_swipe_back_summary">滑动已推入的页面以返回</string>
 
     <string name="settings_section_channel">特权通道</string>
+    <string name="settings_section_channel_summary">动屏幕的能力都要靠它</string>
     <string name="settings_channel_reading">读取中...</string>
     <string name="settings_channel_connected">已连接: %1$s, uid %2$d</string>
     <string name="settings_channel_disconnected">未连接 (%1$s)</string>
@@ -57,17 +98,22 @@
     <string name="settings_channel_connecting">连接中...</string>
 
     <string name="settings_section_accessibility">无障碍</string>
+    <string name="settings_section_accessibility_summary">读屏上的字与它们的位置</string>
     <string name="settings_accessibility">允许 DSH 通过无障碍服务读取屏幕内容</string>
     <string name="settings_accessibility_summary">启用后, 模型直接能读到屏幕上每个控件的文字与精确位置</string>
     <string name="settings_accessibility_manual">跳转到无障碍设置</string>
 
     <string name="settings_section_notifications">通知</string>
+    <string name="settings_section_notifications_summary">读通知栏, 也发通知</string>
     <string name="settings_notifications">允许 DSH 读取通知栏</string>
     <string name="settings_notifications_summary">启用后, 模型能列出通知栏里有什么并把它清掉; 打开它也是"通知能越过锁屏弹成横幅"的前提</string>
     <string name="settings_notifications_manual">跳转到通知使用权设置</string>
     <string name="settings_notifications_banner">跳转到全屏通知设置</string>
 
     <string name="settings_section_screenshot">截图</string>
+    <string name="settings_section_screenshot_summary">一张图缩到多大再交给模型</string>
+    <string name="settings_screenshot_auto">指代不明时自动截图</string>
+    <string name="settings_screenshot_auto_summary">你说「这个」「这张图」「屏幕上」「照片里」这类话时, 投递前自动附一张主屏截图 (视频模式除外)</string>
     <string name="settings_screenshot_budget">截图预算</string>
     <string name="settings_screenshot_budget_summary">将截图缩放到这个像素数以内再交给模型</string>
     <string name="settings_budget_low">低 (%1$d)</string>
@@ -78,6 +124,10 @@
     <string name="settings_screenshot_bytes_dialog">单位是 KiB, 打字可以给到 %2$d; 超过滑块上限 %1$d 的值要先把 settings.yaml 里的 imageMaxBytes 一起调上去</string>
 
     <string name="settings_section_look">视频识别</string>
+    <string name="settings_section_look_summary">视频模式里取几张、隔多久</string>
+    <string name="settings_look_owner">视频模式占用</string>
+    <string name="settings_look_owner_free">没有会话占着相机: 取景与切视频模式都不会被拦</string>
+    <string name="settings_look_owner_busy">会话 %1$s 从 %2$s 起占着相机; 点这一行强制释放</string>
     <string name="settings_look_interval">每张截图间隔</string>
     <string name="settings_look_interval_summary">两张之间隔 %1$d ms; 抓一张本身要两百到四百毫秒, 所以这是要的那个数, 不是做到的那个数</string>
     <string name="settings_look_interval_dialog">单位是毫秒, %1$d 到 %2$d</string>
@@ -93,14 +143,15 @@
     <string name="settings_look_note">这几条给的是视频模式那台相机的应用这一半: 抓几张、隔多久、多大、要不要拼成一张网格。路由那一半 (imagePixelBudget 与 imageMaxBytes) 在 dsh 自己的 settings.yaml 里, 超过预算的图会在 host 那边重新编码一次再交给模型</string>
 
     <string name="settings_section_ocr">OCR</string>
+    <string name="settings_section_ocr_summary">从像素里读字</string>
     <string name="settings_ocr_backend">计算单元: %1$s</string>
     <string name="settings_ocr_probe">自检</string>
     <string name="settings_ocr_probe_busy">自检...</string>
 
     <string name="mode_phone">手机模式</string>
     <string name="mode_video">视频模式</string>
-    <string name="mode_screen">识屏模式</string>
     <string name="settings_section_wake">唤醒词</string>
+    <string name="settings_section_wake_summary">喊一声就开始听</string>
     <string name="settings_wake_status">监听状态</string>
     <string name="settings_wake_state_listening">正在听「%1$s」; 喊一声或者点一下浮标就听你说一句</string>
     <string name="settings_wake_state_voice">正在听「%1$s」, 常驻语音也在跑 (视频模式要的那一档, 说完一句接着听)</string>
@@ -133,6 +184,8 @@
     <string name="settings_wake_power_window_hint">23:00-07:00</string>
     <string name="settings_wake_power_window_bad">看不懂这个写法; 要的是 23:00-07:00 这种一段 (小时 0-23, 分钟 0-59)</string>
     <string name="settings_wake_power_window_empty">起止相同等于空窗, 那样永远不省电; 换个时间, 或者清空这一行关掉定时</string>
+    <string name="settings_wake_power_save_automation">省电时连自动指令的监测一起停</string>
+    <string name="settings_wake_power_save_automation_summary">只停费电的那几种 (天气、地点、前台应用), 通知与时间照旧; 自动指令那一批落地后生效</string>
     <string name="settings_wake_need_model">唤醒词模型还没下, 用下面那一行「下载唤醒词模型」</string>
     <string name="settings_wake_action">叫醒之后</string>
     <string name="settings_wake_action_summary">命中那一下除了震一下、响一声、把界面叫起来, 还要不要顺手做一件事; 「切模式」那两条走的是与说出来一样的那条命令路 (命令词表只有一份, 在宿主那一侧)</string>
@@ -144,8 +197,13 @@
     <string name="wake_badge_listening">正在听</string>
     <string name="wake_badge_stop">点一下关掉</string>
     <string name="settings_section_ball">浮标</string>
+    <string name="settings_section_ball_summary">一颗球, 点一下说话</string>
     <string name="settings_ball_on">浮标一直在</string>
     <string name="settings_ball_on_summary">开着时屏幕上留一颗小球: 点一下说话, 长按出菜单, 拖到边上收进去; 它要「显示在其他应用上层」那条权限, 缺了会把缺哪一条说出来</string>
+    <string name="settings_ball_feel">手势灵敏度</string>
+    <string name="settings_ball_feel_summary">长按要按多久、抖多少算拖动、三击要戳多快; 现在: %1$s</string>
+    <string name="settings_ball_feel_standard">标准</string>
+    <string name="settings_ball_feel_guard">防误触</string>
     <string name="settings_ball_state_up">球在屏幕上, 停在%1$s</string>
     <string name="settings_ball_state_down">球现在不在屏幕上</string>
     <string name="settings_ball_permission">缺「显示在其他应用上层」这条权限, 上面那个开关打开也不会出现</string>
@@ -171,20 +229,17 @@
     <string name="ball_state_speaking">正在说</string>
     <string name="ball_menu_title">浮标 · %1$s</string>
     <string name="ball_menu_return">返回应用</string>
-    <string name="ball_menu_screen_on">识屏模式: 开</string>
-    <string name="ball_menu_screen_off">识屏模式: 关</string>
+    <string name="ball_menu_release_camera">释放视频模式</string>
     <string name="ball_menu_close">关掉浮标</string>
     <string name="ball_voice_stopped">这一句不听了, 再点一下又开始</string>
     <string name="ball_voice_stop_failed">没停下来: 那个前台服务没接住这条命令</string>
-    <string name="ball_mode_no_host">host 还没起来, 切模式这句话投不出去</string>
     <string name="ball_ask_no_host">host 还没起来, 这句先排着, 等它起来才送得出去</string>
-    <string name="ball_mode_cannot_queue">收件箱写不进去, 这句话没发出去</string>
-    <string name="ball_mode_asked">已经让它切到%1$s</string>
     <string name="ball_speak_no_model">唤醒词模型还没下, 先用设置页那一行「下载唤醒词模型」</string>
     <string name="ball_speak_speaking">正在说话, 先不听</string>
     <string name="ball_speak_failed">起常驻语音失败: %1$s</string>
     <string name="ball_interrupt_failed">打断没发出去: 收件箱写不进去</string>
     <string name="settings_section_speak">说话</string>
+    <string name="settings_section_speak_summary">回答怎么念出来</string>
     <string name="settings_speak_auto">说话回答</string>
     <string name="settings_speak_auto_summary">开着时每一轮回答落定就自己说出来; 关掉之后它不会自己出声, 而点名要说一句 (lw_speak) 与下面那个试听照旧</string>
     <string name="settings_speak_stop">停止</string>
@@ -249,12 +304,68 @@
     <string name="settings_speak_preview_summary">用上面选的音色与语速说一句, 好让耳朵来定</string>
     <string name="settings_speak_sample">回答会以这个样子说出来。</string>
 
+    <string name="settings_section_lock">锁屏</string>
+    <string name="settings_section_lock_summary">熄屏也能叫醒, 叫醒之后按你自己的解锁动作走一遍</string>
+    <string name="settings_lock_wake_screen">叫醒时点亮屏幕</string>
+    <string name="settings_lock_wake_screen_summary">熄屏时也听得见唤醒词; 不开这一条, 那一次命中就落在黑屏里。有特权通道就先走通道 (KEYCODE_WAKEUP), 其次是应用自己的电源锁, 全屏通知是最后一条</string>
+    <string name="settings_lock_auto_unlock">唤醒时自动解锁</string>
+    <string name="settings_lock_auto_unlock_summary">屏幕亮了之后, 把录下来的那一条走一遍 —— 于是喊一声就能到桌面。这等于把解锁密码交给本应用: 指纹与人脸第三方代不了, 图案只是实验性支持。缺省关着; 每次重放都在通知栏留一行, 连着失败三次就自己关掉</string>
+    <string name="settings_lock_record">录制解锁</string>
+    <string name="settings_lock_record_none">还没录过; 点它对着锁屏走一遍你自己的解锁</string>
+    <string name="settings_lock_record_done">%1$d 步, 装于 %2$s; 密码那一格放着 %3$s</string>
+    <string name="settings_lock_record_running">正在录: 请在手机上走一遍解锁 (已经录到 %1$d 步)</string>
+    <string name="settings_lock_record_dialog">录制解锁</string>
+    <string name="settings_lock_record_dialog_summary">这台手机有密码或 PIN 就先打在这里 (只有滑动锁就留空)。按下去之后应用会把屏锁上, 然后请对着锁屏走一遍平时那套解锁动作 —— 解开了它自己收工。**敲密码那几个点击一个字都不录**: 第一次点击起的东西整段丢掉, 改由这里填的这一份负责, 而它是用 Keystore 加密存的, 明文不落盘</string>
+    <string name="settings_lock_record_start">锁上屏幕并开始录</string>
+    <string name="settings_lock_script">导入解锁脚本</string>
+    <string name="settings_lock_script_none">不想走一遍就用脚本写出来; 框里先给一份模板</string>
+    <string name="settings_lock_script_done">现在是 %1$d 步; 点它就能把这一条当脚本看, 改完再放回去</string>
+    <string name="settings_lock_script_dialog">导入解锁脚本</string>
+    <string name="settings_lock_script_dialog_summary">一行一步, 空行与 # 后面的内容都忽略。动词一共六个: key / tap / swipe / stroke / text / wait —— 比如 "swipe 0.5 0.85 0.5 0.2 700"。坐标是 0~1 的比例而不是像素, 所以写 540 1200 会被拒。text 是"这里要输密码"的意思, **它不带参数**: 密码一个字都不写在脚本里, 从下面那一格进加密那一份。导入会替掉之前录的或导的那一条</string>
+    <string name="settings_lock_script_password">密码 / PIN (脚本里有 text 那一步才要填)</string>
+    <string name="settings_lock_script_confirm">导入</string>
+    <string name="settings_lock_imported">导入了 %1$d 步: %2$s</string>
+    <string name="settings_lock_import_failed">什么都没导入: %1$s</string>
+    <string name="settings_lock_replay">测试一次</string>
+    <string name="settings_lock_replay_summary">点亮屏幕, 把录的那一条走一遍, 然后如实说走到第几步</string>
+    <string name="settings_lock_replay_running">正在试...</string>
+    <string name="settings_lock_clear">清除录制</string>
+    <string name="settings_lock_clear_summary">步骤序列 / 工作区里那份明文副本 / 加密的密码与那把 Keystore 密钥, 一起删</string>
+    <string name="settings_lock_cleared">录制已经删掉, 加密的密码也连着那把 Keystore 密钥一起走了</string>
+    <string name="settings_lock_note_none">还没试过。录制里只留动作: 密码进加密那一格, 而"敲密码那几个点击"是有意丢掉的</string>
+
+    <string name="settings_section_automation">自动指令</string>
+    <string name="settings_section_automation_summary">满足条件就做一件事 (提醒一声, 或者开一场会话干活)</string>
+    <string name="settings_automation_placeholder">还没做: 条件触发式的指令排在 2.5.0 的第 8 批, 这一版先把位置留出来</string>
+
+    <string name="settings_section_quick">快捷指令</string>
+    <string name="settings_section_quick_summary">点一下就交给模型去跑的那几条工作流, 一条一个 md 文件</string>
+    <string name="settings_quick_empty">还没有快捷指令。存在这里: %1$s; 点下面的「新建」说一句要做什么, 模型会把它写成一条</string>
+    <string name="settings_quick_no_summary">(没有摘要行)</string>
+    <string name="settings_quick_new">新建一条快捷指令</string>
+    <string name="settings_quick_new_summary">说一句这条要做什么, 正文交给模型写</string>
+    <string name="settings_quick_new_title">新建快捷指令</string>
+    <string name="settings_quick_new_dialog_summary">只要一行: 这条快捷指令要做什么。名字与步骤由模型写, 写完这一页就能看见它</string>
+    <string name="settings_quick_new_hint">例如: 帮我把这周的会排到上午</string>
+    <string name="settings_quick_create">交给模型写</string>
+    <string name="settings_quick_action_summary">运行: 把它投进当前会话 (没有会话就新建一场), 模型照着它走。删除: 只删掉这个文件, 不可恢复</string>
+    <string name="settings_quick_run">运行这一条</string>
+    <string name="settings_quick_delete">删除这一条</string>
+    <string name="settings_quick_run_sentence">用快捷指令: %1$s</string>
+    <string name="settings_quick_create_prompt">请把下面这件事做成一条快捷指令, 用 lw_quick op=write 写进 quick-commands, 名字你起一个短的中文名, 正文只写工作流 (先加载哪个技能, 再一步一步做什么): %1$s</string>
+    <string name="settings_quick_sent">已经投出去了: 当前会话没有就新建一场, 正在跑就插进这一轮</string>
+    <string name="settings_quick_send_failed">没能投出去 (队列文件写不进去), 这一条没有送进会话</string>
+    <string name="settings_quick_deleted">已经删掉「%1$s」</string>
+    <string name="settings_quick_delete_failed">「%1$s」没删掉: 文件不在或者删不动</string>
+    <string name="settings_quick_note">点一条 = 投进会话; 队列文件与语音那条链是同一个, 所以"没有会话就新建、20 分钟内接同一场"照旧</string>
+
     <string name="screen_window_hide">隐藏虚拟屏小窗</string>
     <string name="screen_window_show">显示虚拟屏小窗</string>
 
     <string name="exit_hint_again">再按一次退出</string>
 
     <string name="settings_section_permissions">权限</string>
+    <string name="settings_section_permissions_summary">每条能力现在能不能用</string>
     <string name="settings_permissions_summary">此权限由用户自行开关，可供DSH-LW自由开发。</string>
     <string name="settings_permission_granted">已允许</string>
     <string name="settings_permission_denied">未允许</string>
@@ -264,8 +375,4 @@
 
     <string name="notification_channel_tools">工具通知</string>
     <string name="notification_channel_tools_description">模型用 lw_notify 发出来的通知</string>
-
-    <string name="destructive_confirm_title">要确认一下</string>
-    <string name="destructive_confirm_hint">不点就不执行, 等 %1$d 秒</string>
-    <string name="destructive_confirm_ok">确定</string>
 </resources>

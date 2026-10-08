@@ -36,7 +36,9 @@ $screenW, $screenH = ($size -split 'x') | ForEach-Object { [int]$_ }
 $density = [int]((Sh 'wm density' | Select-Object -Last 1) -replace '.*: ', '')
 $ball = [int][Math]::Round(48 * $density / 160)
 $half = [int][Math]::Round($ball * 0.5)
-$boxWidth = 650
+# 通道那块框的宽度: 2026-10-08 起是 734 px, 而窄屏上按屏宽的 62% 收窄 (与 BallBox.widthFor 同一套)
+# —— 1080 宽的屏上量到的因此是 669, 不是 734
+$boxWidth = [Math]::Min(734, [int]($screenW * 0.62))
 
 function BallFrame {
     $out = Sh 'dumpsys window windows'
@@ -145,16 +147,16 @@ if (-not $NoTap) {
     Judge "碰一下要滑回来" $docked "又回到了屏幕里 (frame=[$($back.Left),$($back.Top)]-[$($back.Right),$($back.Bottom)])"
 }
 
-# 4. 输入通道: 开它、量那 650 px、回车发送、框外双击才收
+# 4. 输入通道: 开它、量那一块框的宽 (734 / 窄屏 62%)、回车发送、框外双击才收
 if (-not $NoTap) {
     Write-Output ''
-    Write-Output '-- 输入通道 (650 px / 回车发送 / 框外双击才收)'
+    Write-Output "-- 输入通道 ($boxWidth px (屏宽 $screenW 那一档) / 回车发送 / 框外双击才收)"
     Call '{"op":"channel"}' | Out-Null
     Start-Sleep -Milliseconds 1200
     $box = ChannelFrame
     Judge "通道那块窗挂上了" ($null -ne $box) 'dumpsys 里找得到那块可获焦的 overlay 窗'
     if ($box) {
-        Judge "宽度就是 650 px" ($box.W -eq $boxWidth) "量到 $($box.W) px"
+        Judge "宽度是这一屏该有的那个数 (734 或屏宽 62%)" ($box.W -eq $boxWidth) "量到 $($box.W) px, 期望 $boxWidth px"
         Write-Output ("   frame=[{0},{1}]-[{2},{3}]  高 {4} px" -f $box.Left, $box.Top, $box.Right, $box.Bottom, $box.H)
     }
 

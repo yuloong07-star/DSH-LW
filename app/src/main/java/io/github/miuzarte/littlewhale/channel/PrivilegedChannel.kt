@@ -20,7 +20,6 @@ data class ChannelState(
 data class ChannelProbe(
     val state: ChannelState,
     val inputDevices: String?,
-    val touch: TouchState?,
     /** The device's Android users, as the platform lists them, for telling a clone from its original */
     val users: String? = null,
 )
@@ -133,19 +132,11 @@ object PrivilegedChannel {
     /** Connect if needed, then read what only the privileged side can see */
     fun probe(): ChannelProbe {
         val current = ensure()
-        if (current == null) return ChannelProbe(state(), null, null)
+        if (current == null) return ChannelProbe(state(), null)
         val devices = try {
             current.inputDevices()
         } catch (error: Throwable) {
             drop("reading the input devices failed", error)
-            null
-        }
-        // Asked after the devices rather than before: the touch watch finds its node by reading the
-        // same `getevent -p` output, so this is the call that brings it up when nothing else has
-        val touch = try {
-            current.touchState()
-        } catch (error: Throwable) {
-            Log.w(TAG, "reading the touch watch failed", error)
             null
         }
         // A device with a cloned app has more than one user, and that is the only thing that
@@ -156,7 +147,7 @@ object PrivilegedChannel {
             Log.w(TAG, "reading the device's users failed", error)
             null
         }
-        return ChannelProbe(state(), devices, touch, users)
+        return ChannelProbe(state(), devices, users)
     }
 
     /** Release the privileged process and forget it */

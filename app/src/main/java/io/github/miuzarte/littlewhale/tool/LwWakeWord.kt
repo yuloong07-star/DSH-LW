@@ -94,6 +94,13 @@ internal object LwWakeWord {
     private const val POWER_SAVE_KEY = "wake-power-save"
 
     /**
+     * **省电时连自动指令的监测一起停** (第 15 条, 批次 2 先落位)
+     *
+     * 与上面那个省电开关挨着放, 因为它是同一个"省电"的第三条; 真正读它的是批次 8 那几个监测器
+     */
+    private const val POWER_SAVE_AUTOMATION_KEY = "wake-power-save-automation"
+
+    /**
      * **定时省电那一段**: `23:00-07:00` 这种一句, 空 = 没开定时
      *
      * 主人 2026-10-07 点名的形状 ("定时开关, 设置页就行, 由用户自己定时间"): 到点自己进省电模式,
@@ -294,6 +301,21 @@ internal object LwWakeWord {
     internal fun setPowerSave(context: Context, on: Boolean) {
         prefs(context).edit().putBoolean(POWER_SAVE_KEY, on).apply()
         refresh(context)
+    }
+
+    /**
+     * 省电时要不要连**自动指令的监测**一起停 (缺省开, 第 15 条)
+     *
+     * 语义按开发计划 2.15 那一节: 停的是**费电的那几种** (天气 / 地点 / 前台应用那几个轮询器),
+     * 系统事件类的 (通知 / 时间 / 光感) 保留 —— 后者几乎不吃电, 而"到点了提醒我"正是省电时段里最
+     * 需要的那一条。**这个开关此刻还不驱动任何东西**: 自动指令在批次 8 才落地, 这里先把主人的选择
+     * 记下来, 那一批直接读它
+     */
+    internal fun powerSaveAutomation(context: Context): Boolean =
+        prefs(context).getBoolean(POWER_SAVE_AUTOMATION_KEY, true)
+
+    internal fun setPowerSaveAutomation(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean(POWER_SAVE_AUTOMATION_KEY, on).apply()
     }
 
     /** 定时省电那一段的原文 (`23:00-07:00`; 空 = 没开) —— 设置页那一行就显示它 */

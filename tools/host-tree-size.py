@@ -1,4 +1,7 @@
-"""Group the entries of the shipped host tree by package, so trimming has numbers."""
+"""Group the entries of the shipped host tree by package, so trimming has numbers.
+
+用法: python tools/host-tree-size.py <path/to/host.zip>     (要裁体积之前先拿它出一组数)
+"""
 import collections
 import os
 import sys

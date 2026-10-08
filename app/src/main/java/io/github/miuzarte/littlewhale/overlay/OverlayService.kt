@@ -39,6 +39,7 @@ import androidx.core.view.WindowInsetsCompat
 import java.io.File
 import io.github.miuzarte.littlewhale.MainActivity
 import io.github.miuzarte.littlewhale.R
+import io.github.miuzarte.littlewhale.channel.CameraOwner
 import io.github.miuzarte.littlewhale.channel.LwModes
 import io.github.miuzarte.littlewhale.host.BallReturn
 import io.github.miuzarte.littlewhale.host.DshHost
@@ -192,6 +193,27 @@ internal object OverlayState {
     /** 那块框现在多高 (px), 0 = 还没量到 */
     @Volatile
     var channelHeight: Int = 0
+
+    /**
+     * 三块窗现在各自占的矩形与这一屏的尺寸, 规格都是 `x;y;宽;高` / `宽x高` (屏幕自身像素)
+     *
+     * **2026-10-08 加的**: 主人报的"横竖屏切换时文本框与球极大偏移、球消失"只有坐标说得清 —— 靠眼睛
+     * 只能看出"不对", 而这三个数把"偏到哪儿去了"变成一条可直接读的证据 (见 OverlayService.noteRects)
+     */
+    @Volatile
+    var screen: String? = null
+
+    /** 球窗现在的位置与尺寸 */
+    @Volatile
+    var ballRect: String? = null
+
+    /** 输入条 (那条 WebView) 现在的位置与尺寸 */
+    @Volatile
+    var stripRect: String? = null
+
+    /** 输入通道那块框现在的位置与尺寸 */
+    @Volatile
+    var boxRect: String? = null
 
     /** 球自己那一档 (RESTED / SUMMONED / VOICE): 收边那几道闸的读数之一 */
     @Volatile
@@ -351,6 +373,23 @@ class OverlayService : Service() {
      * [BallTap.TOO_SOON] 那一支不动这两个数 (连击里"太近"的一下按没算过处理)
      */
     private var tapChain = 0
+
+    /**
+     * 这一串连击**头一下**的时刻 (0 = 还没开始)
+     *
+     * 与 [tapChain] 一起喂给 [BallTaps.kind]: 三击看的是**整串的总时长** ([BallMinutes.TRIPLE_SPAN_MS]),
+     * 只看相邻两下的话"一下一下慢慢戳三下"也算三击 —— 而三击要开的是一块盖住半屏的输入框, 那是这套
+     * 手势里最值得防的一处误触 (2026-10-08)
+     */
+    private var chainFrom = 0L
+
+    /**
+     * 上一次拖动**松手**是什么时候 (0 = 还没有过)
+     *
+     * 防误触那一条 (2026-10-08): 松手会吸附到边上, 而人常常在松手之后又补一下 —— 那一下不该算单击
+     * (算了就会在刚放好的位置上开口说话), 判据是纯函数 [BallMinutes.tapAfterDropIsFresh]
+     */
+    private var lastDropAt = 0L
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -547,14 +586,89 @@ class OverlayService : Service() {
     }
 
     /**
-     * 转屏 / 换分辨率: 按存盘那条边把球摆回该在的地方
+     * 转屏 / 换分辨率: **三块窗一起重摆** (2026-10-08 修的那一条)
      *
-     * 存的是「边 + y」而不是 x, 就是为这一刻 —— 横过来之后右边那个 x 是另一个数
+     * 2026-10-08 主人报的: "横竖屏切换时, 文本框和 ball 会发生极大偏移, ball 消失"。病灶是三块窗的
+     * 几何来源不统一 —— 球是每屏重算的 ([replace] 按存盘那条边算), 而**输入条与文本框的尺寸只在创建
+     * 那一刻算过一次** ([expand] / [openChannel]), 转屏之后窗口管理器不会替它们重算: 竖屏算出来的那条
+     * 2400 高的输入条横过来还是 2400 高, 于是整块跑到屏外; 球那条"消失"是同一件事的另一面 —— 半隐
+     * ([peek]) 的账与窗口坐标在转屏那一刻没对上, 而 `FLAG_LAYOUT_NO_LIMITS` 允许窗口留在屏外
+     *
+     * 所以现在是 [relayoutAll] 一个出口, 而且**补一拍**: 转屏是异步的 (窗口树常常要两拍才稳), 立刻做
+     * 一次、[ROTATE_SETTLE_MS] 之后再对一次账
      */
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        runCatching { replace() }
+        runCatching { relayoutAll(force = true) }
+        handler.postDelayed({ runCatching { relayoutAll(force = true) } }, ROTATE_SETTLE_MS)
         runCatching { refresh(force = true) }
+    }
+
+    /**
+     * 按**现在**这块屏把三块窗重摆一遍
+     *
+     * 顺序是刻意的: 先把球按存盘那条边摆好 (它是文本框的基准), 再让输入条与文本框跟着算
+     *
+     * [force] 为真时连"当前这一屏没变"也照样重摆: 转屏那两拍之间 `displayMetrics` 可能还是旧值,
+     * 而两拍都要各做一次真的重摆 —— 少一次就会留下一次用旧值算出来的位置
+     */
+    private fun relayoutAll(force: Boolean = false) {
+        val metrics = resources.displayMetrics
+        if (!force && metrics.widthPixels == lastWidth && metrics.heightPixels == lastHeight) return
+        lastWidth = metrics.widthPixels
+        lastHeight = metrics.heightPixels
+        // 半隐与拖动都归零: 转屏之后"收着的那一半"没有意义, 而留着这个记号会让 [applyBallPosition]
+        // 把一个用旧屏宽算出来的半隐偏移再画一次 (球就是这么"消失"的)
+        snap?.cancel()
+        snap = null
+        peeked = false
+        ballDragging = false
+        ballView?.alpha = 1f
+        replace()
+        reflowStrip()
+        layoutChannel()
+        noteRects()
+    }
+
+    /**
+     * 输入条按现在这块屏重算尺寸与停靠位
+     *
+     * 它**不重载页面**: WebView 交给窗口管理器的是 MATCH_PARENT, 窗口大小一变自己就跟着重排 —— 那条
+     * 显式 `layoutParams` 的规矩见 AGENTS.md (少了它 viewport unit 全解析成 0)
+     */
+    private fun reflowStrip() {
+        val layout = stripParams ?: return
+        val view = stripView ?: return
+        val metrics = resources.displayMetrics
+        val margin = dp(MARGIN_DP)
+        layout.width = StripSpot.width(metrics.widthPixels, margin)
+        layout.height = StripSpot.height(metrics.heightPixels, margin, DEFAULT_HEIGHT_PERCENT)
+        layout.x = StripSpot.x(margin)
+        stripBaseY = StripSpot.restY(metrics.heightPixels, layout.height, margin, dp(STRIP_LIFT_DP))
+        // 键盘那一层由 [applyIme] 统一算 (它读 [stripBaseY] 与 [imeBottom]), 这里只把它再叫一次
+        applyIme()
+        runCatching { window?.updateViewLayout(view, layout) }
+    }
+
+    /**
+     * `overlay op=state` 的三个读数: 三块窗各自在哪儿、这一屏多大
+     *
+     * 加它是因为 2026-10-08 那条转屏毛病**只有坐标说得清**: "极大偏移"到底是多偏、跑出去多少, 靠眼睛
+     * 只能看出"不对"。规格是 `x;y;宽;高` (与 `lw_screenshot` 那套坐标同一个口径, 都是**屏幕自身像素**)
+     */
+    private fun noteRects() {
+        val metrics = resources.displayMetrics
+        // **半隐那个记号也要在这里落一次** (2026-10-08): 它原来只在 [applyBallPosition] 里写, 而
+        // [peek] / [unpeek] 走的是 [moveX] 那条动画 (不经过 applyBallPosition) —— 于是 "球已经收进去
+        // 了, 而读数是 false"。排查那条转屏毛病时我自己就被这个滞后骗过一次, 所以凡是要摆窗的地方都
+        // 走这一条: 它读的是同一个字段, 只是把读数对齐到"刚刚做完那一下"
+        OverlayState.peeked = peeked
+        OverlayState.screen = "${metrics.widthPixels}x${metrics.heightPixels}"
+        // 球窗开的是 WRAP_CONTENT, 所以宽高取**量出来的** (params 里那两个数是 -2); 输入条与文本框那两块
+        // 是显式尺寸, 直接读 params (文本框的高仍是 WRAP_CONTENT, 取 measuredHeight)
+        OverlayState.ballRect = ballParams?.let { "${it.x};${it.y};${ballView?.width ?: 0};${ballView?.height ?: 0}" }
+        OverlayState.stripRect = stripParams?.let { "${it.x};${it.y};${it.width};${it.height}" }
+        OverlayState.boxRect = boxParams?.let { "${it.x};${it.y};${it.width};${boxRoot?.measuredHeight ?: 0}" }
     }
 
     /* ── 球 ───────────────────────────────────────────────────────────────── */
@@ -665,7 +779,15 @@ class OverlayService : Service() {
         override fun onTap() {
             // 先分手势 (单击 / 双击 / 三击 / 太近): 判据全在 [BallTaps.kind] 里, 这里只按它的答案动手
             val now = System.currentTimeMillis()
-            when (BallTaps.kind(lastWord, now, lastTapAt, tapChain)) {
+            // 手势有多严是设置页那一档的事 (见 [BallFeel]): 两条判据都跟着它走, 这里读一次就够
+            val feel = BallSpot.feel(this@OverlayService)
+            // **刚拖完的那一下不算** (2026-10-08 防误触): 那条账压在下面所有手势之前 —— 松手吸附之后
+            // 人常常再补一下, 而那一补要是被当成单击, 球就在刚放好的位置上开了口
+            if (BallMinutes.tapAfterDropIsFresh(now, lastDropAt, feel)) {
+                note("a tap ${now - lastDropAt}ms after a drop: not counting it as a click")
+                return
+            }
+            when (BallTaps.kind(lastWord, now, lastTapAt, tapChain, chainFrom, feel)) {
                 // **防连击** (主人 2026-10-06): 手指一抖点出两下时, 第一下已经把球召出来了, 紧接着的
                 // 第二下就会顺路进语音输入 —— 而那看着像"点一次直接开了语音"。所以两次点击之间要隔
                 // [BallTaps.guard] 那个窗口才算两下 (正在听那一档是主人点名的 1 s), 隔不够只记一次账
@@ -704,6 +826,8 @@ class OverlayService : Service() {
                 BallTap.SINGLE -> {
                     lastTapAt = now
                     tapChain = 1
+                    // 新的一串从这里开始: 三击那一段的总时长以这一刻起算
+                    chainFrom = now
                     // 那本"框外双击"的账在 onPressStart 已经清过了 (按下必到那一条), 这里不必再清
                     if (lastWord == BallWord.THINKING) {
                         // "正在想"里的**单点要等过双击窗口**: 不等的话双击的第一下会先把这个动作做掉
@@ -745,6 +869,7 @@ class OverlayService : Service() {
 
         override fun onDrop() {
             ballDragging = false
+            lastDropAt = System.currentTimeMillis()
             noteActivity()
             snapToEdge()
         }
@@ -996,6 +1121,8 @@ class OverlayService : Service() {
         OverlayState.y = ballBaseY
         // 半隐是"球收边了没有"那一条判据的读数 (窗口坐标差 63 px, 光看图很难分)
         OverlayState.peeked = peeked
+        // 球这一块的坐标也进那份读数: 拖完那一下要看得见它落在哪儿 (转屏那次则由 [noteRects] 一起写)
+        noteRects()
     }
 
     /**
@@ -1083,9 +1210,9 @@ class OverlayService : Service() {
         val metrics = resources.displayMetrics
         val margin = dp(MARGIN_DP)
         val width = intent?.getIntExtra(EXTRA_WIDTH, 0).orZero().takeIf { it > 0 }
-            ?: (metrics.widthPixels - margin * 2)
+            ?: StripSpot.width(metrics.widthPixels, margin)
         val height = intent?.getIntExtra(EXTRA_HEIGHT, 0).orZero().takeIf { it > 0 }
-            ?: (metrics.heightPixels * DEFAULT_HEIGHT_PERCENT / 100)
+            ?: StripSpot.height(metrics.heightPixels, margin, DEFAULT_HEIGHT_PERCENT)
         val layout = WindowManager.LayoutParams(
             width,
             height,
@@ -1096,9 +1223,9 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = intent?.getIntExtra(EXTRA_X, 0).orZero().takeIf { it > 0 } ?: margin
+            x = intent?.getIntExtra(EXTRA_X, 0).orZero().takeIf { it > 0 } ?: StripSpot.x(margin)
             y = intent?.getIntExtra(EXTRA_Y, 0).orZero().takeIf { it > 0 }
-                ?: (metrics.heightPixels - height - dp(140)).coerceAtLeast(margin)
+                ?: StripSpot.restY(metrics.heightPixels, height, margin, dp(STRIP_LIFT_DP))
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
         val view = stripView ?: buildStrip(url)
@@ -1394,7 +1521,7 @@ class OverlayService : Service() {
     }
 
     /**
-     * 菜单里那三行: 返回应用 / 识屏模式 / 关掉浮标
+     * 菜单里那两行: 返回应用 / 关掉浮标 (有人占着相机时中间多一行「释放视频模式」)
      *
      * **「返回应用」那一行是 2026-10-07 加回来的** (主人: "ball菜单里加上返回应用按钮"): 它是"回应用"
      * 的第二个入口 ([returnToApp]), 与**回复框上双击**同一个去向 —— 回复框点名优先, 否则浮标账本,
@@ -1403,8 +1530,9 @@ class OverlayService : Service() {
      * **「说话」那一行拿掉了** (主人 2026-10-06): 点球本来就是"点两次进语音输入", 菜单再放一个入口
      * 只是同一件事的第二扇门 —— 而点球那条路一直都在 ([BallTouch] 那几段)
      *
-     * **「识屏模式」那一行是新的** (主人 2026-10-06): 它按当前模式写着开或关, 点一下发一句命令句出去
-     * ([toggleScreenMode]) —— "开"就是"打开识屏模式", "关"就是"退出识屏模式"
+     * **「识屏模式」那一行 2026-10-08 拿掉了** (批次 4: 那个模式整个摘掉): 那块屏现在归手机模式管, 而
+     * "用户得先切一个模式, 模型才看得见屏"正是那一批要消掉的心智负担 —— 指代不明的那句话现在会在投递
+     * 前自动附一张主屏截图。模式名照旧写在标题上 ([modeName]), 说"打开/退出识屏模式"也照旧有人认
      *
      * **「键盘输入」那一行 2026-10-07 拿掉了** (主人: "加上三击 ball 打开键盘输入, ball 菜单的键盘
      * 输入可以删除") —— 同一个去向挪到**球上三击** ([tripleTap]), 菜单里不再有第二扇门
@@ -1417,13 +1545,39 @@ class OverlayService : Service() {
      *
      * **「一直听」那一行早就拿掉了** (2026-10-06): 它是"允许常驻语音"那个许可的入口, 而那条一直不收的
      * 识别链整个下线了。**模式那两行也拿掉了** (主人 2026-10-05: 默认手机模式, 长按菜单里不要模式选择
-     * 项) —— 现在菜单里那一行只管识屏那一档 (它本来就没有别的界面入口), 标题上那个模式名照旧写着
+     * 项) —— 从那以后菜单里只剩识屏那一档, 而它这一批也走了: 菜单现在只有"回应用"与"关掉浮标"两件事,
+     * 加上"有人占着相机"时那一行
      */
-    private fun menuEntries(): List<Pair<String, () -> Unit>> = listOf(
-        getString(R.string.ball_menu_return) to { closeMenu(); returnToApp() },
-        screenRowLabel() to { closeMenu(); toggleScreenMode() },
-        getString(R.string.ball_menu_close) to { closeMenu(); hideBall("menu") },
-    )
+    private fun menuEntries(): List<Pair<String, () -> Unit>> = buildList {
+        add(getString(R.string.ball_menu_return) to { closeMenu(); returnToApp() })
+        // 相机占用表那一行 (批次 3): **只在真的有人占着时出现** —— 平时它什么都不做, 而一个永远在那儿
+        // 的空行只会把菜单撑长。它是表卡住时手上最快的那条出口 (另一条在设置页「视频识别」段里)
+        if (CameraOwner.read(this@OverlayService) != null) {
+            add(getString(R.string.ball_menu_release_camera) to { closeMenu(); releaseCameraOwner() })
+        }
+        add(getString(R.string.ball_menu_close) to { closeMenu(); hideBall("menu") })
+    }
+
+    /**
+     * 菜单里那行「释放视频模式」: 把相机占用表删掉 (批次 3 的需求 3)
+     *
+     * 它**不碰相机本身**: 释放之后下一场取景会自己重新落账, 而"把摄像头还给系统"这件事仍然只由切回手机
+     * 模式那条路做 —— 表上那一笔账说的是"哪一场在用", 相机在后台本来就归本应用
+     *
+     * 读一次再删: 那一行只在有人占着时出现, 而回执要说清"放掉的是谁" (表卡住时人要知道是不是自己那一场)
+     */
+    private fun releaseCameraOwner() {
+        val owner = CameraOwner.read(this)
+        val released = CameraOwner.release(this)
+        note(
+            "release video mode from the menu: " + when {
+                owner == null -> "nobody was holding the camera"
+                released -> "released ${CameraOwner.short(owner.sessionId)}" +
+                    " (held since ${CameraOwner.clock(owner.since)})"
+                else -> "the table is still there (${CameraOwner.short(owner.sessionId)})"
+            },
+        )
+    }
 
     /**
      * 菜单里那行「返回应用」: **与双击回复框同一个去向**
@@ -1440,61 +1594,11 @@ class OverlayService : Service() {
     }
 
     /**
-     * 识屏那一行的字: **按当前模式说开还是关**
-     *
-     * 标签说的是"现在"，点一下切到对面 —— 与当年那行「一直听: 开·关」同一个写法。菜单每开一次都重建
-     * ([showMenu] 里现调 [menuEntries]), 所以这个数是打开那一刻的真相
-     */
-    private fun screenRowLabel(): String = getString(
-        if (LwModes.active(this) == LwModes.SCREEN) R.string.ball_menu_screen_on
-        else R.string.ball_menu_screen_off,
-    )
-
-    /**
-     * 识屏模式那个开关: 现在开着就发"退出识屏模式", 关着就发"打开识屏模式"
-     *
-     * **走的是与"说出来"同一条路** ([askMode] 把句子写进收件箱, 插件那侧认命令并切模式), 而不是应用
-     * 这一侧直接调 [LwModes.set] —— 主人的口径是"一句话全开", 两份实现迟早会漂 (见 [askMode] 那段)
-     */
-    private fun toggleScreenMode() {
-        val on = LwModes.active(this) == LwModes.SCREEN
-        askMode(
-            if (on) LwModes.PHONE else LwModes.SCREEN,
-            if (on) VoiceCommands.SCREEN_OFF else VoiceCommands.SCREEN,
-        )
-    }
-
-    /**
-     * 菜单里那几个模式: 写的是一句话, 走的是与"说出来"同一条路
-     *
-     * 为什么不在这里直接调 `LwModes`: 命令词表只有一份, 在宿主插件里 (可行性稿 2.7: 改词表不必重下
-     * 关键词表也不必重建 APK); 这里再写一遍就成了第二份实现, 两份迟早漂开
-     *
-     * [said] 是"这一下要发哪一句" —— 默认按模式挑那句规范句, 而识屏那一档**同一个模式要发两句**
-     * (开与关: 关那一句落在 `phone` 那一支里, 见 [toggleScreenMode]), 所以留了这个口子
-     */
-    private fun askMode(mode: String, said: String? = null) {
-        if (DshHost.status !is HostStatus.Running) {
-            hint(getString(R.string.ball_mode_no_host))
-            return
-        }
-        val line = said ?: when (mode) {
-            LwModes.VIDEO -> VoiceCommands.VIDEO
-            LwModes.SCREEN -> VoiceCommands.SCREEN
-            else -> VoiceCommands.PHONE
-        }
-        if (VoiceInbox.append(this, line) == null) {
-            hint(getString(R.string.ball_mode_cannot_queue))
-            return
-        }
-        note(getString(R.string.ball_mode_asked, modeName(mode)))
-    }
-
-    /**
      * 一个模式的显示名: **查表, 不写二选一**
      *
-     * 原来是 `if (mode == VIDEO) 视频模式 else 手机模式` —— 第三个模式出现之后, 那种写法会把识屏模式
-     * 报成「手机模式」, 而球与通知栏上那两行正是主人看"它现在在哪个模式"的地方 (2026-10-06)
+     * 原来是 `if (mode == VIDEO) 视频模式 else 手机模式` —— 第三个模式 (识屏) 出现之后, 那种写法会把
+     * 它报成「手机模式」, 而球与通知栏上那两行正是主人看"它现在在哪个模式"的地方 (2026-10-06)。现在
+     * 模式只剩两个, 而这条查表的路照旧: 退役的名字由 [LwModes.active] 收成手机模式
      */
     private fun modeName(mode: String? = null): String = LwModes.label(this, mode)
 
@@ -1614,7 +1718,10 @@ class OverlayService : Service() {
         val layout = boxParams ?: return
         val metrics = resources.displayMetrics
         val ball = dp(BallView.BALL_SIZE_DP)
-        layout.x = BoxSpot.x(currentBallX, ball, BallBox.WIDTH_PX, metrics.widthPixels)
+        // **宽也在这里重算** (2026-10-08): 窄屏那一档要收窄 ([BallBox.widthFor]), 而收窄之后 x 的钳制
+        // 必须用同一个数 —— 两处各算一次的话, 框会一半压在球上或者一半留在屏外
+        layout.width = BallBox.widthFor(metrics.widthPixels)
+        layout.x = BoxSpot.x(currentBallX, ball, layout.width, metrics.widthPixels)
         layout.y = BoxSpot.y(
             ballParams?.y ?: ballBaseY,
             ball,
@@ -1625,6 +1732,7 @@ class OverlayService : Service() {
         runCatching { window?.updateViewLayout(root, layout) }
         OverlayState.channelAttached = root.isAttachedToWindow
         OverlayState.channelHeight = root.measuredHeight
+        noteRects()
     }
 
     /** 通道那块框的回调: 发送 / 焦点 / 打字 / 有人碰到它 / 它自己长高了 */
@@ -1847,11 +1955,10 @@ class OverlayService : Service() {
      */
     private fun refresh(force: Boolean = false) {
         val metrics = resources.displayMetrics
-        if (force || metrics.widthPixels != lastWidth || metrics.heightPixels != lastHeight) {
-            lastWidth = metrics.widthPixels
-            lastHeight = metrics.heightPixels
-            replace()
-        }
+        // **换了屏才重摆三块窗** (转屏那件事见 [relayoutAll]): 这一拍是 400 ms 一次的热路径, 而
+        // `force` 那一支每个回答、每次焦点变化都会走到 —— 那里只该刷新读数, 不该动窗口
+        if (metrics.widthPixels != lastWidth || metrics.heightPixels != lastHeight) relayoutAll(force = true)
+        else if (force) noteRects()
         val word = BallStatus.wordFor(
             speaking = VoiceState.speaking,
             thinking = OverlayState.phase == OverlayState.PHASE_THINKING && DshHost.status is HostStatus.Running,
@@ -1915,7 +2022,15 @@ class OverlayService : Service() {
         //
         // **不在这一拍里直接收**: [closeChannel] 自己会再叫一次 `refresh(force = true)`, 那就是递归。
         // 丢一拍去关它, 与其它"改窗"的地方一个口径
-        val boxIdle = if (boxOnScreen) System.currentTimeMillis() - OverlayState.boxActiveAt else 0L
+        // **`boxActiveAt` 为 0 时不算闲置** (2026-10-08 修的小毛病, 那一条的读数长这样:
+        // "框没人碰了 1791438154137ms" = `now - 0`): [closeChannel] 把那一笔账清零, 而 `removeView`
+        // 是下一拍才真的离开窗口树, 于是"刚摘下来的那一拍" boxOnScreen 还是真 —— 少了这个判断,
+        // 它会立刻再判一次"闲置太久了"并关一次 (多一条假日志, 还多一次 removeView)
+        val boxIdle = if (boxOnScreen && OverlayState.boxActiveAt != 0L) {
+            System.currentTimeMillis() - OverlayState.boxActiveAt
+        } else {
+            0L
+        }
         OverlayState.boxIdleMs = boxIdle
         if (boxOnScreen && boxIdle > BallMinutes.BOX_IDLE_MS) {
             note("the text channel was untouched for ${boxIdle}ms: closing it so the ball can tuck away")
@@ -2356,6 +2471,23 @@ class OverlayService : Service() {
         private const val MARGIN_DP = 12
         private const val BAR_HEIGHT_DP = 44
         private const val DEFAULT_HEIGHT_PERCENT = 45
+
+        /**
+         * 输入条从屏幕底部往上留的那一截 (dp)
+         *
+         * 它给的是"别贴着底边" (导航条与手势那一条), 不是键盘 —— 键盘由 inset 那一层另算。以前这个数
+         * 是写在 `expand` 里的一行 (140), 现在收成一个名字: 转屏重摆时要用同一个值
+         */
+        private const val STRIP_LIFT_DP = 140
+
+        /**
+         * 转屏之后补一拍的那 250 ms
+         *
+         * 转屏是异步的: 系统改配置、窗口管理器重排、我们自己收 `onConfigurationChanged` 是三件事,
+         * 而它们不保证落在同一帧里。立刻重摆一次、过 250 ms 再对一次账, 那两拍之间用旧值算出来的位置
+         * 才收得回来 (与 [BallMinutes.IME_SETTLE_MS] 同一个套路)
+         */
+        private const val ROTATE_SETTLE_MS = 250L
         private const val MENU_WIDTH_DP = 168
         private const val MENU_HEIGHT_DP = 320
 

@@ -6,11 +6,13 @@
  * 出去的就是它们)。源码里写一句"改了一边记得看另一边"是口头纪律, 而口头纪律会漂 —— 这一条把它变成
  * 可执行的真值:
  *
- *   1. **Kotlin 那五个句子必须在插件那张表里**, 而且落在同一个类上 (视频 / 识屏 / 手机 / 打断):
- *      `SCREEN_OFF`("退出识屏模式", 浮标菜单那一行关的方向) 与 `PHONE` 是同一个模式, 所以它落在
- *      插件那张表的 `phone` 那一支里; `INTERRUPT`("打断当前回答", 2026-10-06 双击球写的那一句) 落在
- *      `interrupt` 那一支里, 而那一支**没有 `mode`** —— 它不是切模式
- *   2. **模式名与 `LwModes` 的常量一致** (`phone` / `video` / `screen`): 插件认的是它, 应用写的是它,
+ *   1. **Kotlin 那三个句子必须在插件那张表里**, 而且落在同一个类上 (视频 / 手机 / 打断):
+ *      `INTERRUPT`("打断当前回答", 2026-10-06 双击球写的那一句) 落在 `interrupt` 那一支里, 而那一支
+ *      **没有 `mode`** —— 它不是切模式
+ *   1b. **识屏那一支整个没了** (2.5.0 批次 4): 模式摘掉了, 而"退出 / 关闭 / 关掉识屏模式"这三句兼容
+ *      说法**留在 `phone` 那一支**(说出来仍然等于收工回手机模式); "打开识屏模式"那一半必须是**普通
+ *      一句话**(不再是命令) —— 它照旧进会话, 由手机模式自己去看那块屏
+ *   2. **模式名与 `LwModes` 的常量一致** (`phone` / `video`): 插件认的是它, 应用写的是它,
  *      漂了就是"命令认出来了但切到了别处"
  *   3. **归一化那几种写法** (句末句号 / 中间空白 / 前后空白) 都要匹配 —— 识别出来的句子会带标点
  *   4. **整句相等, 不做包含匹配**: "视频模式怎么改" 这种句子必须照旧进会话, 那是这一处最容易写错的
@@ -51,7 +53,7 @@ const node = new Function(
 /** Kotlin 那一侧的规范句子: `const val VIDEO = "打开视频模式"` */
 const kotlinCommands = [...commands.matchAll(/const val (VIDEO|SCREEN_OFF|SCREEN|PHONE|INTERRUPT) = "([^"]+)"/g)]
   .map((one) => ({ name: one[1], say: one[2] }))
-if (kotlinCommands.length !== 5) {
+if (kotlinCommands.length !== 3) {
   throw new Error(`VoiceCommands.kt 里只读到 ${kotlinCommands.length} 个句子, 解析那一段大概坏了`)
 }
 
@@ -63,12 +65,17 @@ function commandClass(command) {
 /** 表里切模式的那几条 (判模式名时要把打断那一支滤掉) */
 const modeCommands = node.VOICE_COMMANDS.filter((one) => one.mode !== undefined)
 
-/** `LwModes` 那三个模式名 (插件那张表的 mode 字段必须是它们) */
+/** `LwModes` 那两个模式名 (插件那张表的 mode 字段必须是它们) */
 const kotlinModes = Object.fromEntries(
   [...modes.matchAll(/const val (PHONE|VIDEO|SCREEN) = "([^"]+)"/g)].map((one) => [one[1], one[2]]),
 )
-if (!kotlinModes.PHONE || !kotlinModes.VIDEO || !kotlinModes.SCREEN) {
-  throw new Error('LwModes.kt 里读不到 PHONE / VIDEO / SCREEN 三个常量')
+if (!kotlinModes.PHONE || !kotlinModes.VIDEO) {
+  throw new Error('LwModes.kt 里读不到 PHONE / VIDEO 两个常量')
+}
+/** 退役的那个名字 (`LwModes.SCREEN_RETIRED`): 它必须还在, 因为地图上还留着老机器的记号 */
+const retiredMode = modes.match(/const val SCREEN_RETIRED = "([^"]+)"/)?.[1] ?? ''
+if (!retiredMode) {
+  throw new Error('LwModes.kt 里读不到 SCREEN_RETIRED: 退役的名字要留一个常量 (老机器的 .active 靠它迁回手机模式)')
 }
 
 let failures = 0
@@ -88,12 +95,9 @@ console.log(
     + ` 说法 ${node.VOICE_COMMANDS.reduce((n, one) => n + one.say.length, 0)} 条`,
 )
 
-// 1. 插件那张表认得 Kotlin 写出去的那五个句子, 且类对得上
+// 1. 插件那张表认得 Kotlin 写出去的那三个句子, 且类对得上
 const expectedClass = {
   VIDEO: kotlinModes.VIDEO,
-  SCREEN: kotlinModes.SCREEN,
-  // 识屏那一档的"关"与"回到手机模式"是同一件事 (同一个模式), 所以它认的是 phone
-  SCREEN_OFF: kotlinModes.PHONE,
   PHONE: kotlinModes.PHONE,
   // 打断那一支没有 mode: 它不是切模式, 而是"取消浮标那一场正在跑的轮"
   INTERRUPT: 'interrupt',
@@ -106,19 +110,37 @@ const unread = kotlinCommands
     want: expectedClass[one.name],
   }))
   .filter((one) => one.matched !== one.want)
-check('Kotlin 那五个句子都在表里, 且落在对的类上', unread, [])
+check('Kotlin 那三个句子都在表里, 且落在对的类上', unread, [])
 
-// 2. 表里那三个模式名就是 LwModes 的常量 (顺序也照 Kotlin 那边)
+// 1b. 识屏那一支: "关"那三句还在 phone 里, "开"那几句必须不再是命令 (批次 4)
 check(
-  '三个模式名与 LwModes 一致',
+  '识屏那三句兼容说法仍落在 phone 那一支',
+  ['退出识屏模式', '关闭识屏模式', '关掉识屏模式']
+    .map((say) => node.matchVoiceCommand(say)?.mode ?? null),
+  [kotlinModes.PHONE, kotlinModes.PHONE, kotlinModes.PHONE],
+)
+check(
+  '打开识屏模式不再是命令 (它照一句话进会话)',
+  ['打开识屏模式', '进入识屏模式', '切到识屏模式', '换成识屏模式', '识屏模式']
+    .filter((say) => node.matchVoiceCommand(say) !== null),
+  [],
+)
+check(
+  '退役的名字不在模式表里',
+  modeCommands.filter((one) => one.mode === retiredMode).length,
+  0,
+)
+
+// 2. 表里那两个模式名就是 LwModes 的常量 (顺序也照 Kotlin 那边)
+check(
+  '两个模式名与 LwModes 一致',
   modeCommands.map((one) => one.mode),
-  [kotlinModes.VIDEO, kotlinModes.SCREEN, kotlinModes.PHONE],
+  [kotlinModes.VIDEO, kotlinModes.PHONE],
 )
 
 // 3. 归一化: 识别出来的句子会带标点与空白
 check('句末句号照旧认得出', node.matchVoiceCommand('打开视频模式。')?.mode ?? null, kotlinModes.VIDEO)
 check('中间与前后空白照旧认得出', node.matchVoiceCommand('  切到 视频模式  ')?.mode ?? null, kotlinModes.VIDEO)
-check('识屏那一句也认得出', node.matchVoiceCommand('切到识屏模式！')?.mode ?? null, kotlinModes.SCREEN)
 check('识屏关闭那一句也认得出', node.matchVoiceCommand('退出识屏模式！')?.mode ?? null, kotlinModes.PHONE)
 check('手机那一句也认得出', node.matchVoiceCommand('退出视频模式！')?.mode ?? null, kotlinModes.PHONE)
 check('打断那一句也认得出', (node.matchVoiceCommand('打断当前回答。')?.interrupt ?? null), true)
@@ -129,6 +151,7 @@ const notCommands = [
   '我想打开视频模式的开关在哪',
   '刚才那个视频模式挺好',
   '识屏模式能做什么',
+  '我想把识屏模式打开看看',
   '回到手机模式之后会怎样',
   '打断当前回答之后会怎样',
   '帮我打断一下那个回答',

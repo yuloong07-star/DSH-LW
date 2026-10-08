@@ -1,5 +1,7 @@
 #!/system/bin/sh
 # 只在测试时用: 找出 host 进程环境里的通道地址与 token (与别的 app 无关)
+#
+# 用法: sh lw-channel-probe.sh     (打印 PID 与那两行 LW_CHANNEL_*, 找不到就什么都不打)
 for pid in $(ls /proc | grep '^[0-9][0-9]*$'); do
   cmd=$(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null)
   case "$cmd" in

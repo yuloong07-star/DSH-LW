@@ -132,7 +132,15 @@ object PermissionCatalog {
             ),
         ),
         Capability(
-            name = "通讯录 / 短信 / 通话记录 / 日历",
+            name = "日历",
+            why = "lw_calendar 读日程 / 建日程 / 改日程 / 查空闲 (2.5.0 批次 7)",
+            permissions = listOf(
+                Manifest.permission.READ_CALENDAR,
+                Manifest.permission.WRITE_CALENDAR,
+            ),
+        ),
+        Capability(
+            name = "通讯录 / 短信 / 通话记录",
             why = "这一版没有功能用它们",
             permissions = emptyList(),
             note = "清单里已经声明 (要的就是都加上), 但没有任何工具读它们; 现在授权只是把授权位占住",
@@ -198,7 +206,7 @@ object PermissionCatalog {
     val declaredOnly: List<String> = listOf(
         "READ_CONTACTS", "WRITE_CONTACTS", "READ_SMS", "SEND_SMS", "RECEIVE_SMS",
         "READ_CALL_LOG", "WRITE_CALL_LOG", "CALL_PHONE",
-        "READ_CALENDAR", "WRITE_CALENDAR", "READ_PHONE_STATE", "READ_PHONE_NUMBERS",
+        "READ_PHONE_STATE", "READ_PHONE_NUMBERS",
     )
 
     /** 本应用自己的包名, 几条系统页要按包名打开 */

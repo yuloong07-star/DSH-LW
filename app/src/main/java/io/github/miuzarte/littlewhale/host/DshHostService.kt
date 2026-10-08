@@ -45,6 +45,8 @@ class DshHostService : Service() {
         warmUpChannel()
         // 模式: 首启把默认那份 (手机模式) 落到那个助手的提示词上, 也让主人有文件可改
         LwModes.ensureDefault(this)
+        // 随包那五项 (三份技能 + 两条样例快捷指令): 技能缺什么补什么, 样例只发一次
+        LwSeed.ensure(this)
         VirtualScreen.initialize(this)
         PrivilegedBridge.start()
         DshHost.start(this)

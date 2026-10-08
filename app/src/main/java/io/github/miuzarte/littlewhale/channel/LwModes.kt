@@ -1,6 +1,7 @@
 package io.github.miuzarte.littlewhale.channel
 
 import android.content.Context
+import android.util.Log
 import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.host.DshHost
 import io.github.miuzarte.littlewhale.tool.LwCamera
@@ -12,7 +13,12 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /**
- * 模式: 手机模式 / 视频模式 / 识屏模式
+ * 模式: 手机模式 / 视频模式
+ *
+ * **识屏模式在 2.5.0 批次 4 摘掉了**: "看手机自己那块屏"本来就是手机模式里 display 0 的那条路
+ * (看与动都落在那一块上), 而"用户得先切一个模式, 模型才看得见屏"正是这一批要消掉的心智负担 ——
+ * 现在指代不明的那一句话在投递前自动附一张主屏截图 (宿主插件那一侧), 模式本身不需要了。
+ * 读到 `.active` 里还写着 `screen` 的老机器由 [retire] 迁回手机模式
  *
  * **只换提示词, 不换工具也不换预设**: dsh 拒绝让另一个预设接管一个已经起过轮次的会话
  * (`agent-preset/locked`), 而助手的提示词是 provider、**每一步组装都重读文件** (四环链, 见可行性稿
@@ -37,17 +43,22 @@ internal object LwModes {
     /** 视频模式: 用本机摄像头 (Camera2 直连) 抓帧识图 */
     const val VIDEO = "video"
 
-    /** 识屏模式: 只认主屏 (displayId 0), 看与动都只落在这块屏上, 不碰虚拟屏 */
-    const val SCREEN = "screen"
+    /** 两个模式, 顺序就是 seed 与报出去 (`list`) 的顺序 */
+    val ALL = listOf(PHONE, VIDEO)
 
-    /** 三个模式, 顺序就是 seed 与报出去 (`list`) 的顺序 */
-    val ALL = listOf(PHONE, VIDEO, SCREEN)
+    /**
+     * 退役的模式名: 识屏模式 (批次 4)
+     *
+     * 它不再出现在 [ALL] 里, 也不再有正文与脚本, 但**老机器上的 `.active` 里可能还写着它**, 而说惯了的
+     * 人嘴上也还会说出来 —— 前者由 [retire] 迁回手机模式, 后者由宿主插件那张命令表把"退出识屏模式"
+     * 当收工那一条 (见 `host-plugin/index.mjs` 的 `VOICE_COMMANDS`)
+     */
+    const val SCREEN_RETIRED = "screen"
 
-    /** 三个模式各自的显示名, 报给模型时用它 */
+    /** 两个模式各自的显示名, 报给模型时用它 */
     private val NAMES = mapOf(
         PHONE to R.string.mode_phone,
         VIDEO to R.string.mode_video,
-        SCREEN to R.string.mode_screen,
     )
 
     /** 旧名字: 可行性稿里写的是 `assistant`, 留着当别名免得主人说惯了 */
@@ -57,15 +68,40 @@ internal object LwModes {
     private const val ACTIVE = ".active"
     private const val CUSTOM_PROMPT = ".agent-presets/custom/prompt.md"
 
+    /** 日志标记: 只在占用表清不掉时说话 (那不是切换失败, 不该弹任何东西给主人) */
+    private const val TAG = "LwModes"
+
     /** `$DSH_HOME/modes`, 三份正文、那几个脚本与 `.active` 都在这儿 */
     fun modesDir(context: Context): File = File(dshHome(context), MODES_DIR)
 
     /** 那个助手的提示词文件, 切模式就是覆盖它 */
     fun promptFile(context: Context): File = File(dshHome(context), CUSTOM_PROMPT)
 
-    /** 现在在哪一个模式: 读 `.active`, 读不到就当手机模式 (默认) */
-    fun active(context: Context): String =
-        File(modesDir(context), ACTIVE).takeIf { it.isFile }?.readText()?.trim().orEmpty().ifEmpty { PHONE }
+    /**
+     * 现在在哪一个模式: 读 `.active`, 读不到就当手机模式 (默认)
+     *
+     * **退役的模式名一律当手机模式**: 老机器升级上来时 `.active` 里还写着 `screen`, 而那时那句"我在
+     * 识屏模式"已经是一句不成立的话 —— 与其把它报出去 (界面上那几处会去查 [NAMES], 查不到又落回手机
+     * 模式), 不如在这一处就收干净
+     */
+    fun active(context: Context): String {
+        return resolve(rawActive(context))
+    }
+
+    /**
+     * `.active` 里读到的那一串该当成哪个模式
+     *
+     * 纯函数 (不碰 Context), 因为这一条判据要单测: 老机器上写着 `screen` 的那一份, 空文件, 两边带空白的
+     * 那一份, 以及一个我们不认识的名字 —— 四种都在这一个函数里定下来 (`LwModesTest`)
+     */
+    fun resolve(stored: String?): String {
+        val name = stored?.trim()?.lowercase().orEmpty()
+        return if (name.isEmpty() || name == SCREEN_RETIRED) PHONE else name
+    }
+
+    /** `.active` 里原样写着什么 (空的 / 文件不在就是空串): [retire] 要的正是"没被 [resolve] 修过"的那一份 */
+    private fun rawActive(context: Context): String =
+        File(modesDir(context), ACTIVE).takeIf { it.isFile }?.readText()?.trim()?.lowercase().orEmpty()
 
     /**
      * 把三份正文与那几个脚本从 APK 里放出来
@@ -82,15 +118,18 @@ internal object LwModes {
         directory.mkdirs()
         val written = mutableListOf<String>()
         ALL.forEach { name -> if (ensureBody(context, name)) written += name }
-        // 三个 `切模式` 脚本就是三个模式各自的**整个切换** (2026-10-06): 切模式时只跑对应的那一个,
+        // 那几份 `切模式` 脚本就是每个模式各自的**整个切换** (2026-10-06): 切模式时只跑对应的那一个,
         // 别的什么都不做; camera.sh 不是切换, 它是视频模式里换镜头那一下 (走同一条回环桥)
-        listOf("camera.sh", "phone.sh", "video.sh", "screen.sh").forEach { name ->
+        listOf("camera.sh", "phone.sh", "video.sh").forEach { name ->
             if (copyScript(context, directory, name)) written += name
         }
         // 退役的脚本就地删掉 (留着就是设备上一份能跑起来的旧链路, 或者同一件事的第二扇门):
         // `mode.sh` 是"建虚拟屏 + 起相机应用"的旧切换链路 (2026-10-05 摘掉); `voice-input.sh` 是切模式
         // 的语音那一半 —— 它现在整个并进了那三个脚本里 (2026-10-06)
-        listOf("mode.sh", "voice-input.sh").forEach { name ->
+        //
+        // 批次 4 又添了两份: `screen.sh` 与 `screen.md`。识屏模式没了, 那块屏现在由手机模式管; 正文
+        // 也一并删 (它是"你处在识屏模式"那一份, 留着只会让读到它的人以为还有这个模式)
+        listOf("mode.sh", "voice-input.sh", "screen.sh", "screen.md").forEach { name ->
             val retired = File(directory, name)
             if (retired.isFile) runCatching { retired.delete() }
         }
@@ -131,7 +170,21 @@ internal object LwModes {
      */
     fun ensureDefault(context: Context) {
         seed(context)
-        if (!File(modesDir(context), ACTIVE).isFile) set(context, PHONE)
+        if (!File(modesDir(context), ACTIVE).isFile) set(context, PHONE) else retire(context)
+    }
+
+    /**
+     * 退役模式留下的记号: `.active` 里还写着 `screen` 的机器迁回手机模式 (批次 4)
+     *
+     * 走 [set] 而不是只改那一个文件, 因为**提示词也要跟着换**: 那个助手的 `prompt.md` 里现在放着识屏
+     * 那一份正文, 而那一份说的是一套已经不存在的东西。迁不成也不该让启动失败 (目录只读、被人动过都
+     * 可能), 所以只记一行日志 —— 那几个读数 (`lw_mode status`、界面上那个模式名) 本来就已经把退役的
+     * 名字当手机模式 ([active])
+     */
+    fun retire(context: Context) {
+        if (rawActive(context) != SCREEN_RETIRED) return
+        runCatching { set(context, PHONE) }
+            .onFailure { Log.w(TAG, "the retired mode could not be migrated: ${it.message}") }
     }
 
     /**
@@ -167,14 +220,26 @@ internal object LwModes {
      *     而真相由后来者拿 (`lw_look` 自己会等那把锁, 见 [LwCamera.warmUp])
      *
      * 这三件事**从前是插件那一侧拼出来的** (先调 `mode`, 再调 `camera`), 那样一次切换要两趟往返,
-     * 而且语音那一半还要在里面白等 600 ms。现在切模式走到这里就到底了, 插件与那三个设备端脚本都只发
+     * 而且语音那一半还要在里面白等 600 ms。现在切模式走到这里就到底了, 插件与那几个设备端脚本都只发
      * 一条命令 (2026-10-06 主人的口径: 切模式只跑对应的那一个脚本, 别的什么都不做)
      */
     private fun set(context: Context, asked: String): JsonObject {
         val mode = when (asked) {
             PHONE, PHONE_ALIAS -> PHONE
             VIDEO -> VIDEO
-            SCREEN -> SCREEN
+            // 识屏模式 (批次 4 摘掉): 那一句"切到识屏模式"要说得出它现在是什么, 而不是一句
+            // "unknown mode" —— 那块屏一直在, 只是它归手机模式管
+            SCREEN_RETIRED -> return buildJsonObject {
+                put("switched", false)
+                put("mode", PHONE)
+                put("name", context.getString(NAMES.getValue(PHONE)))
+                put(
+                    "detail",
+                    "there is no screen mode any more: the phone's own screen (display 0) is looked" +
+                        " at and acted on in phone mode, so nothing was switched. Look at it with" +
+                        " lw_screenshot / lw_ui and act on it with lw_tap and the rest.",
+                )
+            }
             else -> return buildJsonObject {
                 put("switched", false)
                 put("detail", "unknown mode \"$asked\": this build has ${ALL.joinToString(" and ")}")
@@ -227,6 +292,11 @@ internal object LwModes {
                     " ${error.message ?: error}",
             )
         }
+        // **换模式 = 放弃相机** (批次 3): 相机占用表由宿主插件写 (见 [CameraOwner]), 而"换人设"这件事
+        // 那四扇门 (球菜单 / 语音命令 / 设备脚本 / `lw_mode`) 全都收在这一处 —— 所以清表也只写在这里,
+        // 谁切的都一样。切进视频模式时那一场会在切换返回之后重新落账 (插件那一边的 `lw_mode`)
+        runCatching { CameraOwner.release(context) }
+            .onFailure { Log.w(TAG, "the camera owner table could not be cleared: ${it.message}") }
         val camera = runCatching {
             if (mode == VIDEO) LwCamera.warmUp(context) else LwCamera.coolDown(context)
         }.getOrElse { error -> "the camera could not be switched: ${error.message ?: error}" }

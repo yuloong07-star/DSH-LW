@@ -16,7 +16,7 @@
 #   pwsh -File tools\lw-install.ps1 -SkipInstall                     # 只重跑权限与无障碍那几步
 #
 # 权限那一步给的是两类东西, 都只能从 adb 给:
-#   - 运行时权限 (`pm grant`): 相机 / 定位 / 媒体读取 / 蓝牙 / 麦克风
+#   - 运行时权限 (`pm grant`): 相机 / 定位 / 媒体读取 / 蓝牙 / 麦克风 / 日历
 #   - 特殊访问 (`appops set`): 修改系统设置 / 使用情况访问 / 悬浮窗 / 忽略电池优化
 # **失败不报错**: 有的 ROM 不认某条 op, 有的权限在这一版里本来就没声明, 所以逐条打印结果
 param(
@@ -207,7 +207,10 @@ if ($Perms) {
         'android.permission.BLUETOOTH_SCAN',
         'android.permission.POST_NOTIFICATIONS',
         'android.permission.ACTIVITY_RECOGNITION',
-        'android.permission.BODY_SENSORS'
+        'android.permission.BODY_SENSORS',
+        # 2.5.0 批次 7: lw_calendar 读日程与建日程要这两条
+        'android.permission.READ_CALENDAR',
+        'android.permission.WRITE_CALENDAR'
     )
     foreach ($permission in $runtime) {
         $answer = Adb shell "pm grant $Package $permission"

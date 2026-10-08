@@ -30,6 +30,7 @@ import io.github.miuzarte.littlewhale.MainActivity
 import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.host.DshHost
 import io.github.miuzarte.littlewhale.host.HostStatus
+import io.github.miuzarte.littlewhale.lock.LockReplay
 import io.github.miuzarte.littlewhale.overlay.BallSpot
 import io.github.miuzarte.littlewhale.overlay.OverlayService
 import io.github.miuzarte.littlewhale.overlay.OverlayState
@@ -986,6 +987,12 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
         Log.i(TAG, "heard $keyword (${WakeWordState.hits} so far)")
         if (vibrateMs > 0) runCatching { buzz(vibrateMs.toLong()) }
         runCatching { announce(heardText(keyword)) }
+        // **批次 5: 点亮屏幕, 顺手把解锁那一段丢到后台**
+        //
+        // 顺序与预算都是刻意的: 这一句跑在采集线程上 (见 [voiceSink]), 在那里等几秒等于让麦克风几秒
+        // 没人读 —— 所以点亮只给 [HIT_WAKE_BUDGET_MS] 这一点预算 (KEYCODE_WAKEUP 通常几百毫秒就亮
+        // 了), 而重放那几秒由它自己的线程走。解锁成不成都不影响下面两句
+        runCatching { LockReplay.onWake(this, HIT_WAKE_BUDGET_MS) }
         runCatching { openForOneSentence() }
         runCatching { wake(keyword) }
         runCatching { afterHit() }
@@ -1350,6 +1357,14 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
 
         /** 关键词检测是 16 kHz / 80 维 fbank, 与模型训练时那几个数对不上就什么都听不出来 */
         private const val FEATURE_DIM = 80
+
+        /**
+         * 唤醒命中之后, 点亮屏幕那一步最多等多久 (批次 5)
+         *
+         * 这一句跑在采集线程上, 所以这个预算是"麦克风能被拖住多久": KEYCODE_WAKEUP 通常几百毫秒就
+         * 亮了, 而等不到就该让开 —— 解锁那一段自己走它自己的线程, 屏幕晚一点亮不影响它
+         */
+        private const val HIT_WAKE_BUDGET_MS = 600L
 
         /** sherpa-onnx 的缺省值, 与它自己文档里那组一致: 分数越低越容易触发, 阈值越低越容易报 */
         private const val DEFAULT_THRESHOLD = 0.25

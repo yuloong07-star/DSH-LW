@@ -320,10 +320,12 @@ node tools/check-wake-words.mjs
 | 模式 | 说法（整句归一化之后相等才算） |
 |---|---|
 | `video` | 打开视频模式 / 进入视频模式 / 切到视频模式 / 换成视频模式 / 视频模式 |
-| `screen` | 打开识屏模式 / 进入识屏模式 / 切到识屏模式 / 换成识屏模式 / 识屏模式 |
-| `phone` | 回到手机模式 / 退出视频模式 / 关闭视频模式 / 关掉视频模式 / 手机模式 |
+| `phone` | 回到手机模式 / 退出视频模式 / 关闭视频模式 / 关掉视频模式 / 手机模式 / 退出识屏模式 / 关闭识屏模式 / 关掉识屏模式 |
 | `interrupt`（**不是模式**） | 打断当前回答 / 打断这一轮 |
 
+- **识屏那一支整个没了**（2.5.0 批次 4）：模式摘掉了，而"退出 / 关闭 / 关掉识屏模式"这三句**留在
+  `phone` 那一支**当兼容说法（说出来仍然等于收工回手机模式）；"打开识屏模式"不再被认成命令 —— 它照
+  普通一句话进会话，由手机模式自己去看那块屏
 - **归一化只吃空白与标点**（说出来的句子末尾会带句号），还认大小写；其余一个字都不许差
 - **整句相等，不做包含匹配**：`"视频模式怎么改"` 是一句要进会话的话，表认错了人主人就会发现自己的
   问题没了。这一条有 `tools/check-voice-commands.mjs` 里的反例钉着
@@ -355,17 +357,17 @@ app/src/main/java/.../wake/WakeWordService.kt     前台服务、两层 (唤醒�
 app/src/main/java/.../voice/SpeechSegmenter.kt    silero VAD 切段、abandon() 丢半句话、静音窗 0.8 s
 app/src/main/java/.../voice/VoiceState.kt         capturing = "这一句话的窗口开着" (视频模式常驻那一档也在里面)
 app/src/main/java/.../voice/VoiceInbox.kt         投递队列, 头一句带 wake 记号
-app/src/main/java/.../voice/VoiceCommands.kt      两个规范命令句 (与插件那张表对着核)
+app/src/main/java/.../voice/VoiceCommands.kt      三条规范命令句 (与插件那张表对着核)
 app/src/main/java/.../wake/WakeWordModel.kt       按前缀找模型、符号表核对
 app/src/main/java/.../wake/WakeWordDownload.kt    设置页那个按钮背后的下载 (逐文件 sha256 + 进度 + 清理)
 app/src/main/java/.../wake/WakeWordWords.kt       「词=带音调数字拼音」转 token 行
 app/src/main/java/.../tool/LwSpeech.kt            端侧识别; warmUp() 只加载不出字 (命中时预热)
 app/src/main/java/.../tool/LwWakeWord.kt          通道方法 wakeword 的五个动作 (status / keywords / start / stop / voice); 一个许可 + onHit / vibrate; speakNow (浮标点一下那条路); resident (常驻那一半的唯一开关) 与 residentWanted (记号)
-app/src/main/java/.../channel/LwModes.kt          切模式那一次调用: 三份正文 (手机 / 视频 / 识屏) + resident + 相机的开与收都在它里面, 一次桥调用做完
+app/src/main/java/.../channel/LwModes.kt          切模式那一次调用: 两份正文 (手机 / 视频) + resident + 相机的开与收都在它里面, 一次桥调用做完; 还负责把老机器上退役的 `screen` 记号迁回手机模式
 app/src/main/java/.../channel/PrivilegedBridge.kt 一行: "wakeword" 进方法表
 app/src/main/java/.../ui/SettingsScreen.kt        「唤醒词」那一段 (状态 / 下载 / 改词 / 一个许可 / 叫醒之后 / 震动) 与「浮标」那一段
 app/src/main/java/.../ui/HostScreen.kt            输入框上沿那个麦克风 (JS 桥 + 注入的脚本, 只在识别链跑时出现)
-app/src/main/assets/modes/{phone,video,screen}.sh 三个模式各自的**整个切换** (一条命令; 视频那份顺带把常驻语音留上)
+app/src/main/assets/modes/{phone,video}.sh        两个模式各自的**整个切换** (一条命令; 视频那份顺带把常驻语音留上)
 app/src/main/java/.../MainActivity.kt             启动时照着许可把监听恢复起来 (LwWakeWord.ensure) 并按存盘开关放球 (LwOverlay.ensure)
 app/src/main/AndroidManifest.xml                  一个前台服务声明
 tools/check-voice-commands.mjs                    命令表两份实现不许漂 (9 条判据)

@@ -521,6 +521,64 @@ class BallTest {
     }
 
     /**
+     * **三击要看整串的总时长** (2026-10-08 防误触): 头一下之后 450 ms 内数到第三下才算
+     *
+     * 只看相邻两下的话, "一下一下慢慢戳三下"也算三击 —— 而三击要开的是一块盖住半屏的输入框, 那是这
+     * 套手势里最值得防的一处误触。超时的那一串**落回双击**: 它在多数状态里没有动作, 也就是什么都不做
+     */
+    @Test
+    fun `三击那一串要在 450 毫秒之内走完`() {
+        val t = 1_000_000L
+        assertEquals(450L, BallMinutes.TRIPLE_SPAN_MS)
+        // 头一下 (t) 之后 150 / 300 ms: 整串 300 ms, 算三击
+        assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 300, t + 150, 2, chainFrom = t))
+        // 贴着窗口上沿 (整串正好 450 ms) 也算
+        assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 450, t + 300, 2, chainFrom = t))
+        // 整串 451 ms: 停在双击那一档, 不打开输入框
+        assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 451, t + 300, 2, chainFrom = t))
+        // 三下慢慢戳 (每一下都贴着上一记, 但整串 900 ms): 一样停在双击
+        assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 900, t + 600, 2, chainFrom = t))
+        // 不知道头一下什么时候 (chainFrom = 0): 按老口径放行 (只看相邻两下)
+        assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 300, t + 150, 2, chainFrom = 0L))
+    }
+
+    /* ── 防误触: 长按门槛、拖动门槛、刚拖完那一下 (2026-10-08 主人: "增加 ball 各操作的防误触") ── */
+
+    /**
+     * 长按出菜单要按住 650 ms, **不是**平台那个 400~500 ms
+     *
+     * 球一直在屏上, 慢一点的单击 (按下、觉得不对、松开) 会被平台的判据吃掉并弹出菜单 —— 而
+     * `BallView` 就是照这个常量去 `postDelayed` 的 (见 Ball.kt 的 ACTION_DOWN 那一支)
+     */
+    @Test
+    fun `长按门槛比平台默认长一档`() {
+        assertEquals(650L, BallMinutes.BALL_PRESS_MS)
+        assertTrue("要比平台那 400~500 ms 长", BallMinutes.BALL_PRESS_MS > 500L)
+        assertTrue("又不能让球像卡住", BallMinutes.BALL_PRESS_MS <= 800L)
+    }
+
+    /** 拖动门槛至少 12 dp: 平台那个 8 dp 上下太灵敏, 手一抖就把单击吃掉 */
+    @Test
+    fun `拖动门槛至少十二 dp`() {
+        assertEquals(12, BallMinutes.BALL_SLOP_DP)
+    }
+
+    /**
+     * 刚拖完的那一下不算单击 (250 ms)
+     *
+     * 拖动松手会吸附到边上, 而人常常在松手之后补一下 —— 那一下要是算单击, 球就在刚放好的位置上说话
+     */
+    @Test
+    fun `刚拖完的那一下不算单击`() {
+        assertEquals(250L, BallMinutes.BALL_DROP_GUARD_MS)
+        val t = 1_000_000L
+        assertTrue("还没拖过: 不算", !BallMinutes.tapAfterDropIsFresh(t, 0L))
+        assertTrue("松手之后马上补一下: 不算", BallMinutes.tapAfterDropIsFresh(t + 80, t))
+        assertTrue("卡在窗口上沿: 也不算", BallMinutes.tapAfterDropIsFresh(t + 250, t))
+        assertTrue("过 1 ms 就恢复", !BallMinutes.tapAfterDropIsFresh(t + 251, t))
+    }
+
+    /**
      * 两下贴着 (双击) 在"正在想"以外的档里**只是把手势认成双击**: 净效果由调用方定, 而
      * `OverlayService.onTap` 在那些档里什么都不做 (于是还是原来那一次单击)
      *
@@ -669,9 +727,28 @@ class BallTest {
 
     /* ── 输入通道那几条尺寸与摆位 ─────────────────────────────────────────── */
 
+    /**
+     * **主人 2026-10-08: "增加文框长度, 2 个词长度"** —— 650 → 734 (+84 = 两个字宽)
+     *
+     * 两个数都钉住是故意的: 宽度本身, 以及"两个字宽"这个换算是怎么来的 ([BallBox.CHAR_PX])
+     */
     @Test
-    fun `输入框是主人点名的 650 像素宽`() {
-        assertEquals(650, BallBox.WIDTH_PX)
+    fun `输入框加宽两个字`() {
+        assertEquals(734, BallBox.WIDTH_PX)
+        assertEquals(2 * BallBox.CHAR_PX, BallBox.WIDTH_PX - 650)
+    }
+
+    /**
+     * 窄屏 (横屏 / 分屏那一档) 上框要按屏宽的 62% 收窄
+     *
+     * 不收的话 734 的框在短边 600 出头的屏上会横跨大半屏并把球压在底下 —— 而球是唯一那个常驻入口
+     */
+    @Test
+    fun `窄屏上把框收窄到屏宽的六成`() {
+        assertEquals(BallBox.WIDTH_PX, BallBox.widthFor(2400))
+        assertEquals(BallBox.WIDTH_PX, BallBox.widthFor(1200))
+        assertEquals(372, BallBox.widthFor(600)) // 600 * 62% = 372
+        assertEquals(true, BallBox.widthFor(600) < 600)
     }
 
     /** "行数上限为 5 行, 高度随行数增长而不是固定的" —— **2026-10-06 主人追加两行, 所以是 7** */
@@ -727,16 +804,25 @@ class BallTest {
         assertEquals(ballX - box - BoxSpot.GAP_PX, x)
     }
 
-    /** 窄屏 (横屏那一档): 两边都放不下时也**整块留在屏幕里**, 宁可压在球上 */
+    /**
+     * 窄屏 (横屏那一档): 两边都放不下时也**整块留在屏幕里**, 宁可压在球上
+     *
+     * **2026-10-08 起框宽先过 [BallBox.widthFor]**: 屏宽 700 时框收到 434 (62%), 于是"放不下"这件事
+     * 只在球贴着边的时候才发生, 而钳完之后整块仍在屏内。直接用 734 那一版会钳在 0 上却还是越界 ——
+     * 收窄与钳制**必须用同一个宽度**, 这一条就是钉那个的
+     */
     @Test
-    fun `窄屏上把框钳在屏幕里`() {
-        val box = BallBox.WIDTH_PX
-        // 700 px 宽的屏: 650 的框放得下, 但放在球里侧 (654 起) 就放不下了, 左边又是负的 ——
-        // 于是取"以球为中心再钳回屏内"那一个位置
+    fun `窄屏上把框收窄再钳进屏里`() {
         val narrow = 700
+        val box = BallBox.widthFor(narrow)
+        assertEquals(434, box)
         val x = BoxSpot.x(ballX = 0, ballSize = ball, boxWidth = box, screenWidth = narrow)
-        assertEquals(0, x)
+        // 收窄之后球贴着左边时框放得下里侧那一边 (0 + 144 + 10 = 154), 不必再钳
+        assertEquals(ball + BoxSpot.GAP_PX, x)
         assertEquals(true, x + box <= narrow)
+        // 球贴右边时翻到左边也放得下
+        val right = BoxSpot.x(ballX = narrow - ball, ballSize = ball, boxWidth = box, screenWidth = narrow)
+        assertEquals(true, right + box <= narrow - ball)
     }
 
     /** 纵向: 框跟着球的中心走, 并且不越过屏幕上边, 也不压到键盘上 */
@@ -750,5 +836,123 @@ class BallTest {
         assertEquals(2800 - 900 - boxHeight, lifted)
         // 球在顶上时框不许是负的
         assertEquals(0, BoxSpot.y(ballY = 0, ballSize = ball, boxHeight = boxHeight, screenHeight = 2800, imeBottom = 0))
+    }
+
+    /* ── 转屏那三块窗的几何 (2026-10-08 主人报的第一条) ───────────────────── */
+
+    /**
+     * 输入条的尺寸与停靠位**每一屏各算一次**, 不是创建时算一次就留着
+     *
+     * 这条钉的就是主人报的那个病: 竖屏算出来的那条 (1080 高) 横过来之后还是 1080 高, 而横屏只有 1080
+     * 高 —— 于是"停靠位"算出来是负的, 整块条子盖满屏幕 (也就是他说的"极大偏移")。重算那一遍之后
+     * 宽高与 y 都落在新屏里
+     */
+    @Test
+    fun `转屏之后输入条按新屏重算`() {
+        val margin = 12
+        val lift = 140
+        val (portraitW, portraitH) = 1080 to 2400
+        val (landscapeW, landscapeH) = 2400 to 1080
+        // 竖屏那一份 (以前被留到横屏上的正是这两个数)
+        assertEquals(1056, StripSpot.width(portraitW, margin))
+        assertEquals(1080, StripSpot.height(portraitH, margin, 45))
+        // 横屏那一份: 又宽又矮, 而高度正好是屏高的四成半
+        assertEquals(2376, StripSpot.width(landscapeW, margin))
+        assertEquals(486, StripSpot.height(landscapeH, margin, 45))
+        // 旧那一份在横屏上就是"整屏高": 这就是偏移的来源
+        assertEquals(landscapeH, StripSpot.height(portraitH, margin, 45))
+        // 新那一份落在屏里: 上边留了边距, 下边不越界
+        val y = StripSpot.restY(landscapeH, StripSpot.height(landscapeH, margin, 45), margin, lift)
+        assertTrue(y >= margin)
+        assertTrue(y + StripSpot.height(landscapeH, margin, 45) <= landscapeH - margin)
+    }
+
+    /** 反过来 (横屏摆好之后转回竖屏) 也一样: 两个方向都要落在屏里, 而不是只修一边 */
+    @Test
+    fun `横屏转回竖屏也不越界`() {
+        val margin = 12
+        val height = StripSpot.height(2400, margin, 45)
+        val y = StripSpot.restY(2400, height, margin, 140)
+        val x = StripSpot.x(margin)
+        assertEquals(margin, x)
+        assertTrue(x + StripSpot.width(1080, margin) <= 1080)
+        assertTrue(y >= margin)
+        assertTrue(y + height <= 2400 - margin)
+    }
+
+    /**
+     * 极矮的屏 (分屏那一档) 上高度要钳住: 45% 的屏高压进了"上下各留一条边距"里, 不许它把屏幕吃掉
+     * 或者算出负数
+     */
+    @Test
+    fun `很矮的屏上高度被钳住`() {
+        val margin = 12
+        // 45% 的 200 = 90, 离"上下各留一条边距"那个上限 (176) 还远
+        assertEquals(90, StripSpot.height(200, margin, 45))
+        // 90% 的 200 = 180 超过上限, 于是被钳到 176
+        assertEquals(176, StripSpot.height(200, margin, 90))
+        assertTrue(StripSpot.height(200, margin, 90) <= 200 - margin * 2)
+        // 屏比两条边距还窄: 结果至少是 1, 不许是 0 或者负数
+        assertTrue(StripSpot.height(10, margin, 45) >= 1)
+    }
+
+    /* ── 手势灵敏度那一档 (2026-10-08 主人: "浮标灵敏度开关") ─────────────────── */
+
+    /**
+     * 两档各自是哪些数: **防误触 (缺省) 三个门槛都收紧, 标准档全交给平台那一档**
+     *
+     * `0` 在这张表里的意思就是"这一档不额外加这条闸" (见 [BallFeel]), 所以它既不是"只要 0 毫秒"
+     * 也不是"永远不触发" —— 标准档的净效果正是收紧之前那一版的手感
+     */
+    @Test
+    fun `灵敏度两档各自是哪些数`() {
+        assertEquals(650L, BallFeel.GUARD.pressMs)
+        assertEquals(12, BallFeel.GUARD.slopDp)
+        assertEquals(450L, BallFeel.GUARD.tripleSpanMs)
+        assertEquals(250L, BallFeel.GUARD.dropGuardMs)
+
+        assertEquals(0L, BallFeel.STANDARD.pressMs)
+        assertEquals(0, BallFeel.STANDARD.slopDp)
+        assertEquals(0L, BallFeel.STANDARD.tripleSpanMs)
+        assertEquals(0L, BallFeel.STANDARD.dropGuardMs)
+    }
+
+    /**
+     * 三击在标准档里**不看整串的总时长**: 一下一下慢慢戳三下也算
+     *
+     * 防误触那一档里同一串是"停在双击" (那条判据自己有一份测试), 这里量的是"档位真的换掉了判据"
+     */
+    @Test
+    fun `标准档的三击不看总时长`() {
+        val t = 1_000_000L
+        assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 900, t + 600, 2, chainFrom = t))
+        assertEquals(
+            BallTap.TRIPLE,
+            BallTaps.kind(null, t + 900, t + 600, 2, chainFrom = t, feel = BallFeel.STANDARD),
+        )
+    }
+
+    /** 刚拖完那一下在标准档里不挡 (防误触那一档挡 250 ms) */
+    @Test
+    fun `标准档不挡刚拖完那一下`() {
+        val t = 1_000_000L
+        assertTrue("防误触档挡它", BallMinutes.tapAfterDropIsFresh(t + 80, t))
+        assertTrue("标准档不挡", !BallMinutes.tapAfterDropIsFresh(t + 80, t, BallFeel.STANDARD))
+        assertTrue("没拖过在标准档里更不算", !BallMinutes.tapAfterDropIsFresh(t, 0L, BallFeel.STANDARD))
+    }
+
+    /**
+     * 存盘那一份名字认不出来时**落回防误触**
+     *
+     * 存坏了的净效果该是"更不容易误触", 不是"球变得一碰就开" —— 后面那一半会让主人以为应用坏了
+     */
+    @Test
+    fun `认不出来的档位落回防误触`() {
+        assertEquals(BallFeel.GUARD, BallFeel.of(null))
+        assertEquals(BallFeel.GUARD, BallFeel.of(""))
+        assertEquals(BallFeel.GUARD, BallFeel.of("standard"))
+        assertEquals(BallFeel.GUARD, BallFeel.of("STANDARD "))
+        assertEquals(BallFeel.GUARD, BallFeel.of("GUARD"))
+        assertEquals(BallFeel.STANDARD, BallFeel.of("STANDARD"))
     }
 }

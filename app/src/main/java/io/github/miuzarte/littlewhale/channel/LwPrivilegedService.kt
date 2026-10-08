@@ -5,6 +5,7 @@ import android.os.Binder
 import android.os.Parcel
 import android.os.Process
 import android.util.Log
+import io.github.miuzarte.littlewhale.lock.LockSteps
 
 /**
  * The service the privileged process hosts
@@ -24,11 +25,8 @@ class LwPrivilegedService(private val context: Context?) : Binder() {
     /** The screen this process hosts, which outlives every connection the app makes to it */
     private val display = LwVirtualDisplay(context)
 
-    /** The phone's own glass, which is the brake: what it sees is a person, never an injection */
-    private val touch = LwTouchWatch()
-
     /** Touch aimed at a screen, which only works from a uid the platform trusts to inject */
-    private val input = LwInput(context, touch)
+    private val input = LwInput(context)
 
     /** Pictures of a screen, which the app cannot take once its own preview is gone */
     private val capture = LwCapture()
@@ -38,6 +36,14 @@ class LwPrivilegedService(private val context: Context?) : Binder() {
 
     /** Starting an app, which the app cannot ask the activity manager for at all */
     private val launch = LwLaunch()
+
+    /**
+     * 录一段真手指的动作 (批次 5, 需求 7)
+     *
+     * 触屏那个节点一直开着, 应用按一拍取一次 (见 [LwTouchRecord.drain]): 一次事务带走的只是"这一段
+     * 里已经走完的笔画", 而手指还按着的那一条留在手里 —— 于是按 2 秒一拍取也不会把一条上滑切成两半
+     */
+    private val touchRecord = LwTouchRecord()
 
     override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean =
         when (code) {
@@ -57,16 +63,6 @@ class LwPrivilegedService(private val context: Context?) : Binder() {
             LwServiceProtocol.PID -> answering(data, reply) { writeInt(Process.myPid()) }
 
             LwServiceProtocol.INPUT_DEVICES -> answering(data, reply) { writeString(readInputDevices()) }
-
-            LwServiceProtocol.TOUCH_STATE -> answering(data, reply) {
-                val state = touch.state()
-                writeInt(if (state.watching) 1 else 0)
-                writeInt(if (state.down) 1 else 0)
-                writeInt(state.msSinceLastTouch)
-                writeInt(state.events)
-                writeString(state.path)
-                writeString(state.error)
-            }
 
             LwServiceProtocol.DISPLAY_CREATE -> answering(data, reply) {
                 val width = data.readInt()
@@ -101,8 +97,7 @@ class LwPrivilegedService(private val context: Context?) : Binder() {
                 val x = data.readFloat()
                 val y = data.readFloat()
                 val holdMs = data.readLong()
-                val brake = data.readInt() == 1
-                writeInt(input.tap(displayId, x, y, holdMs, brake))
+                input.tap(displayId, x, y, holdMs)
             }
 
             LwServiceProtocol.INPUT_TOUCH -> answering(data, reply) {
@@ -120,18 +115,14 @@ class LwPrivilegedService(private val context: Context?) : Binder() {
                 val toX = data.readFloat()
                 val toY = data.readFloat()
                 val durationMs = data.readLong()
-                val brake = data.readInt() == 1
-                writeInt(input.swipe(displayId, fromX, fromY, toX, toY, durationMs, brake))
+                input.swipe(displayId, fromX, fromY, toX, toY, durationMs)
             }
 
             LwServiceProtocol.INPUT_KEY -> answering(data, reply) {
                 val displayId = data.readInt()
                 val keyCode = data.readInt()
                 val holdMs = data.readLong()
-                val brake = data.readInt() == 1
-                val outcome = input.key(displayId, keyCode, holdMs, brake)
-                writeInt(if (outcome.accepted) 1 else 0)
-                writeInt(outcome.lastedMs)
+                writeInt(if (input.key(displayId, keyCode, holdMs)) 1 else 0)
             }
 
             LwServiceProtocol.INPUT_TEXT -> answering(data, reply) {
@@ -217,8 +208,7 @@ class LwPrivilegedService(private val context: Context?) : Binder() {
                     LwInput.Path((0 until count).map { data.readFloat() to data.readFloat() })
                 }
                 val durationMs = data.readLong()
-                val brake = data.readInt() == 1
-                writeInt(input.gesture(displayId, paths, durationMs, brake))
+                input.gesture(displayId, paths, durationMs)
             }
 
             LwServiceProtocol.PINCH -> answering(data, reply) {
@@ -227,8 +217,23 @@ class LwPrivilegedService(private val context: Context?) : Binder() {
                 val y = data.readFloat()
                 val scale = data.readFloat()
                 val durationMs = data.readLong()
-                val brake = data.readInt() == 1
-                writeInt(input.pinch(displayId, x, y, scale, durationMs, brake))
+                input.pinch(displayId, x, y, scale, durationMs)
+            }
+
+            LwServiceProtocol.TOUCH_RECORD -> answering(data, reply) {
+                val finish = data.readInt() == 1
+                val started = if (finish) null else touchRecord.start()
+                val (problem, steps) = if (started == null) {
+                    touchRecord.drain()
+                } else {
+                    started to emptyList()
+                }
+                // 这一拍读到几帧要一起回: 一帧都没有时, "为什么没录到"就只剩这一个读数说得清
+                val seen = touchRecord.seen()
+                if (finish) touchRecord.stop()
+                writeString(problem.orEmpty())
+                writeString(LockSteps.encode(steps))
+                writeInt(seen)
             }
 
             else -> super.onTransact(code, data, reply, flags)
@@ -240,7 +245,6 @@ class LwPrivilegedService(private val context: Context?) : Binder() {
     /** Release whatever is held and end the process, which is what the app's destroy asks for */
     fun destroy() {
         Log.i(TAG, "exiting")
-        touch.stop()
         // Screens are the one thing the system keeps alive after this process is gone, and a
         // display nobody releases stays in `dumpsys display` until the device reboots
         display.releaseAll()

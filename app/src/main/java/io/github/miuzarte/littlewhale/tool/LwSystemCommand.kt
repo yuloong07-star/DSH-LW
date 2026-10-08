@@ -3,7 +3,6 @@ package io.github.miuzarte.littlewhale.tool
 import io.github.miuzarte.littlewhale.channel.KeyCodes
 import io.github.miuzarte.littlewhale.channel.LwServiceProtocol
 import io.github.miuzarte.littlewhale.channel.PrivilegedChannel
-import io.github.miuzarte.littlewhale.ui.DestructiveConfirm
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -13,13 +12,11 @@ import kotlinx.serialization.json.JsonObject
  * 它们 (`am` 与 `pm` 对 app uid 直接拒绝), 所以一律转给特权进程。**白名单写在特权那一侧**
  * (`LwSystemCommandTable`): 这一层送过去的只是一个操作名与几个参数, 那边对不上就拒
  *
- * 四种操作在动手之前还要人点一下确认 ([DestructiveConfirm]): 它们要么让别人的应用消失, 要么让人
- * 正在用的应用停下。**没人点就不执行**, 而且屏幕关着的时候弹窗看不见, 于是也不会执行
+ * **2026-10-08 起应用这一侧不再弹确认框** (主人的口径: 那五条改由提示词层问一次)。所以这一层
+ * 只剩"送过去并如实报回执": 该不该做, 由模型在会话里问过用户之后自己决定 —— `lw_app_control`
+ * 的工具描述与技能 `android-device-control` 里那条红线就是这条规矩的落点
  */
 internal object LwSystemCommand {
-
-    /** 认得"要人点一下"的那几个 */
-    private val destructive = setOf("uninstall", "clearData", "forceStop", "install", "disable")
 
     /** 一次调用送过去的参数上限, 与特权那边的表对齐 (通用 intent 那条更宽, 由那张表自己说) */
     private const val MAX_ARGS = 4
@@ -55,11 +52,11 @@ internal object LwSystemCommand {
     }
 
     /**
-     * 一件破坏性的事: 先等人点, 再去做
+     * 一件破坏性的事: 直接做, 并把做了什么原样报回去
      *
-     * 等待是挂起而不是轮询: 桥那条请求为每一次调用开一个线程, 所以挂 100 秒不会占住别的调用
+     * 应用侧那道确认框已经撤掉, 所以这里不再有等待与超时 —— 该不该做由提示词那一层管 (见文件头)
      */
-    suspend fun destructive(
+    private fun destructive(
         operation: String,
         target: String,
         arguments: List<String> = emptyList(),
@@ -74,13 +71,6 @@ internal object LwSystemCommand {
             "disable" -> "disable $target, which takes it off the launcher until it is enabled again"
             else -> "$operation $target"
         }
-        if (!DestructiveConfirm.ask(what, "target: $target")) {
-            throw IllegalStateException(
-                "$operation was not confirmed within ${DestructiveConfirm.DEADLINE_SECONDS} seconds," +
-                    " so nothing was done: the app puts this one behind a dialog on the phone, and" +
-                    " nobody tapped it",
-            )
-        }
         val result = run(operation, arguments.ifEmpty { listOf(target) }, userId, timeoutMs)
         return text(
             "$what: " + result.output.ifBlank { "the privileged side said nothing" } +
@@ -89,10 +79,10 @@ internal object LwSystemCommand {
     }
 
     /**
-     * 这一批完整的入口: 破坏性的那几条先挂起等人点, 开关那几条直接就做
+     * 这一批完整的入口: 破坏性的那五条与开关那几条都直接做, 区别只在回执怎么写
      *
-     * **`disable` 也在等人点的那一边**: 它比停应用更粘 —— 停掉的东西下次启动就回来了, 而被停用的应用
-     * 从桌面上消失, 要有人记得回设置里打开
+     * **`disable` 仍然算破坏性**: 它比停应用更粘 —— 停掉的东西下次启动就回来了, 而被停用的应用从
+     * 桌面上消失, 要有人记得回设置里打开。它在提示词那一层与另外四条一个待遇 (先问用户)
      */
     suspend fun dispatch(request: JsonObject): JsonObject = when (val op = request.string("op")) {
         "forceStop", "clearData", "uninstall", "install", "disable" -> destructive(op, request)
@@ -210,11 +200,11 @@ internal object LwSystemCommand {
     }
 
     /**
-     * 破坏性的一条: 先把要做什么说清楚, 再等人点
+     * 破坏性的一条: 要做什么直接说清楚
      *
      * 四种操作的目标都是那一个参数 (要装的包给的是 APK 路径), 所以参数表在这里拼, 不由调用方拼
      */
-    private suspend fun destructive(operation: String, request: JsonObject): JsonObject =
+    private fun destructive(operation: String, request: JsonObject): JsonObject =
         destructive(
             operation = operation,
             target = request.string("package"),

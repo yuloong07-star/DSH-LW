@@ -23,11 +23,10 @@ import java.lang.reflect.Method
  * press that started them by their down time: the press is remembered here and reused until the
  * finger is lifted
  *
- * A drag can also be interrupted, by the one thing that outranks this process: the person holding
- * the phone. That is what [watch] is for, and it only ever applies to the phone's own screen,
- * because a screen of ours has nobody standing over it
+ * **2026-10-08: 那道"真手指一来就把手势掐断"的软停删掉了** (主人点名): 手势一旦开始就跑到底, 中途
+ * 不再问玻璃上有没有人. 现在主屏与虚拟屏在这里完全一样, 没有人能在这条路上把它打断
  */
-class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
+class LwInput(private val context: Context?) {
 
     private var manager: InputManager? = null
     private var setDisplayIdMethod: Method? = null
@@ -48,28 +47,12 @@ class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
      * what a voice message being recorded or a finger waiting for a drag to start needs. Nothing is
      * special cased for a long hold, because the platform already reads the time
      *
-     * With [brake] on - which is what the phone's own screen asks for - the wait is sliced so that
-     * a real finger arriving during it ends the press there instead of leaving a held finger on
-     * somebody else's screen for the rest of the hold
-     *
-     * @returns [LwServiceProtocol.GESTURE_COMPLETED], or how many milliseconds the press lasted
-     *   before a finger arrived
+     * The hold is one wait: 没有软停之后它不再需要被切片去听有没有真手指 (那正是切片唯一的用处)
      */
-    fun tap(displayId: Int, x: Float, y: Float, holdMs: Long, brake: Boolean): Int {
-        val started = SystemClock.uptimeMillis()
+    fun tap(displayId: Int, x: Float, y: Float, holdMs: Long) {
         touch(displayId, LwServiceProtocol.TOUCH_DOWN, x, y)
-        var left = heldFor(holdMs).coerceAtLeast(TAP_HOLD_MS)
-        while (left > 0) {
-            val slice = left.coerceAtMost(BRAKE_SLICE_MS)
-            if (brake && interrupted(slice)) {
-                touch(displayId, LwServiceProtocol.TOUCH_UP, x, y)
-                Log.i(TAG, "the press on display $displayId ended at $x,$y, a real finger arrived")
-                return (SystemClock.uptimeMillis() - started).toInt()
-            }
-            left -= slice
-        }
+        SystemClock.sleep(heldFor(holdMs).coerceAtLeast(TAP_HOLD_MS))
         touch(displayId, LwServiceProtocol.TOUCH_UP, x, y)
-        return LwServiceProtocol.GESTURE_COMPLETED
     }
 
     /**
@@ -80,13 +63,8 @@ class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
      * scrolling, a drag handle - reads it wrong. The last move lands on the target and the lift
      * follows at the same point, so the finger stops before it is released
      *
-     * With [brake] on - which is what the phone's own screen asks for - every slice of the wait
-     * between two moves is a chance for a real finger to arrive, and one that does ends the drag
-     * where it stands: the finger is lifted at the point it had reached, because a hand that stops
-     * a gesture must not leave a press hanging on the screen
-     *
-     * @returns [LwServiceProtocol.GESTURE_COMPLETED], or how many milliseconds the drag lasted before
-     *   somebody's finger took the screen back
+     * 每一步都要等, 主屏与虚拟屏都一样 (见那一行注释里的实测): 少了它, 一串同毫秒的 MOVE 会被平台
+     * 合并成一次跳, 而按帧读输入的引擎会把它读成"按下加抬起", 手势就变成了点击
      */
     fun swipe(
         displayId: Int,
@@ -95,34 +73,22 @@ class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
         toX: Float,
         toY: Float,
         durationMs: Long,
-        brake: Boolean,
-    ): Int {
-        val started = SystemClock.uptimeMillis()
+    ) {
         touch(displayId, LwServiceProtocol.TOUCH_DOWN, fromX, fromY)
         val stepMs = (durationMs / SWIPE_STEPS).coerceAtLeast(MIN_STEP_MS)
         var x = fromX
         var y = fromY
         for (step in 1..SWIPE_STEPS) {
-            // **每一步都要等**, 两条路都一样: 同一毫秒里发出的一串 MOVE 在分发器看来会被合并成一次
-            // 跳, 而按帧读输入的引擎 (Unity 就是) 在那一帧里只看到按下加抬起 —— 手势就成了点击, 实测
-            // 干员列表里 0.407% 的像素动了一下 (按下反馈) 而平台自己的 input swipe 动了 82%。原来只有
-            // 主屏 (brake) 那条路会等, 虚拟屏是硬突发的, 所以这个坑只在游戏里露出来
-            if (brake) {
-                if (interrupted(stepMs)) {
-                    touch(displayId, LwServiceProtocol.TOUCH_UP, x, y)
-                    Log.i(TAG, "the drag on display $displayId ended at $x,$y, a real finger arrived")
-                    return (SystemClock.uptimeMillis() - started).toInt()
-                }
-            } else {
-                SystemClock.sleep(stepMs)
-            }
+            // **每一步都要等**: 同一毫秒里发出的一串 MOVE 在分发器看来会被合并成一次跳, 而按帧读输入
+            // 的引擎 (Unity 就是) 在那一帧里只看到按下加抬起 —— 手势就成了点击, 实测干员列表里 0.407%
+            // 的像素动了一下 (按下反馈) 而平台自己的 input swipe 动了 82%
+            SystemClock.sleep(stepMs)
             val progress = step.toFloat() / SWIPE_STEPS
             x = fromX + (toX - fromX) * progress
             y = fromY + (toY - fromY) * progress
             touch(displayId, LwServiceProtocol.TOUCH_MOVE, x, y)
         }
         touch(displayId, LwServiceProtocol.TOUCH_UP, toX, toY)
-        return LwServiceProtocol.GESTURE_COMPLETED
     }
 
     /**
@@ -141,7 +107,7 @@ class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
      *
      * 收紧一点: 指针 id 就是路径下标, 步数按最长的路径算, 而**一条路径至少两个点**才有方向可说
      */
-    fun gesture(displayId: Int, paths: List<Path>, durationMs: Long, brake: Boolean): Int {
+    fun gesture(displayId: Int, paths: List<Path>, durationMs: Long) {
         if (paths.isEmpty()) throw IllegalArgumentException("a gesture needs at least one path")
         paths.forEach { path ->
             if (path.points.size < 2) {
@@ -151,21 +117,12 @@ class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
         }
         val steps = paths.maxOf { it.points.size - 1 }
         val stepMs = (durationMs / steps).coerceAtLeast(MIN_STEP_MS)
-        val started = SystemClock.uptimeMillis()
-        val downTime = started
+        val downTime = SystemClock.uptimeMillis()
         var last = pointsAt(paths, 0)
 
         sendMulti(displayId, MotionEvent.ACTION_DOWN, downTime, last, firstPointerIndex = 0)
         for (step in 1..steps) {
-            if (brake) {
-                if (interrupted(stepMs)) {
-                    sendMulti(displayId, MotionEvent.ACTION_UP, downTime, last, firstPointerIndex = 0)
-                    Log.i(TAG, "the gesture on display $displayId ended early, a real finger arrived")
-                    return (SystemClock.uptimeMillis() - started).toInt()
-                }
-            } else {
-                SystemClock.sleep(stepMs)
-            }
+            SystemClock.sleep(stepMs)
             val next = pointsAt(paths, step)
             if (step == steps && next.size > 1) {
                 // 收尾: 多指一起抬起是"每根手指各自抬" - 逐个 POINTER_UP 之后剩下的那一根才 UP, 只发
@@ -183,7 +140,6 @@ class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
             )
             last = next
         }
-        return LwServiceProtocol.GESTURE_COMPLETED
     }
 
     /**
@@ -192,7 +148,7 @@ class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
      * `scale` 大于 1 是放大 (两指分开), 小于 1 是缩小。它只是 [gesture] 的糖衣, 因为捏合的形状本来
      * 就是"两根手指各自一条直线路径"
      */
-    fun pinch(displayId: Int, centerX: Float, centerY: Float, scale: Float, durationMs: Long, brake: Boolean): Int {
+    fun pinch(displayId: Int, centerX: Float, centerY: Float, scale: Float, durationMs: Long) {
         if (scale <= 0f) throw IllegalArgumentException("scale has to be greater than zero")
         val spread = PINCH_SPREAD
         val from = listOf(
@@ -203,11 +159,10 @@ class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
             centerX - spread * scale to centerY,
             centerX + spread * scale to centerY,
         )
-        return gesture(
+        gesture(
             displayId,
             listOf(Path(listOf(from[0], to[0])), Path(listOf(from[1], to[1]))),
             durationMs,
-            brake,
         )
     }
 
@@ -272,27 +227,6 @@ class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
     }
 
     /**
-     * Wait out one step, answering whether a real finger turned up during it
-     *
-     * Sliced rather than slept in one go: two seconds of drag is twelve steps of a sixth of a
-     * second each, and waiting a whole step to notice a hand on the screen would let the model
-     * keep dragging for most of it. A gesture that cannot be watched is ended as well - a brake
-     * nobody can read is not a brake
-     */
-    private fun interrupted(ms: Long): Boolean {
-        var left = ms
-        while (left > 0) {
-            val slice = left.coerceAtMost(BRAKE_SLICE_MS)
-            SystemClock.sleep(slice)
-            left -= slice
-            val state = watch.state()
-            if (!state.watching) return true
-            if (state.down || state.msSinceLastTouch in 0 until BRAKE_MS) return true
-        }
-        return false
-    }
-
-    /**
      * Press and release one key, holding it down for as long as the caller asked
      *
      * A key is not a finger: the platform matches the release to its press by the down time the two
@@ -301,32 +235,16 @@ class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
      * lifted with that flag, which is what the platform's own `input keyevent --longpress` does.
      * The hold itself is real as well: it is how long the key stays down
      *
-     * With [brake] on the hold is watched, and a real finger on the glass lifts the key where it
-     * stands: the person holding the phone outranks whatever is being held down
-     *
-     * @returns whether the device took both halves of the press, and how long the hold lasted or
-     *   [LwServiceProtocol.GESTURE_COMPLETED]
+     * @returns whether the device took both halves of the press
      */
-    fun key(displayId: Int, keyCode: Int, holdMs: Long, brake: Boolean): KeyOutcome {
+    fun key(displayId: Int, keyCode: Int, holdMs: Long): Boolean {
         val downTime = SystemClock.uptimeMillis()
         if (!sendKey(displayId, KeyEvent.ACTION_DOWN, keyCode, downTime, downTime, 0)) {
-            return KeyOutcome(accepted = false, lastedMs = LwServiceProtocol.GESTURE_COMPLETED)
+            return false
         }
-        val started = SystemClock.uptimeMillis()
-        var left = heldFor(holdMs).coerceAtLeast(KEY_HOLD_MS)
-        var lasted = LwServiceProtocol.GESTURE_COMPLETED
-        while (left > 0) {
-            val slice = left.coerceAtMost(BRAKE_SLICE_MS)
-            if (brake && interrupted(slice)) {
-                lasted = (SystemClock.uptimeMillis() - started).toInt()
-                Log.i(TAG, "the hold on key $keyCode ended after $lasted ms, a real finger arrived")
-                left = 0
-            } else {
-                left -= slice
-            }
-        }
+        SystemClock.sleep(heldFor(holdMs).coerceAtLeast(KEY_HOLD_MS))
         val flags = if (holdMs >= LwServiceProtocol.LONG_PRESS_MS) KeyEvent.FLAG_LONG_PRESS else 0
-        val accepted = sendKey(
+        return sendKey(
             displayId,
             KeyEvent.ACTION_UP,
             keyCode,
@@ -334,7 +252,6 @@ class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
             SystemClock.uptimeMillis(),
             flags,
         )
-        return KeyOutcome(accepted, lasted)
     }
 
     /**
@@ -503,12 +420,6 @@ class LwInput(private val context: Context?, private val watch: LwTouchWatch) {
          * the old floor and it was too short, because nothing paced the steps at all
          */
         const val MIN_STEP_MS = 16L
-
-        /** How finely a step is watched for the user's hand, which is what the brake's latency is */
-        const val BRAKE_SLICE_MS = 8L
-
-        /** How recently a real finger has to have moved for a drag to be ended by it */
-        const val BRAKE_MS = 250
 
         /** A key press is short: the platform does not read velocity into one */
         const val KEY_HOLD_MS = 40L

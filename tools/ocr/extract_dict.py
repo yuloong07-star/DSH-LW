@@ -3,6 +3,8 @@
 One character per line, UTF-8, in the order the model emits them. The model's class count is
 `1 + len(dict) + 1`: index 0 is the CTC blank and the last index is the space that PaddleOCR
 appends when `use_space_char` is on, both added by CTCLabelDecode rather than listed in the dict.
+
+usage: python tools/ocr/extract_dict.py <inference.yml> <rec_dict.txt>   (由 build-models.ps1 调)
 """
 
 import argparse

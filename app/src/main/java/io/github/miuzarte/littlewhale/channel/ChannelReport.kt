@@ -35,7 +35,6 @@ object ChannelReport {
     /** The channel plus what only the privileged uid could read */
     fun probe(probe: ChannelProbe): JsonObject = buildJsonObject {
         put("channel", status(probe.state))
-        put("touch", touch(probe.touch))
         put("users", users(probe.users))
         val raw = probe.inputDevices
         if (raw == null) {
@@ -56,24 +55,6 @@ object ChannelReport {
             )
             put("devices", buildJsonArray { devices.forEach { add(device(it, it == touchscreen)) } })
         }
-    }
-
-    /**
-     * What the phone's own glass has seen lately
-     *
-     * This is a fact about the device rather than about any one screen, and it is the brake: every
-     * event counted here came from a real finger, because an injected one never reaches the
-     * kernel's input nodes. `available` is the part that matters - with no watch there is nothing
-     * standing between the model and the phone in somebody's hand, so acting on it is refused
-     */
-    fun touch(state: TouchState?): JsonObject = buildJsonObject {
-        put("available", state?.watching == true)
-        put("userTouching", state?.driving() == true)
-        put("down", state?.down ?: false)
-        put("msSinceLastTouch", state?.msSinceLastTouch ?: -1)
-        put("events", state?.events ?: 0)
-        put("path", state?.path.orEmpty())
-        put("error", state?.error.orEmpty())
     }
 
     /**

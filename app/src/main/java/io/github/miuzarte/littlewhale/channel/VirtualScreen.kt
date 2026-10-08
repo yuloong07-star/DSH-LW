@@ -345,61 +345,6 @@ object VirtualScreen {
         return ScreenState(MAIN_DISPLAY, metrics.widthPixels, metrics.heightPixels, metrics.densityDpi, MAIN_LABEL)
     }
 
-    /**
-     * What the phone's own glass has seen lately, null when nothing can say
-     *
-     * Null is not "nobody is touching": it means the brake cannot be read at all, which for
-     * anything aimed at the phone's own screen is a reason to refuse rather than to try
-     */
-    fun userTouch(): TouchState? = try {
-        requireService().touchState()
-    } catch (problem: Throwable) {
-        Log.w(TAG, "the touch watch could not be read", problem)
-        null
-    }
-
-    /**
-     * Whether the phone counts as being in somebody's hands
-     *
-     * The policy is the state's own - see [TouchState.driving] - and this is only here so callers
-     * that already hold a screen have one thing to ask
-     */
-    fun userIsDriving(touch: TouchState?): Boolean = touch?.driving() == true
-
-    /**
-     * Refuse an action because a real finger owns the phone's own screen right now
-     *
-     * Only the phone's own screen is braked here. A screen of ours is somewhere else entirely -
-     * hands on the phone while the model draws on display 69 are not a conflict - and the brakes
-     * for those are the ones the menu already gives the user: pause, and the preview's own switch
-     */
-    fun requireUserNotDriving(screen: ScreenState) {
-        if (screen.displayId != MAIN_DISPLAY) return
-        val touch = userTouch()
-        if (touch == null || !touch.watching) {
-            throw IllegalStateException(
-                "the phone's own screen (displayId $MAIN_DISPLAY) cannot be driven while nothing" +
-                    " on this device is watching it for a real finger" +
-                    " (${touch?.error ?: "the touch watch could not be read"}) - that watch is the" +
-                    " only thing that stops the model when a person picks the phone up, so this" +
-                    " call was refused; the virtual screens are not affected",
-            )
-        }
-        if (userIsDriving(touch)) throw IllegalStateException(drivingReason(touch))
-    }
-
-    /** Why the phone was refused, worded so a model reads it as a stop rather than as a hiccup */
-    private fun drivingReason(touch: TouchState): String {
-        val how = if (touch.down) {
-            "a real finger is on the screen right now"
-        } else {
-            "a real finger touched it ${touch.msSinceLastTouch} ms ago"
-        }
-        return "the user is using the phone's own screen (displayId $MAIN_DISPLAY): $how, so this" +
-            " call was not delivered - stop driving the main screen, say what you were doing, and" +
-            " ask the user what they want instead of retrying; they will tell you when it is free"
-    }
-
     /** Show a screen, or none, moving the preview's surface with it */
     private fun select(screen: ScreenState?) {
         val previous = selected
@@ -564,86 +509,52 @@ object VirtualScreen {
      */
     fun tap(screen: ScreenState, x: Float, y: Float, holdMs: Long = 0L) {
         requireAcceptsControl(screen)
-        requireUserNotDriving(screen)
-        val brake = screen.displayId == MAIN_DISPLAY
         gesture(screen, "tap") { service ->
-            val lasted = service.tap(screen.displayId, x, y, holdMs, brake)
-            if (lasted != LwServiceProtocol.GESTURE_COMPLETED) {
-                throw IllegalStateException(interruptedReason("press", lasted, holdMs))
-            }
+            service.tap(screen.displayId, x, y, holdMs)
         }
     }
 
     /**
      * Drag from one point to another, waiting until the finger has been lifted again
-     *
-     * A drag on the phone's own screen is the one gesture that can be taken away half way through,
-     * and the answer says how far it got, because a caller that thinks its gesture happened reads
-     * the next screenshot as the result of something that never finished
      */
     fun swipe(screen: ScreenState, fromX: Float, fromY: Float, toX: Float, toY: Float, durationMs: Long) {
         requireAcceptsControl(screen)
-        requireUserNotDriving(screen)
-        val brake = screen.displayId == MAIN_DISPLAY
         gesture(screen, "swipe") { service ->
-            val lasted = service.swipe(screen.displayId, fromX, fromY, toX, toY, durationMs, brake)
-            if (lasted != LwServiceProtocol.GESTURE_COMPLETED) {
-                throw IllegalStateException(interruptedReason("drag", lasted, durationMs))
-            }
+            service.swipe(screen.displayId, fromX, fromY, toX, toY, durationMs)
         }
     }
 
     /**
      * 多指手势: 每条路径一根手指, 一起走
      *
-     * 与单指的拖同一条路 (队列 + 两道闸), 只是"步"里所有手指一起动。切断时抛出而不是静默返回, 与
-     * [swipe] 一致: 调用方拿着一个以为已经做完的手势去读下一张截图, 是最难查的错误
+     * 与单指的拖同一条路 (队列 + 那道暂停闸), 只是"步"里所有手指一起动
      */
-    fun multiGesture(screen: ScreenState, paths: List<LwInput.Path>, durationMs: Long, brake: Boolean) {
+    fun multiGesture(screen: ScreenState, paths: List<LwInput.Path>, durationMs: Long) {
         requireAcceptsControl(screen)
-        requireUserNotDriving(screen)
         gesture(screen, "gesture") { service ->
-            val lasted = service.gesture(screen.displayId, paths, durationMs, brake)
-            if (lasted != LwServiceProtocol.GESTURE_COMPLETED) {
-                throw IllegalStateException(interruptedReason("gesture", lasted, durationMs))
-            }
+            service.gesture(screen.displayId, paths, durationMs)
         }
     }
 
     /** 捏合: 两根手指在中心两侧分合, 是 [multiGesture] 的糖衣 */
-    fun pinch(screen: ScreenState, x: Float, y: Float, scale: Float, durationMs: Long, brake: Boolean) {
+    fun pinch(screen: ScreenState, x: Float, y: Float, scale: Float, durationMs: Long) {
         requireAcceptsControl(screen)
-        requireUserNotDriving(screen)
         gesture(screen, "pinch") { service ->
-            val lasted = service.pinch(screen.displayId, x, y, scale, durationMs, brake)
-            if (lasted != LwServiceProtocol.GESTURE_COMPLETED) {
-                throw IllegalStateException(interruptedReason("pinch", lasted, durationMs))
-            }
+            service.pinch(screen.displayId, x, y, scale, durationMs)
         }
     }
-
-    /** Why a gesture stopped in the middle, which is the brake working rather than a failure */
-    private fun interruptedReason(what: String, lasted: Int, askedMs: Long): String =
-        "the $what on the phone's own screen (displayId $MAIN_DISPLAY) was cut short after $lasted" +
-            " ms of the $askedMs ms asked for: the user put a finger on the screen, so it was" +
-            " released there - the phone is theirs again, stop and ask the user what they want" +
-            " before acting on it again"
 
     /**
      * Press one key on a screen, waiting until the device has taken it
      *
      * Pressing a key is acting on a screen like any other call here, so it goes through the same
-     * queue and past the same brakes: the menu's pause on a screen of ours, and a real finger on
-     * the phone's own screen, because a person holding the phone outranks the model there whatever
-     * it is doing
+     * queue and past the same gate: the menu's pause on a screen of ours
      *
      * @param holdMs how long the key stays down, [LONG_PRESS_MS][LwServiceProtocol.LONG_PRESS_MS] or
-     *   more being what the platform reads as a long press. A hold on the phone's own screen is
-     *   watched like every other one: a real finger lifts the key where it stands
+     *   more being what the platform reads as a long press
      */
     fun key(screen: ScreenState, keyCode: Int, holdMs: Long) {
         requireAcceptsControl(screen)
-        requireUserNotDriving(screen)
         if (screen.displayId != MAIN_DISPLAY && keyCode in KeyCodes.WHOLE_SCREEN) {
             throw IllegalStateException(
                 "the key ${KeyCodes.nameOf(keyCode)} is about a whole screen rather than about" +
@@ -654,18 +565,14 @@ object VirtualScreen {
                     " 0), or give this screen back with lw_screen_release and make a new one",
             )
         }
-        val brake = screen.displayId == MAIN_DISPLAY
         gesture(screen, "key") { service ->
-            val outcome = service.key(screen.displayId, keyCode, holdMs, brake)
-            if (!outcome.accepted) {
+            val accepted = service.key(screen.displayId, keyCode, holdMs)
+            if (!accepted) {
                 throw IllegalStateException(
                     "the device refused the key press on displayId ${screen.displayId}" +
                         " (\"${screen.label}\") - the screen may have gone or the key may not be" +
                         " one it can take",
                 )
-            }
-            if (outcome.lastedMs != LwServiceProtocol.GESTURE_COMPLETED) {
-                throw IllegalStateException(interruptedReason("hold", outcome.lastedMs, holdMs))
             }
         }
     }
@@ -675,12 +582,10 @@ object VirtualScreen {
      *
      * The narrow half of typing: it is here for a screen that reports no field, because then the
      * only thing left is the keys a keyboard would have pressed. It goes through the touch queue
-     * with everything else, so it cannot land in the middle of a gesture, and it is braked the same
-     * way
+     * with everything else, so it cannot land in the middle of a gesture
      */
     fun text(screen: ScreenState, text: String): Int {
         requireAcceptsControl(screen)
-        requireUserNotDriving(screen)
         var typed = NOTHING_TYPED
         gesture(screen, "type") { service -> typed = service.text(screen.displayId, text) }
         return typed
@@ -692,13 +597,12 @@ object VirtualScreen {
      * The queue is what keeps a gesture in order against the preview's own fingers, and waiting on
      * it is what lets a caller report what happened instead of hoping. The pause is asked again
      * inside the queued block: whatever is behind this one in the queue would otherwise still run
-     * after the user pressed pause, and the same goes for the user's own hand on the phone
+     * after the user pressed pause
      */
     private fun gesture(screen: ScreenState, name: String, block: (LwServiceProxy) -> Unit) {
         try {
             touches.submit {
                 requireAcceptsControl(screen)
-                requireUserNotDriving(screen)
                 block(requireService())
             }.get(GESTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             lastError = null

@@ -164,9 +164,29 @@ if ($null -eq (BallFrame)) { throw "the ball is not up on $Serial : run lw_overl
 # 量的是**那个数一直往上涨**: 碰一下球 → 每 500 ms 读一次 idleMs (读 8 次 = 4 s) → 再看它到底收没收
 if (-not $NoTap) {
     Write-Output '-- 1. 碰一下之后 idleMs 要一直涨 (它涨不上去就是"每拍重置")'
+    # **先等球自己收边 (RESTED)** —— 这一组量的是"碰一下之后 5 s 收边", 而那一档只在"球先收着"时成立:
+    # 球已经全露着时碰一下是"进语音输入"(那是设计), 那条链一开就占着 10 s, 于是 5 s 那一条永远不成立。
+    # 2026-10-08 在这台模拟器上就是这样假失败的 (前一次测量把球留在了"全露着 + 语音链开着"那一档)
+    # 等它安静下来: "正在想 / 正在听 / 正在念"那几档本来就不收边 (那是设计, 也有单测钉着), 所以这一组
+    # 要等的是**没有状态**那一档 —— 上一次测量留下的那一轮可能还在跑
+    for ($settle = 0; $settle -lt 60; $settle++) {
+        if ((Field (State) 'peeked') -eq $true) { break }
+        Start-Sleep -Milliseconds 1000
+    }
+    $ready = (Field (State) 'peeked') -eq $true
+    if ($ready) {
+        Write-Output '   (等球收边: 已到半隐位)'
+    } else {
+        $stuck = State
+        Write-Output ("   (等球收边: 仍没收边 —— ballWait={0}, peekBlocked={1}, word={2}, 下面这一组会假失败)" -f `
+            (Field $stuck 'ballWait'), (Field $stuck 'peekBlocked'), (Field $stuck 'word'))
+    }
     if ($null -eq (TapBallOnce)) { throw 'the ball went away between measurements' }
+    # **取 11 次 (5.5 s)**: 收边那一档是 5 s, 而每一次取样自己也要花几十毫秒 —— 取 8 次 (4 s) 时最后
+    # 那个 idleMs 常常只有 3.9 s, 于是"过了 5 s 那一档"与"真的到半隐位"这两条判据会假失败
+    # (2026-10-08 在这台模拟器上就是这么挂的)
     $samples = @()
-    foreach ($i in 1..8) {
+    foreach ($i in 1..11) {
         Start-Sleep -Milliseconds 500
         $state = State
         $samples += [pscustomobject]@{
@@ -231,7 +251,9 @@ if (-not $NoTap) {
     Start-Sleep -Milliseconds 1200
     $state = State
     $word = Field $state 'word'
-    Judge '球上写着正在想 (先决条件)' ($word -eq '正在想') "word=$word"
+    # 那个字是**本地化过的** (`BallWord.label` 读的是应用自己的字符串), 所以英文环境上是 "Thinking":
+    # 把中文写死会让这条判据在英文设备上假失败 (2026-10-08 模拟器上就是这个样子)
+    Judge '球上写着正在想 (先决条件)' ($word -eq '正在想' -or $word -eq 'Thinking') "word=$word"
     $before = Field $state 'interrupts'
 
     TapBallTwice 150 | Out-Null

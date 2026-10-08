@@ -5,15 +5,6 @@ import android.os.Parcel
 import android.view.Surface
 
 /**
- * What one key press produced
- *
- * @property accepted whether the device took both halves of the press
- * @property lastedMs how long the hold lasted before a real finger ended it, or [GESTURE_COMPLETED]
- *   when nothing interrupted it
- */
-data class KeyOutcome(val accepted: Boolean, val lastedMs: Int)
-
-/**
  * The one interface crossing between the app and the privileged process
  *
  * It is written out here rather than declared in AIDL, and that is not a style choice: enabling
@@ -79,9 +70,6 @@ object LwServiceProtocol {
 
     /** Start an activity on one of the virtual screens, which only a privileged uid may ask for */
     const val LAUNCH = IBinder.FIRST_CALL_TRANSACTION + 13
-
-    /** What the phone's own touchscreen has seen lately, which is the brake's only sensor */
-    const val TOUCH_STATE = IBinder.FIRST_CALL_TRANSACTION + 14
 
     /** A whole press and release of one key, which is how a button the platform handles is pressed */
     const val INPUT_KEY = IBinder.FIRST_CALL_TRANSACTION + 15
@@ -150,6 +138,15 @@ object LwServiceProtocol {
     /** 捏合: 两根手指在中心两侧分合 */
     const val PINCH = IBinder.FIRST_CALL_TRANSACTION + 23
 
+    /**
+     * 录一段真手指的动作 (批次 5, 需求 7)
+     *
+     * 与"看触摸屏上有没有手指"那条路 (`LwTouchRecord` 的读法) 是同一件事的坐标版: `/dev/input` 是
+     * `input` 组的东西, 应用读不到, 而注入的事件不会出现在那个节点上 —— 所以这里读到的每一帧都是
+     * 真手指。一次事务带走一段时间的样本, 回来的是一串 `LockStep`
+     */
+    const val TOUCH_RECORD = IBinder.FIRST_CALL_TRANSACTION + 25
+
     /** The three moments [INPUT_TOUCH] can report */
     const val TOUCH_DOWN = 0
     const val TOUCH_MOVE = 1
@@ -163,14 +160,6 @@ object LwServiceProtocol {
      * looked at and driven but never released
      */
     const val MAIN_DISPLAY = 0
-
-    /**
-     * What [LwServiceProxy.tap] and [LwServiceProxy.swipe] answer when the whole gesture went out
-     *
-     * Anything else is how many milliseconds it lasted before a real finger took the screen back,
-     * so the caller can say what part of the gesture happened instead of only that it did not
-     */
-    const val GESTURE_COMPLETED = -1
 
     /**
      * The platform's own long press threshold (`ViewConfiguration.getLongPressTimeout`)
@@ -200,6 +189,16 @@ object LwServiceProtocol {
  * @property output 它打印的原话, 出错原因就在这里面
  */
 data class SystemOutput(val code: Int, val output: String)
+
+/**
+ * 录制那一侧一拍带回来的东西
+ *
+ * @property problem 读不成的理由, 成了就是 null
+ * @property steps 这一拍里**已经走完**的那几条笔画 (JSON)
+ * @property samples 这一拍里一共读到几帧 —— 它是"这条节点真的在读吗"的唯一读数: 一帧都没有时, 问题在
+ *   采集那一侧 (节点不对 / 屏灭着 / 手指没落到那个节点上), 而不在步骤那一侧
+ */
+data class TouchChunk(val problem: String?, val steps: String, val samples: Int)
 
 /**
  * Calls the privileged service
@@ -341,8 +340,7 @@ class LwServiceProxy(private val remote: IBinder) {
         displayId: Int,
         paths: List<LwInput.Path>,
         durationMs: Long,
-        brake: Boolean,
-    ): Int = transact(
+    ) = transact(
         code = LwServiceProtocol.GESTURE,
         write = {
             writeInt(displayId)
@@ -355,9 +353,8 @@ class LwServiceProxy(private val remote: IBinder) {
                 }
             }
             writeLong(durationMs)
-            writeInt(if (brake) 1 else 0)
         },
-        read = { readInt() },
+        read = { },
     )
 
     /** 捏合, 由特权那边按两条直线路径展开 */
@@ -367,8 +364,7 @@ class LwServiceProxy(private val remote: IBinder) {
         y: Float,
         scale: Float,
         durationMs: Long,
-        brake: Boolean,
-    ): Int = transact(
+    ) = transact(
         code = LwServiceProtocol.PINCH,
         write = {
             writeInt(displayId)
@@ -376,9 +372,8 @@ class LwServiceProxy(private val remote: IBinder) {
             writeFloat(y)
             writeFloat(scale)
             writeLong(durationMs)
-            writeInt(if (brake) 1 else 0)
         },
-        read = { readInt() },
+        read = { },
     )
 
     /** 一个字符串列表, 长度跟着内容走 */
@@ -388,26 +383,37 @@ class LwServiceProxy(private val remote: IBinder) {
     }
 
     /**
+     * 录一段真手指的动作, 回来的是一串步骤 (JSON)
+     *
+     * @param finish true 表示这一段录完了: 那一侧把手里的节点关掉, 没走完的那条笔画不再留着
+     * @return 读不成的理由 (成了就是 null), 以及这一段里**已经走完**的那几条笔画
+     */
+    fun touchRecord(finish: Boolean): TouchChunk = transact(
+        code = LwServiceProtocol.TOUCH_RECORD,
+        write = { writeInt(if (finish) 1 else 0) },
+        read = {
+            val problem = readString()?.takeIf { it.isNotBlank() }
+            val steps = readString().orEmpty()
+            TouchChunk(problem, steps, readInt())
+        },
+    )
+
+    /**
      * Press and lift at one point
      *
      * @param holdMs how long the finger stays down. A hold at or past [LONG_PRESS_MS] is what a long
      *   press is, and a longer one is a press that is kept down - a voice message being recorded, a
      *   drag that has to be started by holding - so the duration is the caller's to choose
-     * @param brake whether a real finger appearing on the glass ends the press where it is, which
-     *   only the phone's own screen asks for: a screen of ours has nobody to interrupt it
-     * @returns [GESTURE_COMPLETED], or how many milliseconds the press lasted before somebody's
-     *   finger took the screen back
      */
-    fun tap(displayId: Int, x: Float, y: Float, holdMs: Long, brake: Boolean): Int = transact(
+    fun tap(displayId: Int, x: Float, y: Float, holdMs: Long) = transact(
         code = LwServiceProtocol.INPUT_TAP,
         write = {
             writeInt(displayId)
             writeFloat(x)
             writeFloat(y)
             writeLong(holdMs)
-            writeInt(if (brake) 1 else 0)
         },
-        read = { readInt() },
+        read = { },
     )
 
     /** One moment of a finger, which is what makes a drag feel like a drag */
@@ -429,11 +435,6 @@ class LwServiceProxy(private val remote: IBinder) {
      * platform reads a gesture or a jump, and a round trip per step would make that pacing depend
      * on how busy the binder is
      *
-     * @param brake whether a real finger appearing on the glass ends the drag where it is, which
-     *   only the phone's own screen asks for: a screen of ours has nobody to interrupt it, and the
-     *   user's brakes on those are the menu's own
-     * @returns [LwServiceProtocol.GESTURE_COMPLETED], or how many milliseconds it lasted before a
-     *   finger arrived
      */
     fun swipe(
         displayId: Int,
@@ -442,8 +443,7 @@ class LwServiceProxy(private val remote: IBinder) {
         toX: Float,
         toY: Float,
         durationMs: Long,
-        brake: Boolean,
-    ): Int = transact(
+    ) = transact(
         code = LwServiceProtocol.INPUT_SWIPE,
         write = {
             writeInt(displayId)
@@ -452,9 +452,8 @@ class LwServiceProxy(private val remote: IBinder) {
             writeFloat(toX)
             writeFloat(toY)
             writeLong(durationMs)
-            writeInt(if (brake) 1 else 0)
         },
-        read = { readInt() },
+        read = { },
     )
 
     /**
@@ -469,20 +468,16 @@ class LwServiceProxy(private val remote: IBinder) {
      *   reads as a long press is the flag on the release rather than the time between the two
      *   events, so a hold at or past [LONG_PRESS_MS] is lifted with `FLAG_LONG_PRESS`, which is what
      *   the platform's own `input keyevent --longpress` does
-     * @param brake whether a real finger on the glass ends the hold where it is, which only the
-     *   phone's own screen asks for
-     * @returns whether the device took both halves of the press, and how long the hold lasted, or
-     *   [GESTURE_COMPLETED] when it was not interrupted
+     * @returns whether the device took both halves of the press
      */
-    fun key(displayId: Int, keyCode: Int, holdMs: Long, brake: Boolean): KeyOutcome = transact(
+    fun key(displayId: Int, keyCode: Int, holdMs: Long): Boolean = transact(
         code = LwServiceProtocol.INPUT_KEY,
         write = {
             writeInt(displayId)
             writeInt(keyCode)
             writeLong(holdMs)
-            writeInt(if (brake) 1 else 0)
         },
-        read = { KeyOutcome(readInt() == 1, readInt()) },
+        read = { readInt() == 1 },
     )
 
     /**
@@ -511,16 +506,6 @@ class LwServiceProxy(private val remote: IBinder) {
      * and asked once per acting call rather than subscribed to, because a caller that is about to
      * touch the phone wants to know now
      */
-    fun touchState(): TouchState = transact(LwServiceProtocol.TOUCH_STATE) {
-        val watching = readInt() == 1
-        val down = readInt() == 1
-        val age = readInt()
-        val events = readInt()
-        val path = readString().orEmpty()
-        val error = readString()
-        TouchState(watching, down, age, events, path, error)
-    }
-
     /**
      * Ask for a picture of the screen at a path this side can read
      *

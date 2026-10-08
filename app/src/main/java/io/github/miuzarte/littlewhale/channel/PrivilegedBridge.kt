@@ -3,7 +3,9 @@ package io.github.miuzarte.littlewhale.channel
 import android.graphics.Rect
 import android.os.SystemClock
 import android.util.Log
+import io.github.miuzarte.littlewhale.lock.LwLock
 import io.github.miuzarte.littlewhale.tool.LwCamera
+import io.github.miuzarte.littlewhale.tool.LwCalendar
 import io.github.miuzarte.littlewhale.tool.LwEvents
 import io.github.miuzarte.littlewhale.tool.LwFiles
 import io.github.miuzarte.littlewhale.tool.LwKeepAwake
@@ -13,6 +15,7 @@ import io.github.miuzarte.littlewhale.tool.LwNotify
 import io.github.miuzarte.littlewhale.tool.LwOverlay
 import io.github.miuzarte.littlewhale.tool.LwPhoto
 import io.github.miuzarte.littlewhale.tool.LwPower
+import io.github.miuzarte.littlewhale.tool.LwQuick
 import io.github.miuzarte.littlewhale.tool.LwSpeech
 import io.github.miuzarte.littlewhale.tool.LwSpeak
 import io.github.miuzarte.littlewhale.tool.LwSystem
@@ -253,8 +256,6 @@ object PrivilegedBridge {
             val screen = namedScreen(request)
             // 暂停要在这里也拦一次: 按名字走的是无障碍动作, 不经过 VirtualScreen 那条手势队列
             VirtualScreen.requireAcceptsControl(screen)
-            // 主屏的刹车同理: 无障碍点按也是动手, 而且它连坐标都不需要
-            VirtualScreen.requireUserNotDriving(screen)
             val name = request["text"]?.jsonPrimitive?.contentOrNull
                 ?: throw IllegalArgumentException("tapText has to name the text it means")
             val holdMs = hold(request)
@@ -289,7 +290,6 @@ object PrivilegedBridge {
         "scroll" -> {
             val screen = namedScreen(request)
             VirtualScreen.requireAcceptsControl(screen)
-            VirtualScreen.requireUserNotDriving(screen)
             val backward = request["direction"]?.jsonPrimitive?.contentOrNull == "backward"
             val name = request["text"]?.jsonPrimitive?.contentOrNull
             val times = (request["times"]?.jsonPrimitive?.intOrNull ?: 1).coerceIn(1, MAX_SCROLL_TIMES)
@@ -344,8 +344,6 @@ object PrivilegedBridge {
                 put("height", primary.height)
                 put("dpi", primary.dpi)
             }
-            // 主屏操作唯一的刹车, 让模型自己也能先看一眼再决定要不要动手
-            put("touch", ChannelReport.touch(VirtualScreen.userTouch()))
             put(
                 "screens",
                 buildJsonArray {
@@ -442,7 +440,6 @@ object PrivilegedBridge {
         "type" -> {
             val screen = namedScreen(request)
             VirtualScreen.requireAcceptsControl(screen)
-            VirtualScreen.requireUserNotDriving(screen)
             val text = request["text"]?.jsonPrimitive?.contentOrNull
                 ?: throw IllegalArgumentException("this call has to say what to type")
             if (text.length > MAX_TYPED_CHARS) {
@@ -622,7 +619,6 @@ object PrivilegedBridge {
         "launch" -> {
             val screen = namedScreen(request)
             VirtualScreen.requireAcceptsControl(screen)
-            VirtualScreen.requireUserNotDriving(screen)
             val asked = request["package"]?.jsonPrimitive?.contentOrNull.orEmpty()
             val component = request["component"]?.jsonPrimitive?.contentOrNull.orEmpty()
             // 手里往往只有一个名字 ("设置" / "哔哩哔哩"), 而 am 要的是包名: 能唯一对上就用它, 一个都
@@ -682,8 +678,14 @@ object PrivilegedBridge {
         }
 
         // A picture of one screen, named for the same reason every other gesture here names its
-        // screen: only the caller knows which one it is about to look at
-        "screenshot" -> {
+        // screen: only the caller knows which one it is about to look at.
+        //
+        // **`op=status` 是这一条事务唯一不截图的那一档** (批次 4): 宿主插件在投递一句话之前要问一次
+        // "指代不明时自动附图那一条开着没有", 而那条偏好只有应用这一侧读得到 —— 它判在最前面, 所以
+        // 通道没连上时也答得出来 (那时它答的正是"帮我截一张"做不到)
+        "screenshot" -> if (request["op"]?.jsonPrimitive?.contentOrNull == "status") {
+            buildJsonObject { put("autoShot", ScreenshotBudget.autoShot) }
+        } else run {
             val screen = namedScreen(request)
             // 预算由设置页那两档给, 调用方说了就用调用方的: 图必须在模型那条路由的预算之内, 超了
             // 要在 host 那边重编码, 而设备上没有编码器
@@ -805,7 +807,6 @@ object PrivilegedBridge {
         "gesture" -> {
             val screen = namedScreen(request)
             VirtualScreen.requireAcceptsControl(screen)
-            VirtualScreen.requireUserNotDriving(screen)
             val paths = (request["paths"] as? kotlinx.serialization.json.JsonArray)
                 ?.mapNotNull { it as? JsonObject }
                 ?.map { path ->
@@ -824,7 +825,6 @@ object PrivilegedBridge {
                 screen,
                 paths,
                 durationMs,
-                brake = screen.displayId == LwServiceProtocol.MAIN_DISPLAY,
             )
             buildJsonObject {
                 put("displayId", screen.displayId)
@@ -836,7 +836,6 @@ object PrivilegedBridge {
         "pinch" -> {
             val screen = namedScreen(request)
             VirtualScreen.requireAcceptsControl(screen)
-            VirtualScreen.requireUserNotDriving(screen)
             val scale = number(request, "scale", 2.0)
             val durationMs = request["durationMs"]?.jsonPrimitive?.longOrNull ?: DEFAULT_SWIPE_MS
             VirtualScreen.pinch(
@@ -845,7 +844,6 @@ object PrivilegedBridge {
                 number(request, "y"),
                 scale.toFloat(),
                 durationMs,
-                brake = screen.displayId == LwServiceProtocol.MAIN_DISPLAY,
             )
             buildJsonObject {
                 put("displayId", screen.displayId)
@@ -956,10 +954,15 @@ object PrivilegedBridge {
         "takePhoto" -> appContext { LwPhoto.dispatch(it, request) }
         // 通知栏那一侧: 读的是系统绑在本进程里的监听服务, 与无障碍同一条路
         "notifications" -> appContext { LwNotifications.dispatch(it, request) }
+        // 2.5.0 批次 7: 日程 (读日历 / 建一条 / 改一条 / 查空闲) 与快捷指令 (dsh 家里那几个 md)
+        "calendar" -> appContext { LwCalendar.dispatch(it, request) }
+        "quick" -> appContext { LwQuick.dispatch(it, request) }
         // 1.0.3 批次 6: 事件订阅 —— 让模型"等到一件事发生", 而不是反复读屏
         "eventsSubscribe" -> LwEvents.subscribe(request)
         "eventsWait" -> LwEvents.wait(request)
         "power" -> appContext { LwPower.dispatch(it, request) }
+        // 锁屏那一条 (批次 5): 状态 / 立刻解锁一次 / 看录了什么 / 清掉 / 录一段
+        "lock" -> appContext { LwLock.dispatch(it, request) }
         "speech" -> appContext { LwSpeech.dispatch(it, request) }
         "speak" -> appContext { LwSpeak.dispatch(it, request) }
         "overlay" -> appContext { LwOverlay.dispatch(it, request) }

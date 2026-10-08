@@ -1,5 +1,8 @@
 #!/system/bin/sh
 # 临时探针: 把 camera.sh 那条 ask 的**原始回包**打出来 (排"设备侧脚本收不到答案"这件事)
+#
+# 用法: 推上设备后 sh lw-camera-debug.sh —— 它自己从 /proc/<pid>/environ 找 endpoint 与 token,
+#       然后逐条打 status / front / status -w 5, 也就是设备侧脚本看到的那几行原始回包
 set -u
 
 endpoint=""

@@ -10,6 +10,7 @@ import android.provider.Settings
 import android.speech.tts.Voice
 import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,9 +25,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -34,6 +37,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -44,24 +48,36 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.channel.AccessibilitySetting
+import io.github.miuzarte.littlewhale.channel.CameraOwner
 import io.github.miuzarte.littlewhale.channel.ChannelSetting
 import io.github.miuzarte.littlewhale.channel.LwOcr
 import io.github.miuzarte.littlewhale.channel.NotificationSetting
 import io.github.miuzarte.littlewhale.channel.RemoteBackend
 import io.github.miuzarte.littlewhale.channel.RouteState
 import io.github.miuzarte.littlewhale.channel.ScreenshotBudget
+import io.github.miuzarte.littlewhale.lock.LockRecord
+import io.github.miuzarte.littlewhale.lock.LockReplay
+import io.github.miuzarte.littlewhale.lock.LockScript
+import io.github.miuzarte.littlewhale.lock.LockSecret
+import io.github.miuzarte.littlewhale.lock.LockSecretData
+import io.github.miuzarte.littlewhale.lock.LockSetting
 import io.github.miuzarte.littlewhale.tool.LwCamera
+import io.github.miuzarte.littlewhale.tool.LwQuick
 import io.github.miuzarte.littlewhale.tool.VideoLooks
+import io.github.miuzarte.littlewhale.voice.VoiceInbox
 import io.github.miuzarte.littlewhale.constants.UiSpacing
 import io.github.miuzarte.littlewhale.host.DshHost
 import io.github.miuzarte.littlewhale.host.HostStatus
 import io.github.miuzarte.littlewhale.overlay.BallGeometry
+import io.github.miuzarte.littlewhale.overlay.BallFeel
 import io.github.miuzarte.littlewhale.overlay.BallSpot
 import io.github.miuzarte.littlewhale.overlay.BallSwitch
 import io.github.miuzarte.littlewhale.overlay.OverlayState
 import io.github.miuzarte.littlewhale.scaffolds.ArrowSlider
+import io.github.miuzarte.littlewhale.scaffolds.GroupTitle
 import io.github.miuzarte.littlewhale.scaffolds.LazyColumn
 import io.github.miuzarte.littlewhale.scaffolds.SectionSmallTitle
+import io.github.miuzarte.littlewhale.scaffolds.SectionTitle
 import io.github.miuzarte.littlewhale.scaffolds.SuperTextField
 import io.github.miuzarte.littlewhale.theme.MonetKeyColorOptions
 import io.github.miuzarte.littlewhale.theme.ThemeSettings
@@ -72,6 +88,8 @@ import io.github.miuzarte.littlewhale.tool.LwSpeak
 import io.github.miuzarte.littlewhale.tool.LwTts
 import io.github.miuzarte.littlewhale.tool.LwWakeWord
 import io.github.miuzarte.littlewhale.tool.SpeakSettings
+import io.github.miuzarte.littlewhale.update.AboutSettings
+import io.github.miuzarte.littlewhale.update.UpdateCheck
 import io.github.miuzarte.littlewhale.util.Grant
 import io.github.miuzarte.littlewhale.util.PermissionCatalog
 import io.github.miuzarte.littlewhale.util.PermissionGate
@@ -135,9 +153,63 @@ private val transitionStyles = listOf(
     R.string.settings_transition_aosp,
 )
 
+/**
+ * 浮标手势灵敏度那两项 (见 [BallFeel]): **顺序就是下拉里从上到下那两行**
+ *
+ * 防误触排第一: 它是缺省那一档, 于是"点开下拉最上面那个就是现在生效的"这件事在多数人那里一眼可见
+ */
+private val ballFeels = listOf(BallFeel.GUARD, BallFeel.STANDARD)
+
+/** 那一档的名字 */
+private fun feelLabel(feel: BallFeel): Int = when (feel) {
+    BallFeel.STANDARD -> R.string.settings_ball_feel_standard
+    BallFeel.GUARD -> R.string.settings_ball_feel_guard
+}
+
 /** 调色板风格与色彩规范直接取 Miuix 的枚举名, 它们是 Google 那边的术语 */
 private val paletteStyles = ThemePaletteStyle.entries.map { it.name }
 private val colorSpecs = ThemeColorSpec.entries.map { it.name }
+
+/**
+ * 收起来的那几段怎么存 (见 [SettingsScreen] 里的 `collapsed`)
+ *
+ * 直接 `rememberSaveable` 一个 `Set<String>` 不行 (它不是可保存类型), 于是过一趟 List —— `listSaver`
+ * 就是给这种"几步就能还原"的形状准备的。**它不是偏好**: 收起来的那几段是"这一眼怎么看", 与这台
+ * 设备的配置无关, 所以它只活在这一次界面里 (转屏与进程被回收时由 saved instance state 兜住)
+ */
+private val CollapsedSections = listSaver<Set<String>, String>(
+    save = { it.toList() },
+    restore = { it.toSet() },
+)
+
+/**
+ * 页面上的一段: 可收起的标题 + 展开时那一坨内容
+ *
+ * **标题那两句话在这一层取**: [LazyListScope] 的 lambda 不是组合上下文 (它画的是"有哪些 item"),
+ * 所以 `stringResource` 只能在 item 里面调 —— 传进来的是资源 id 而不是取好的字符串
+ *
+ * 内容整块包在 [AnimatedVisibility] 里, 而不是只把 `Card` 藏起来: 段里除了卡片还有 TabRow 与提示
+ * (见外观那一段), 那些也要跟着一起收, 否则收起来之后页面上会留下半截东西
+ */
+private fun LazyListScope.settingsSection(
+    key: String,
+    title: Int,
+    summary: Int,
+    collapsed: Set<String>,
+    onToggle: (String) -> Unit,
+    content: @Composable () -> Unit,
+) {
+    item {
+        val closed = key in collapsed
+        SectionTitle(
+            title = stringResource(title),
+            summary = stringResource(summary),
+            collapsed = closed,
+            onToggle = { onToggle(key) },
+        )
+        AnimatedVisibility(!closed) { content() }
+    }
+}
 
 /**
  * 设置页
@@ -154,6 +226,19 @@ fun SettingsScreen() {
     val context = LocalContext.current
     val settings = ThemeStore.current
     val scrollBehavior = MiuixScrollBehavior()
+    // ⋮ 里那三件事 (检测更新 / 捐赠 / 关于) 共用这一个"现在开着哪一页"的记号, null = 都没开
+    // 同一刻只画一个对话框, 见 AboutDialogs 的文件头
+    var about by remember { mutableStateOf<AboutPage?>(null) }
+    // 捐赠页那一行要跟着"刚填过的那个地址"变, 而它在偏好里 —— 对话框关掉时重新读一次
+    // 收起来的那几段 (主人 2026-10-08: "把各设置版块设置为可折叠的"): 键是段名, **缺省全展开** ——
+    // 第一次进来的人要看得见每一段里是什么。存的是"收起来的那几段"而不是"展开的那几段", 于是以后
+    // 新加一段时它自己就是展开的 (那正是新功能该有的样子)
+    var collapsed by rememberSaveable(stateSaver = CollapsedSections) {
+        mutableStateOf(emptySet<String>())
+    }
+    val toggleSection: (String) -> Unit = { key ->
+        collapsed = if (key in collapsed) collapsed - key else collapsed + key
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -169,11 +254,36 @@ fun SettingsScreen() {
                         )
                     }
                 },
-                // 要重启 host 才生效的事都收在这里, 页面上就不必每个面板各放一个重启按钮
+                // 这一页里"不用常驻"的事全收在这里: 检测更新 / 捐赠 / 关于 / 要重启 host 才生效的改动
+                // 页面上就不必每个面板各放一个按钮 (2026-10-08 加了前三条, 见开发计划 2.4 与 2.14)
                 actions = {
                     OverlayIconDropdownMenu(
                         entry = DropdownEntry(
                             items = listOf(
+                                DropdownItem(
+                                    text = stringResource(R.string.settings_menu_update),
+                                    summary = stringResource(R.string.settings_about_update_summary),
+                                    onClick = {
+                                        UpdateCheck.reset()
+                                        about = AboutPage.UPDATE
+                                    },
+                                ),
+                                DropdownItem(
+                                    text = stringResource(R.string.settings_menu_donate),
+                                    summary = stringResource(R.string.settings_menu_donate_summary),
+                                    // 直接开随包那一页: **没有可填的地址**, 那一页是作者自己的捐赠项目
+                                    // (主人 2026-10-08), 别人不该有机会把它指到别处
+                                    onClick = { navigator.push(Screen.Donate) },
+                                ),
+                                DropdownItem(
+                                    text = stringResource(R.string.settings_menu_about),
+                                    summary = stringResource(
+                                        R.string.settings_about_version,
+                                        UpdateCheck.localVersionOf(context),
+                                        UpdateCheck.localCodeOf(context),
+                                    ),
+                                    onClick = { about = AboutPage.ABOUT },
+                                ),
                                 DropdownItem(
                                     text = stringResource(R.string.settings_restart_host),
                                     summary = stringResource(R.string.settings_restart_host_summary),
@@ -195,59 +305,88 @@ fun SettingsScreen() {
             contentPadding = innerPadding,
             scrollBehavior = scrollBehavior,
         ) {
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_appearance))
-                TabRow(
-                    tabs = themeModes.map { stringResource(it) },
-                    selectedTabIndex = settings.mode.coerceIn(0, themeModes.lastIndex),
-                    onTabSelected = { ThemeStore.update(settings.copy(mode = it)) },
-                )
-                Spacer(modifier = Modifier.height(UiSpacing.ContentVertical))
-                Card {
-                    SwitchPreference(
-                        title = stringResource(R.string.settings_monet),
-                        summary = stringResource(R.string.settings_monet_summary),
-                        checked = settings.monet,
-                        onCheckedChange = { ThemeStore.update(settings.copy(monet = it)) },
+            // **省电那一段单独排在第一个** (主人 2026-10-08: "省电模式单独拿出来放第一排"): 它原本是
+            // 「唤醒词」里的三行, 而"现在别听我说话"这件事与唤醒词本身是两笔账 —— 一个是许可, 一个是
+            // 此刻的开关 (见 [PowerItems])。它自己一段之后, 要静音一次不必先展开唤醒词那一段
+            settingsSection(
+                key = "power",
+                title = R.string.settings_section_power,
+                summary = R.string.settings_section_power_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { PowerItems() }
+            }
+
+            // 两层分组的第一层 (2026-10-08 主人: "优化设置页排版"): 上面这一组是"天天要碰的",
+            // 下面那一组是"装完之后偶尔来调一次的能力", 而权限那一段仍然单独放在最后
+            item { GroupTitle(stringResource(R.string.settings_group_common)) }
+
+            settingsSection(
+                key = "appearance",
+                title = R.string.settings_section_appearance,
+                summary = R.string.settings_section_appearance_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Column {
+                    TabRow(
+                        tabs = themeModes.map { stringResource(it) },
+                        selectedTabIndex = settings.mode.coerceIn(0, themeModes.lastIndex),
+                        onTabSelected = { ThemeStore.update(settings.copy(mode = it)) },
                     )
-                    AnimatedVisibility(settings.monet) {
-                        OverlayDropdownPreference(
-                            title = stringResource(R.string.settings_monet_key_color),
-                            summary = stringResource(R.string.settings_monet_key_color_summary),
-                            items = MonetKeyColorOptions,
-                            selectedIndex = settings.seed.coerceIn(0, MonetKeyColorOptions.lastIndex),
-                            onSelectedIndexChange = { ThemeStore.update(settings.copy(seed = it)) },
+                    Spacer(modifier = Modifier.height(UiSpacing.ContentVertical))
+                    Card {
+                        SwitchPreference(
+                            title = stringResource(R.string.settings_monet),
+                            summary = stringResource(R.string.settings_monet_summary),
+                            checked = settings.monet,
+                            onCheckedChange = { ThemeStore.update(settings.copy(monet = it)) },
                         )
-                    }
-                    AnimatedVisibility(settings.monet && settings.seed > 0) {
-                        Column {
+                        AnimatedVisibility(settings.monet) {
                             OverlayDropdownPreference(
-                                title = stringResource(R.string.settings_monet_palette_style),
-                                summary = stringResource(R.string.settings_monet_palette_style_summary),
-                                items = paletteStyles,
-                                selectedIndex = settings.palette.coerceIn(0, paletteStyles.lastIndex),
-                                onSelectedIndexChange = { ThemeStore.update(settings.copy(palette = it)) },
-                            )
-                            OverlayDropdownPreference(
-                                title = stringResource(R.string.settings_monet_color_spec),
-                                summary = stringResource(R.string.settings_monet_color_spec_summary),
-                                items = colorSpecs,
-                                selectedIndex = settings.spec.coerceIn(0, colorSpecs.lastIndex),
-                                onSelectedIndexChange = { ThemeStore.update(settings.copy(spec = it)) },
+                                title = stringResource(R.string.settings_monet_key_color),
+                                summary = stringResource(R.string.settings_monet_key_color_summary),
+                                items = MonetKeyColorOptions,
+                                selectedIndex = settings.seed.coerceIn(0, MonetKeyColorOptions.lastIndex),
+                                onSelectedIndexChange = { ThemeStore.update(settings.copy(seed = it)) },
                             )
                         }
+                        AnimatedVisibility(settings.monet && settings.seed > 0) {
+                            Column {
+                                OverlayDropdownPreference(
+                                    title = stringResource(R.string.settings_monet_palette_style),
+                                    summary = stringResource(R.string.settings_monet_palette_style_summary),
+                                    items = paletteStyles,
+                                    selectedIndex = settings.palette.coerceIn(0, paletteStyles.lastIndex),
+                                    onSelectedIndexChange = { ThemeStore.update(settings.copy(palette = it)) },
+                                )
+                                OverlayDropdownPreference(
+                                    title = stringResource(R.string.settings_monet_color_spec),
+                                    summary = stringResource(R.string.settings_monet_color_spec_summary),
+                                    items = colorSpecs,
+                                    selectedIndex = settings.spec.coerceIn(0, colorSpecs.lastIndex),
+                                    onSelectedIndexChange = { ThemeStore.update(settings.copy(spec = it)) },
+                                )
+                            }
+                        }
+                        SwitchPreference(
+                            title = stringResource(R.string.settings_squircle),
+                            summary = stringResource(R.string.settings_squircle_summary),
+                            checked = settings.squircle,
+                            onCheckedChange = { ThemeStore.update(settings.copy(squircle = it)) },
+                        )
                     }
-                    SwitchPreference(
-                        title = stringResource(R.string.settings_squircle),
-                        summary = stringResource(R.string.settings_squircle_summary),
-                        checked = settings.squircle,
-                        onCheckedChange = { ThemeStore.update(settings.copy(squircle = it)) },
-                    )
                 }
             }
 
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_navigation))
+            settingsSection(
+                key = "navigation",
+                title = R.string.settings_section_navigation,
+                summary = R.string.settings_section_navigation_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
                 Card {
                     OverlayDropdownPreference(
                         title = stringResource(R.string.settings_transition),
@@ -265,67 +404,134 @@ fun SettingsScreen() {
                 }
             }
 
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_channel))
+            settingsSection(
+                key = "channel",
+                title = R.string.settings_section_channel,
+                summary = R.string.settings_section_channel_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { ChannelItems() }
+            }
+
+            // 浮标 / 唤醒词 / 说话 三段的顺序 (2026-10-08 一起排的): 先"球在不在", 再"喊一声", 最后
+            // "回答怎么念" —— 这正是第一次用的时候会依次碰到的三件事
+            settingsSection(
+                key = "ball",
+                title = R.string.settings_section_ball,
+                summary = R.string.settings_section_ball_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { BallItems() }
+            }
+
+            settingsSection(
+                key = "wake",
+                title = R.string.settings_section_wake,
+                summary = R.string.settings_section_wake_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { WakeItems() }
+            }
+
+            settingsSection(
+                key = "speak",
+                title = R.string.settings_section_speak,
+                summary = R.string.settings_section_speak_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { SpeakItems() }
+            }
+
+            item { GroupTitle(stringResource(R.string.settings_group_ability)) }
+
+            settingsSection(
+                key = "accessibility",
+                title = R.string.settings_section_accessibility,
+                summary = R.string.settings_section_accessibility_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { AccessibilityItems() }
+            }
+
+            settingsSection(
+                key = "notifications",
+                title = R.string.settings_section_notifications,
+                summary = R.string.settings_section_notifications_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { NotificationItems() }
+            }
+
+            settingsSection(
+                key = "screenshot",
+                title = R.string.settings_section_screenshot,
+                summary = R.string.settings_section_screenshot_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { ScreenshotItems() }
+            }
+
+            settingsSection(
+                key = "look",
+                title = R.string.settings_section_look,
+                summary = R.string.settings_section_look_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { LookItems() }
+            }
+
+            settingsSection(
+                key = "ocr",
+                title = R.string.settings_section_ocr,
+                summary = R.string.settings_section_ocr_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { OcrItems() }
+            }
+
+            // 锁屏这一段是批次 5 的落点 (点亮屏幕 + 按主人自己录的那一条解锁); 自动指令那一段仍是
+            // 批次 8 留下的占位 —— "先有那一段"比"功能做完了再多插一段"更不容易漏
+            settingsSection(
+                key = "lock",
+                title = R.string.settings_section_lock,
+                summary = R.string.settings_section_lock_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { LockItems() }
+            }
+
+            settingsSection(
+                key = "automation",
+                title = R.string.settings_section_automation,
+                summary = R.string.settings_section_automation_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
                 Card {
-                    ChannelItems()
+                    PlaceholderItems(stringResource(R.string.settings_automation_placeholder))
                 }
             }
 
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_accessibility))
-                Card {
-                    AccessibilityItems()
-                }
-            }
-
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_notifications))
-                Card {
-                    NotificationItems()
-                }
-            }
-
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_screenshot))
-                Card {
-                    ScreenshotItems()
-                }
-            }
-
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_look))
-                Card {
-                    LookItems()
-                }
-            }
-
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_ocr))
-                Card {
-                    OcrItems()
-                }
-            }
-
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_wake))
-                Card {
-                    WakeItems()
-                }
-            }
-
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_ball))
-                Card {
-                    BallItems()
-                }
-            }
-
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_speak))
-                Card {
-                    SpeakItems()
-                }
+            // 快捷指令那一段 (批次 7): 与「自动指令」挨着, 因为两段都是"主人自己定的那几件事",
+            // 而这一段先做 (自动指令是批次 8)
+            settingsSection(
+                key = "quick",
+                title = R.string.settings_section_quick,
+                summary = R.string.settings_section_quick_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { QuickItems() }
             }
 
             // 工作区与网络这两段已经从这里撤掉 (主人 2026-10-06): 工作区落在哪是 host 启动时按
@@ -336,12 +542,33 @@ fun SettingsScreen() {
 
             // 权限这一段放最后: 它是这一页最长的一段 (十七个能力), 放中间会把后面每一段都推到很远,
             // 而这些权限本来就是装完之后偶尔来调一次的东西
-            item {
-                SectionSmallTitle(stringResource(R.string.settings_section_permissions))
-                Card {
-                    PermissionsItems()
-                }
+            settingsSection(
+                key = "permissions",
+                title = R.string.settings_section_permissions,
+                summary = R.string.settings_section_permissions_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { PermissionsItems() }
             }
+        }
+
+        // ⋮ 里那三件事的对话框: 同一刻只画一个, 由那一个 [about] 记号决定是哪一页 (见 AboutDialogs)
+        when (about) {
+            AboutPage.ABOUT -> AboutDialog(
+                onDismissRequest = { about = null },
+                onOpen = { about = it },
+                // 「关于」里那一行捐赠也是同一个去处: 先把对话框收掉, 再把随包那一页推出来
+                onDonate = {
+                    about = null
+                    navigator.push(Screen.Donate)
+                },
+            )
+
+            AboutPage.UPDATE -> UpdateDialog(onDismissRequest = { about = null })
+            AboutPage.SOURCE -> SourceDialog(onDismissRequest = { about = null })
+
+            null -> Unit
         }
     }
 }
@@ -419,6 +646,526 @@ private fun routeState(route: RouteState): Int = when (route.backend) {
         !route.available -> R.string.settings_channel_state_stopped
         route.granted == true -> R.string.settings_channel_state_allowed
         else -> R.string.settings_channel_state_denied
+    }
+}
+
+/**
+ * 「锁屏」那一段 (批次 5): 叫醒时点亮屏幕, 以及按主人自己录的那一条解锁
+ *
+ * 三件事在这一段里一眼看完: **两条开关** / **录了什么** / **上一次重放成不成**。最后那一条最要紧 ——
+ * 解锁失败不弹任何东西, 只留一行通知, 所以页面上也得看得见
+ *
+ * [LockSetting.revision] 是刷新信号: 拨开关、录完、清掉都会让它 +1, 它当 remember 的键用, 于是改完
+ * 当场重画
+ */
+@Composable
+private fun LockItems() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var dialog by remember { mutableStateOf(false) }
+    var script by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var testing by remember { mutableStateOf(false) }
+    val snapshot = remember(LockSetting.revision) {
+        val (secret, problem) = LockSecret.load(context)
+        LockSummary(
+            wakeScreen = LockSetting.wakeScreen(context),
+            autoUnlock = LockSetting.autoUnlock(context),
+            steps = LockSetting.steps(context).size,
+            recordedAt = LockSetting.recordedAt(context),
+            secret = secret?.describe ?: "nothing",
+            problem = problem,
+        )
+    }
+    val recording = LockRecord.recording
+
+    SwitchPreference(
+        title = stringResource(R.string.settings_lock_wake_screen),
+        summary = stringResource(R.string.settings_lock_wake_screen_summary),
+        checked = snapshot.wakeScreen,
+        onCheckedChange = { LockSetting.setWakeScreen(context, it) },
+    )
+    SwitchPreference(
+        title = stringResource(R.string.settings_lock_auto_unlock),
+        summary = stringResource(R.string.settings_lock_auto_unlock_summary),
+        checked = snapshot.autoUnlock,
+        // 没录过就不许打开: 打开了只会"喊了没反应", 那是这一批最难查的一档
+        onCheckedChange = { on -> message = LockSetting.setAutoUnlock(context, on) },
+    )
+    ArrowPreference(
+        title = stringResource(R.string.settings_lock_record),
+        summary = when {
+            recording -> stringResource(R.string.settings_lock_record_running, LockRecord.collected)
+            snapshot.steps > 0 -> stringResource(
+                R.string.settings_lock_record_done,
+                snapshot.steps,
+                LockSetting.recordedSentence(snapshot.recordedAt),
+                snapshot.secret,
+            )
+
+            else -> stringResource(R.string.settings_lock_record_none)
+        },
+        onClick = { dialog = true },
+    )
+    ArrowPreference(
+        title = stringResource(R.string.settings_lock_replay),
+        summary = if (testing) {
+            stringResource(R.string.settings_lock_replay_running)
+        } else {
+            stringResource(R.string.settings_lock_replay_summary)
+        },
+        onClick = {
+            if (!testing) {
+                testing = true
+                message = null
+                scope.launch {
+                    // 重放要几百毫秒到几秒, 而且它自己在后台线程上, 这里只等结果
+                    val report = withContext(Dispatchers.IO) {
+                        runCatching { LockReplay.replayNow(context, "the settings page") }.getOrNull()
+                    }
+                    testing = false
+                    message = report?.detail
+                }
+            }
+        },
+    )
+    // 批次 5 追加: 不想走一遍 (或者录完之后想改两处) 就用一份脚本替掉现在这一条
+    ArrowPreference(
+        title = stringResource(R.string.settings_lock_script),
+        summary = if (snapshot.steps > 0) {
+            stringResource(R.string.settings_lock_script_done, snapshot.steps)
+        } else {
+            stringResource(R.string.settings_lock_script_none)
+        },
+        onClick = { script = true },
+    )
+    ArrowPreference(
+        title = stringResource(R.string.settings_lock_clear),
+        summary = stringResource(R.string.settings_lock_clear_summary),
+        onClick = {
+            LockSetting.clearSteps(context)
+            LockReplay.forgetWarnings()
+            message = context.getString(R.string.settings_lock_cleared)
+        },
+    )
+
+    // 最后一行: 上一次重放的结果 (或者刚拨开关时说的一句), 没有就写"还没试过"
+    PlaceholderItems(
+        message
+            ?: LockReplay.lastReport
+            ?: LockRecord.lastResult
+            ?: stringResource(R.string.settings_lock_note_none),
+    )
+    if (snapshot.problem != null) PlaceholderItems(snapshot.problem)
+
+    if (dialog) {
+        LockRecordDialog(
+            onDismissRequest = { dialog = false },
+            onStart = { password ->
+                dialog = false
+                message = null
+                scope.launch {
+                    // 起录要先连特权通道、再把屏锁上, 两件都不该落在主线程上
+                    val problem = withContext(Dispatchers.IO) {
+                        runCatching { LockRecord.start(context, password) }.getOrNull()
+                    }
+                    message = problem
+                        ?: context.getString(R.string.settings_lock_record_running, 0)
+                }
+            },
+        )
+    }
+    if (script) {
+        // 草稿 = 现在这一条 (有就编辑它, 没有就给模板): 主人一眼看得到"现在是什么样"
+        val draft = remember(script) {
+            val current = LockSetting.steps(context)
+            if (current.isEmpty()) LockScript.template() else LockScript.format(current)
+        }
+        LockScriptDialog(
+            initial = draft,
+            onDismissRequest = { script = false },
+            onImport = { text, password ->
+                script = false
+                message = null
+                val parsed = LockScript.parse(text)
+                if (parsed.problem != null) {
+                    message = context.getString(R.string.settings_lock_import_failed, parsed.problem)
+                } else if (parsed.steps.isEmpty()) {
+                    message = context.getString(
+                        R.string.settings_lock_import_failed,
+                        "that script has no steps",
+                    )
+                } else {
+                    scope.launch {
+                        // 加密那一份要碰 Keystore, 放 IO 上做
+                        val trouble = withContext(Dispatchers.IO) {
+                            if (password.isEmpty()) {
+                                null
+                            } else {
+                                LockSecret.save(
+                                    context,
+                                    LockSecretData(kind = LockSecretData.TEXT, text = password),
+                                )
+                            }
+                        }
+                        LockSetting.saveSteps(context, parsed.steps)
+                        LockSetting.setTries(context, 0)
+                        LockReplay.forgetWarnings()
+                        message = trouble ?: context.getString(
+                            R.string.settings_lock_imported,
+                            parsed.steps.size,
+                            LockSetting.describe(parsed.steps).joinToString(" then "),
+                        )
+                    }
+                }
+            },
+        )
+    }
+}
+
+/** 这一段要显示的几件事, 一次读齐 (见 [LockItems] 那个 remember) */
+private data class LockSummary(
+    val wakeScreen: Boolean,
+    val autoUnlock: Boolean,
+    val steps: Int,
+    val recordedAt: Long,
+    val secret: String,
+    val problem: String?,
+)
+
+/**
+ * 「导入解锁脚本」那一个对话框 (批次 5 追加): 脚本正文 + 密码 (可留空) + 导入
+ *
+ * **框里先放着现在这一条** (没有就是模板): 所以它同时是一份"看得见的导出" —— 主人想改两处坐标, 打开
+ * 这个框改一下再导入即可, 不必先删掉重录
+ *
+ * 校验在 [LockScript.parse] 那一份纯函数里 (第几行、差在哪儿), 这里只负责把那一句念出来
+ */
+@Composable
+private fun LockScriptDialog(
+    initial: String,
+    onDismissRequest: () -> Unit,
+    onImport: (String, String) -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = stringResource(R.string.settings_lock_script_dialog),
+        summary = stringResource(R.string.settings_lock_script_dialog_summary),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismissRequest,
+    ) {
+        var text by rememberSaveable(initial) { mutableStateOf(initial) }
+        var password by rememberSaveable { mutableStateOf("") }
+        SuperTextField(
+            modifier = Modifier.padding(bottom = 12.dp),
+            value = text,
+            onValueChange = { text = it },
+            maxLines = 10,
+            minLines = 6,
+        )
+        SuperTextField(
+            modifier = Modifier.padding(bottom = 16.dp),
+            value = password,
+            onValueChange = { password = it },
+            singleLine = true,
+            label = stringResource(R.string.settings_lock_script_password),
+            useLabelAsPlaceholder = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.NumberPassword,
+                imeAction = ImeAction.Done,
+            ),
+        )
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                text = stringResource(R.string.button_cancel),
+                onClick = {
+                    haptic.contextClick()
+                    onDismissRequest()
+                },
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                text = stringResource(R.string.settings_lock_script_confirm),
+                onClick = {
+                    haptic.confirm()
+                    onImport(text, password)
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
+}
+
+/**
+ * 「录制解锁」那一个对话框: 密码 (可留空) + 开始
+ *
+ * **密码框是密码样式的** (点一下就显示明文), 而它只在内存里过一手: 按开始之后加密存, 明文跟着这一次
+ * 录制一起消失
+ */
+@Composable
+private fun LockRecordDialog(
+    onDismissRequest: () -> Unit,
+    onStart: (String) -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = stringResource(R.string.settings_lock_record_dialog),
+        summary = stringResource(R.string.settings_lock_record_dialog_summary),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismissRequest,
+    ) {
+        var text by rememberSaveable { mutableStateOf("") }
+        SuperTextField(
+            modifier = Modifier.padding(bottom = 16.dp),
+            value = text,
+            onValueChange = { text = it },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.NumberPassword,
+                imeAction = ImeAction.Done,
+            ),
+        )
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                text = stringResource(R.string.button_cancel),
+                onClick = {
+                    haptic.contextClick()
+                    onDismissRequest()
+                },
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                text = stringResource(R.string.settings_lock_record_start),
+                onClick = {
+                    haptic.confirm()
+                    onStart(text)
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
+}
+
+/**
+ * 占位那一行 (2026-10-08 批次 2 留下的写法)
+ *
+ * 它是**故意做出来的东西**: 先摆一行"还没做, 哪一批做"比"功能做完再插一段"更不容易漏 —— 顺序已经
+ * 写在开发计划那一张表里了 (批次 5 的「锁屏」段已经从占位换成真东西, 现在只剩「自动指令」那一段).
+ * 字用**次级色**画, 于是它一眼看得出是"还不能动的"; 不用一个 `enabled = false` 的开关, 是因为那样
+ * 看起来像"这条功能只是被关掉了"。锁屏那一段的最后一行也用它, 那里是"上一次重放成不成"的读数
+ */
+@Composable
+private fun PlaceholderItems(text: String) {
+    Column(modifier = Modifier.fillMaxWidth().padding(UiSpacing.Large)) {
+        Text(text = text, color = colorScheme.onSurfaceVariantActions)
+    }
+}
+
+/**
+ * 「快捷指令」那一段 (2.5.0 批次 7)
+ *
+ * 列表与 `lw_quick op=list` 读的是同一份 ([LwQuick.entries]), 所以"界面上看得见而模型读不到"这种
+ * 分裂不会发生
+ *
+ * **点一下做的事不是在这里执行那条工作流**, 而是把它投进会话: 投递走语音那条老路 ([VoiceInbox] 的
+ * `quick` 来源), 于是"当前会话没有就新建 / 20 分钟内接同一场 / 正在跑就插进当前轮"三条语义自动成立,
+ * 而"主人说的是什么"这句话也原封不动地出现在会话里
+ *
+ * **新建不弹表单**: 只要一行"这条快捷指令要做什么", 正文交给模型写 (工作流这件事它写得比界面里拼
+ * 字符串稳), 它用 `lw_quick op=write` 落盘, 再回到这一页时列表里就有了
+ *
+ * 删除在这页上做 (模型侧没有 delete): 点一条先问"运行还是删除", 那一个对话框本身就是那道确认
+ */
+@Composable
+private fun QuickItems() {
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    var revision by remember { mutableIntStateOf(0) }
+    var creating by rememberSaveable { mutableStateOf(false) }
+    var acting by remember { mutableStateOf<String?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    // 新建与删除都发生在这一页上, 所以列表读一次就够; 变一次重读一次
+    val entries = remember(revision) { LwQuick.entries(context) }
+
+    if (entries.isEmpty()) {
+        PlaceholderItems(
+            stringResource(R.string.settings_quick_empty, LwQuick.directory(context).absolutePath),
+        )
+    } else {
+        entries.forEach { entry ->
+            ArrowPreference(
+                title = entry.name,
+                summary = entry.summary.ifEmpty { stringResource(R.string.settings_quick_no_summary) },
+                onClick = {
+                    haptic.contextClick()
+                    acting = entry.name
+                },
+            )
+        }
+    }
+    ArrowPreference(
+        title = stringResource(R.string.settings_quick_new),
+        summary = stringResource(R.string.settings_quick_new_summary),
+        onClick = {
+            haptic.contextClick()
+            creating = true
+        },
+    )
+    PlaceholderItems(message ?: stringResource(R.string.settings_quick_note))
+
+    acting?.let { name ->
+        QuickActionDialog(
+            name = name,
+            onDismiss = { acting = null },
+            onRun = {
+                acting = null
+                message = sendQuickCommand(context, context.getString(R.string.settings_quick_run_sentence, name))
+            },
+            onDelete = {
+                acting = null
+                message = deleteQuickCommand(context, name)
+                revision += 1
+            },
+        )
+    }
+
+    if (creating) {
+        QuickCreateDialog(
+            onDismiss = { creating = false },
+            onCreate = { said ->
+                creating = false
+                message = sendQuickCommand(
+                    context,
+                    context.getString(R.string.settings_quick_create_prompt, said),
+                )
+            },
+        )
+    }
+}
+
+/**
+ * 把一句话投给会话
+ *
+ * 回的是**给人看的那一句**: 投出去了 (给了序号) 与没投出去 (磁盘满 / 目录建不出来) 是两件事, 这一页
+ * 上要一眼看得出是哪一件
+ */
+private fun sendQuickCommand(context: Context, line: String): String {
+    val seq = VoiceInbox.append(context, line, source = VoiceInbox.SOURCE_QUICK)
+    return if (seq == null) {
+        context.getString(R.string.settings_quick_send_failed)
+    } else {
+        context.getString(R.string.settings_quick_sent)
+    }
+}
+
+/** 删掉一条 (名字是从这一页列出来的, 所以已经是规范化的那一个) */
+private fun deleteQuickCommand(context: Context, name: String): String = try {
+    val file = java.io.File(LwQuick.directory(context), "$name.md")
+    if (file.delete()) {
+        context.getString(R.string.settings_quick_deleted, name)
+    } else {
+        context.getString(R.string.settings_quick_delete_failed, name)
+    }
+} catch (problem: Throwable) {
+    context.getString(R.string.settings_quick_delete_failed, name)
+}
+
+/** 点一条快捷指令之后那一问: 运行它, 还是把它删掉 */
+@Composable
+private fun QuickActionDialog(
+    name: String,
+    onDismiss: () -> Unit,
+    onRun: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = name,
+        summary = stringResource(R.string.settings_quick_action_summary),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismiss,
+    ) {
+        TextButton(
+            text = stringResource(R.string.settings_quick_run),
+            onClick = {
+                haptic.confirm()
+                onRun()
+            },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.textButtonColorsPrimary(),
+        )
+        TextButton(
+            text = stringResource(R.string.settings_quick_delete),
+            onClick = {
+                haptic.confirm()
+                onDelete()
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        TextButton(
+            text = stringResource(R.string.button_cancel),
+            onClick = {
+                haptic.contextClick()
+                onDismiss()
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** 新建那一问: 只要一行"这条快捷指令要做什么" */
+@Composable
+private fun QuickCreateDialog(
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = stringResource(R.string.settings_quick_new_title),
+        summary = stringResource(R.string.settings_quick_new_dialog_summary),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismiss,
+    ) {
+        var text by rememberSaveable { mutableStateOf("") }
+        SuperTextField(
+            modifier = Modifier.padding(bottom = 16.dp),
+            value = text,
+            onValueChange = { text = it },
+            label = stringResource(R.string.settings_quick_new_hint),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        )
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                text = stringResource(R.string.button_cancel),
+                onClick = {
+                    haptic.contextClick()
+                    onDismiss()
+                },
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                text = stringResource(R.string.settings_quick_create),
+                onClick = {
+                    // 空的一行什么都不做: 投出去也只是一句"请把这件事做成快捷指令:" —— 没有内容
+                    if (text.isNotBlank()) {
+                        haptic.confirm()
+                        onCreate(text)
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
     }
 }
 
@@ -598,6 +1345,14 @@ private fun NotificationItems() {
 private const val FULL_SCREEN_INTENT_SETTINGS = "android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT"
 
 /**
+ * 相机占用表那一行多久重读一次 (毫秒)
+ *
+ * 它只在「视频识别」那一段**展开着**的时候跑 (收起 / 离开这一页, effect 就跟着取消), 所以这不是一条
+ * 常驻轮询; 两秒是"人点完释放之后那一行立刻跟着变"与"读一个几十字节的文件"之间的折中
+ */
+private const val OWNER_POLL_MS = 2_000L
+
+/**
  * 视频模式取景那三条: 每张间隔、截图张数、截图清晰度
  *
  * 与上面「截图」那两条是**两笔账**: 那两条管的是 `lw_screenshot` 那条路 (整屏画面缩到多少像素),
@@ -620,6 +1375,34 @@ private fun LookItems() {
     val levels = VideoLooks.levels
     val last = levels.lastIndex
     val levelNames = levels.map { stringResource(it.first, it.second) }
+    // 相机占用表 (批次 3 的需求 3): 现在哪一场会话占着视频模式那台相机。判据在宿主插件那一侧 (它才
+    // 拿得到会话 id), 这里只显示它 —— 外加**手动强制释放**这条出口: 表卡住时 (一场崩了而它的
+    // `turn/end` 没来) 这是唯一能让相机回到手里的地方
+    //
+    // 表是一个文件, 没法用 Compose 状态观察, 所以这一段**展开着的时候**每两秒读一次, 收起或离开这一页
+    // 就停 (effect 跟着 composable 一起取消)。这一行说的必须与闸判的是同一件事, 否则会出现"界面上说
+    // 有人占着而取景根本不拦"这种最费解的状态
+    var owner by remember { mutableStateOf(CameraOwner.read(context)) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(OWNER_POLL_MS)
+            owner = CameraOwner.read(context)
+        }
+    }
+    ArrowPreference(
+        title = stringResource(R.string.settings_look_owner),
+        summary = owner?.let {
+            stringResource(
+                R.string.settings_look_owner_busy,
+                CameraOwner.short(it.sessionId),
+                CameraOwner.clock(it.since),
+            )
+        } ?: stringResource(R.string.settings_look_owner_free),
+        onClick = {
+            CameraOwner.release(context)
+            owner = CameraOwner.read(context)
+        },
+    )
     SwitchPreference(
         title = stringResource(R.string.settings_look_sheet),
         summary = stringResource(R.string.settings_look_sheet_summary),
@@ -718,6 +1501,15 @@ private fun ScreenshotItems() {
     val levels = ScreenshotBudget.levels
     val last = levels.lastIndex
     val levelNames = levels.map { stringResource(it.first, it.second) }
+    // 指代不明时自动附图 (批次 4 的需求 9): 这一条要**排在两条预算前面**, 因为它管的是"要不要截图",
+    // 而下面两条管的是"截图产生时缩到多大"。开关的值由宿主插件在投递一句话之前问一次 (它读不到应用
+    // 这一侧的偏好, 走的是 `screenshot op=status`)
+    SwitchPreference(
+        title = stringResource(R.string.settings_screenshot_auto),
+        summary = stringResource(R.string.settings_screenshot_auto_summary),
+        checked = ScreenshotBudget.autoShot,
+        onCheckedChange = { ScreenshotBudget.setAutoShot(context, it) },
+    )
     ArrowSlider(
         title = stringResource(R.string.settings_screenshot_budget),
         summary = stringResource(R.string.settings_screenshot_budget_summary),
@@ -1137,12 +1929,14 @@ private fun BallItems() {
     var edge by remember { mutableStateOf(BallSpot.read(context)?.first ?: BallGeometry.EDGE_RIGHT) }
     var hostUp by remember { mutableStateOf(DshHost.status is HostStatus.Running) }
     var hideProblem by remember { mutableStateOf<String?>(null) }
+    var feel by remember { mutableStateOf(BallSpot.feel(context)) }
     LaunchedEffect(Unit) {
         while (true) {
             permission = Settings.canDrawOverlays(context)
             showing = OverlayState.showing
             edge = BallSpot.read(context)?.first ?: BallGeometry.EDGE_RIGHT
             hostUp = DshHost.status is HostStatus.Running
+            feel = BallSpot.feel(context)
             // **开关跟的是球的真实存在, 不是"上一次点了什么"** (2026-10-06): 菜单里、通知栏上、
             // 或者服务自己那边都能把球收掉, 那几条路都不会回来改这个页面里的记忆值 —— 只认本地那一个
             // 记号的话, 球被菜单关掉之后这个开关会一直画着"开", 而屏幕上什么都没有。
@@ -1198,6 +1992,19 @@ private fun BallItems() {
             showing = OverlayState.showing
         },
     )
+    // 手势有多严 (2026-10-08 第 13 条那一档): 两套常数都在 BallMinutes 里, 这一行只挑一个名字。
+    // **换了当场生效**: 那两个门槛是球每次手指按下时读的 (见 BallView.onTouchEvent), 不必重开服务
+    OverlayDropdownPreference(
+        title = stringResource(R.string.settings_ball_feel),
+        summary = stringResource(R.string.settings_ball_feel_summary, stringResource(feelLabel(feel))),
+        items = ballFeels.map { stringResource(feelLabel(it)) },
+        selectedIndex = ballFeels.indexOf(feel).coerceAtLeast(0),
+        onSelectedIndexChange = { index ->
+            val picked = ballFeels[index.coerceIn(0, ballFeels.lastIndex)]
+            feel = picked
+            BallSpot.setFeel(context, picked)
+        },
+    )
     // 拖球那条经验 (主人 2026-10-06 让写在这儿): 球贴在屏幕最左/最右时, 直接往中间拖会先经过系统的
     // **返回手势区** (屏幕左右边缘那一条竖带) —— 那一下被系统吃掉, 表现是"球没挪动, 反而退出了当前
     // 应用"。先往上拖一点, 离开那条竖带再横着挪, 就不会撞上它
@@ -1211,6 +2018,128 @@ private fun BallItems() {
         fontSize = 12.sp,
         modifier = Modifier.padding(horizontal = UiSpacing.PageHorizontal),
     )
+}
+
+/**
+ * 「省电」那一段 (主人 2026-10-08: "省电模式单独拿出来放第一排")
+ *
+ * 它原来是「唤醒词」里的三行 (手动开关 / 定时那一段 / 省电时停自动指令), 而这三件事与"许可不允许
+ * 唤醒"是两笔账: 那一段管的是**我许可你一直听着**, 这一段管的是**现在别听 / 到点再听**, 以及省电
+ * 的时候连自动指令那几个费电的监测一起停。分开之后"现在静音一次"不必先展开唤醒词那一段
+ *
+ * 三行的口径 (都写在各自的说明里):
+ *
+ * - **省电模式**: 只停唤醒词监听 (麦克风整个关掉, 喊不醒), 而 host / 浮标 / 通知都留着、点球照样
+ *   能说一句 —— 关掉它时**顺手把监听拉回来**, 但许可、麦克风权限与模型三者都对得上才做
+ * - **定时那一段**: `23:00-07:00` 这种一段, 到点自己进省电、出了时段自己回来 (解析在 [PowerWindow])
+ * - **省电时停自动指令**: 第 15 条那一条, 此刻只记选择 (自动指令在批次 8 才落地)
+ *
+ * 每秒看一眼: 三个偏好都可能被别的入口改 (定时那一段是到点自己生效的), 不轮询界面就是死的
+ */
+@Composable
+private fun PowerItems() {
+    val context = LocalContext.current
+    var manual by remember { mutableStateOf(LwWakeWord.powerSaveManual(context)) }
+    var active by remember { mutableStateOf(LwWakeWord.powerSave(context)) }
+    var automation by remember { mutableStateOf(LwWakeWord.powerSaveAutomation(context)) }
+    var window by remember { mutableStateOf(LwWakeWord.powerWindowText(context)) }
+    var editingWindow by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            manual = LwWakeWord.powerSaveManual(context)
+            active = LwWakeWord.powerSave(context)
+            automation = LwWakeWord.powerSaveAutomation(context)
+            window = LwWakeWord.powerWindowText(context)
+            delay(POLL_MS)
+        }
+    }
+    /**
+     * 省电关掉之后把监听拉回来 —— 许可、麦克风权限与模型三者都对得上才做
+     *
+     * 缺哪一条都**不在这里报错**: 缺什么由「唤醒词」那一段的状态行说清, 这里插一句只会指向别处
+     */
+    fun resumeListening(): String? {
+        if (active) return null
+        if (!LwWakeWord.allow(context)) return null
+        val mic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+        if (mic != PackageManager.PERMISSION_GRANTED) return null
+        if (WakeWordDownload.readyCount(context) < WakeWordDownload.files.size) return null
+        if (WakeWordState.listening) return null
+        return runCatching { LwWakeWord.listen(context) }.exceptionOrNull()
+            ?.let { throwable -> throwable.message ?: throwable.toString() }
+    }
+    Column(modifier = Modifier.fillMaxWidth().padding(UiSpacing.Large)) {
+        Text(
+            text = when {
+                // 手动那个开关开着: 说清"喊不醒, 但点球还能说一句"
+                manual -> stringResource(R.string.settings_wake_state_power_save)
+                // 手动关着而定时那一段正生效: 说清"是定时让它省电的"
+                active -> stringResource(R.string.settings_wake_power_window_now, window)
+                else -> stringResource(R.string.settings_power_state_idle)
+            },
+        )
+        note?.let { problem ->
+            Text(text = problem, modifier = Modifier.padding(top = UiSpacing.Medium))
+        }
+    }
+    SwitchPreference(
+        title = stringResource(R.string.settings_wake_power_save),
+        summary = stringResource(R.string.settings_wake_power_save_summary),
+        checked = manual,
+        onCheckedChange = { wanted ->
+            manual = wanted
+            LwWakeWord.setPowerSave(context, wanted)
+            active = LwWakeWord.powerSave(context)
+            note = resumeListening()
+        },
+    )
+    ArrowPreference(
+        title = stringResource(R.string.settings_wake_power_window),
+        summary = when {
+            window.isEmpty() -> stringResource(
+                R.string.settings_wake_power_window_none,
+                stringResource(R.string.settings_wake_power_window_hint),
+            )
+
+            // 现在生效的是定时那一段 (手动开关关着): 说清"此刻在省电"
+            LwWakeWord.powerWindowActive(context) -> stringResource(
+                R.string.settings_wake_power_window_now,
+                window,
+            )
+
+            else -> stringResource(R.string.settings_wake_power_window_set, window)
+        },
+        onClick = { editingWindow = true },
+    )
+    // 第 15 条那一条: 省电时连自动指令里那几个**费电的**监测一起停 —— 停哪些、为什么保留通知与时间,
+    // 写在那一句说明里 (那正是主人要看的口径)。**这一行此刻只记选择**: 自动指令在批次 8 才落地
+    SwitchPreference(
+        title = stringResource(R.string.settings_wake_power_save_automation),
+        summary = stringResource(R.string.settings_wake_power_save_automation_summary),
+        checked = automation,
+        onCheckedChange = { wanted ->
+            automation = wanted
+            LwWakeWord.setPowerSaveAutomation(context, wanted)
+        },
+    )
+    if (editingWindow) {
+        PowerWindowDialog(
+            initial = window,
+            onDismissRequest = { editingWindow = false },
+            onConfirm = { text ->
+                editingWindow = false
+                // 看不懂的那一段由 setPowerWindow 拒绝 (它回一句人话), 拒绝时什么都不写 —— 那时
+                // 不必再试"把监听拉回来" (省电状态一个字节都没动)
+                val problem = runCatching { LwWakeWord.setPowerWindow(context, text) }
+                    .getOrElse { throwable -> throwable.message ?: throwable.toString() }
+                window = LwWakeWord.powerWindowText(context)
+                active = LwWakeWord.powerSave(context)
+                // 定时那一段刚关掉 (或者改成"现在不在里面") 而监听没起: 让它照许可回来
+                note = problem ?: resumeListening()
+            },
+        )
+    }
 }
 
 /**
@@ -1248,11 +2177,8 @@ private fun WakeItems() {
     var listening by remember { mutableStateOf(WakeWordState.listening) }
     var resident by remember { mutableStateOf(WakeWordState.voiceActive) }
     var hits by remember { mutableStateOf(WakeWordState.hits) }
-    // 省电模式那三件 (主人 2026-10-07): 手动开关 / 此刻生不生效 / 定时那一段的原文
-    var powerManual by remember { mutableStateOf(LwWakeWord.powerSaveManual(context)) }
+    // 省电模式此刻生不生效: 那三行搬去 [PowerItems] 了, 而状态那一行还要拿它说"为什么没在听"
     var powerSave by remember { mutableStateOf(LwWakeWord.powerSave(context)) }
-    var powerWindow by remember { mutableStateOf(LwWakeWord.powerWindowText(context)) }
-    var editingWindow by remember { mutableStateOf(false) }
     var ready by remember { mutableStateOf(WakeWordDownload.readyCount(context)) }
     var note by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf(false) }
@@ -1271,9 +2197,7 @@ private fun WakeItems() {
             listening = WakeWordState.listening
             resident = WakeWordState.voiceActive
             hits = WakeWordState.hits
-            powerManual = LwWakeWord.powerSaveManual(context)
             powerSave = LwWakeWord.powerSave(context)
-            powerWindow = LwWakeWord.powerWindowText(context)
             ready = WakeWordDownload.readyCount(context)
             names = LwWakeWord.names(context)
             delay(POLL_MS)
@@ -1342,63 +2266,9 @@ private fun WakeItems() {
     // (它和浮标菜单里那行「一直听」), 不是这条链。现在**只有视频模式能要求它留着** (切模式那一步写
     // `modes/voice-resident.on` 那个记号), 所以这里没有开关可给, 但状态那一行照旧如实说
     //
-    // **省电模式那两行是 2026-10-07 主人点名加上的** ("增加省电模式开关, 及定时开关"): 它只停唤醒词
-    // 监听那一条 (麦克风整个关掉, 喊不醒), 而 host / 浮标 / 通知都留着、点球也照样能说一句 —— 所以它
-    // 与上面那个许可**并列**, 不是第二个"允许常驻语音"。定时那一段由主人自己填 (23:00-07:00)
-    SwitchPreference(
-        title = stringResource(R.string.settings_wake_power_save),
-        summary = stringResource(R.string.settings_wake_power_save_summary),
-        checked = powerManual,
-        onCheckedChange = { wanted ->
-            powerManual = wanted
-            LwWakeWord.setPowerSave(context, wanted)
-            powerSave = LwWakeWord.powerSave(context)
-            // 关掉省电而监听没起时, 顺手把监听拉回来 —— 许可与模型都对得上才做, 缺什么下面那两行
-            // 会说清 (与「允许唤醒」那一条同一个判断次序)
-            note = when {
-                powerSave -> null
-                !allowWake || !microphone || ready < total -> null
-                WakeWordState.listening -> null
-                else -> runCatching { LwWakeWord.listen(context) }.exceptionOrNull()
-                    ?.let { throwable -> throwable.message ?: throwable.toString() }
-            }
-        },
-    )
-    ArrowPreference(
-        title = stringResource(R.string.settings_wake_power_window),
-        summary = when {
-            powerWindow.isEmpty() -> stringResource(
-                R.string.settings_wake_power_window_none,
-                stringResource(R.string.settings_wake_power_window_hint),
-            )
-
-            // 现在生效的是定时那一段 (手动开关关着): 说清"此刻在省电"
-            LwWakeWord.powerWindowActive(context) -> stringResource(
-                R.string.settings_wake_power_window_now,
-                powerWindow,
-            )
-
-            else -> stringResource(R.string.settings_wake_power_window_set, powerWindow)
-        },
-        onClick = { editingWindow = true },
-    )
-    if (editingWindow) {
-        PowerWindowDialog(
-            initial = powerWindow,
-            onDismissRequest = { editingWindow = false },
-            onConfirm = { text ->
-                editingWindow = false
-                note = runCatching { LwWakeWord.setPowerWindow(context, text) }
-                    .getOrElse { throwable -> throwable.message ?: throwable.toString() }
-                powerWindow = LwWakeWord.powerWindowText(context)
-                powerSave = LwWakeWord.powerSave(context)
-                // 定时那一段刚关掉 (或者改成"现在不在里面") 而监听没起: 让它照许可回来
-                if (!powerSave && !WakeWordState.listening && allowWake && microphone && ready == total) {
-                    runCatching { LwWakeWord.listen(context) }
-                }
-            },
-        )
-    }
+    // **原来在这里的省电三行搬走了** (主人 2026-10-08: "省电模式单独拿出来放第一排"): 手动开关 /
+    // 定时那一段 / 省电时停自动指令, 三条现在都在页面最上面那一段 ([PowerItems])。它留在这一段时
+    // 有个说不通的地方 —— "现在别听我说话"与"我许可你听"是两笔账, 而后者才是这一段管的事
     // 第三个设置: **命中之后干什么** (批次 4.4)。两条"切模式"走的是与说出来一样的那条命令路 ——
     // 命令词表只有一份, 在宿主插件里 (可行性稿 2.7), 这里再写一遍就成了第二份实现
     val hitActions = listOf(LwWakeWord.HIT_WAKE, LwWakeWord.HIT_VIDEO, LwWakeWord.HIT_PHONE)

@@ -155,10 +155,26 @@ internal object BallSpot {
     private const val KEY_X = "ball-x"
     private const val KEY_Y = "ball-y"
 
+    /**
+     * 手势灵敏度那一档的键 (2026-10-08 主人: "增加 ball 各操作的防误触" + "做成设置页一档")
+     *
+     * 存的是 [BallFeel] 的枚举名, 认不出来的写法一律落回 [BallFeel.GUARD] —— 那一档是**更严**
+     * 的那个, 于是"存坏了"的结果是"更不容易误触", 不是"球变得一碰就开"
+     */
+    private const val KEY_FEEL = "ball-feel"
+
     fun on(context: Context): Boolean = prefs(context).getBoolean(KEY_ON, false)
 
     fun setOn(context: Context, on: Boolean) {
         prefs(context).edit().putBoolean(KEY_ON, on).apply()
+    }
+
+    /** 手势灵敏度: 缺省 [BallFeel.GUARD] (防误触) */
+    fun feel(context: Context): BallFeel =
+        BallFeel.of(prefs(context).getString(KEY_FEEL, null))
+
+    fun setFeel(context: Context, feel: BallFeel) {
+        prefs(context).edit().putString(KEY_FEEL, feel.name).apply()
     }
 
     // **那个"手势提示只给一次"的记号已经删掉了** (2026-10-05 主人: 关于球的所有操作都不要有提示):
@@ -266,7 +282,27 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
 
     private var fill: ValueAnimator? = null
 
-    private val slop = ViewConfiguration.get(context).scaledTouchSlop
+    /** 平台自己那一档门槛: 标准灵敏度用它, 防误触那一档拿它当垫底 (见 [BallFeel]) */
+    private val platformSlop = ViewConfiguration.get(context).scaledTouchSlop
+
+    /**
+     * "这一下算拖动"的门槛: **手指按下那一刻按当前灵敏度算一次** (见 [slopFor])
+     *
+     * 平台自己的 `scaledTouchSlop` 只有 8 dp 上下, 而球是常驻的 —— 手按上去抖两下就过线, 于是本该是
+     * 单击的那一下变成"拖了一下没动地方"(拖动不出单击动作)。12 dp 那一档是 2026-10-08 防误触加的
+     * (见 BallMinutes 里那一段说明), 而它是**灵敏度设置页那一档**管着的一个数
+     *
+     * 按下那一刻读一次就够: 在一次手势中间改设置页是另一只手在做的事, 不必让这一下中途变卦
+     */
+    private var slop = platformSlop.toFloat()
+
+    /** 这一档的拖动门槛: 0 = 就用平台那个数, 否则取两者里大的那个 */
+    private fun slopFor(feel: BallFeel): Float =
+        if (feel.slopDp <= 0) platformSlop.toFloat() else maxOf(platformSlop, dp(feel.slopDp)).toFloat()
+
+    /** 这一档的长按门槛: 0 = 用平台那个数 */
+    private fun pressFor(feel: BallFeel): Long =
+        if (feel.pressMs > 0L) feel.pressMs else ViewConfiguration.getLongPressTimeout().toLong()
 
     private var downX = 0f
     private var downY = 0f
@@ -360,9 +396,14 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
                 downY = event.rawY
                 dragging = false
                 longFired = false
+                // 灵敏度那一档在按下这一刻读一次 (见 [slop] / [pressFor]): 拖与长按两个门槛都跟着它走
+                val feel = BallSpot.feel(context)
+                slop = slopFor(feel)
                 listener.onPressStart()
                 scaleTo(PRESS_SCALE)
-                postDelayed(press, ViewConfiguration.getLongPressTimeout().toLong())
+                // 长按门槛用我们自己的数 (650 ms), 不用平台的 400~500 ms: 那颗球一直在屏上, 慢一点的
+                // 单击会被平台的判据吃掉并弹出菜单 (2026-10-08 防误触)
+                postDelayed(press, pressFor(feel))
                 return true
             }
 

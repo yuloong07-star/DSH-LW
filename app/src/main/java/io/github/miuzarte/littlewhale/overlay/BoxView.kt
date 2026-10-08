@@ -29,14 +29,33 @@ import io.github.miuzarte.littlewhale.R
  * **行数上限 2026-10-06 由主人追加了两行: 5 → 7** (那一批的第三条), 其余口径一个字没改 —— 宽度还是
  * 650 px, 高度仍然随行数长, 到 7 行才停
  *
- * 为什么宽是按像素而不是 dp: 主人说的是像素, 而"一行 12 个字"这件事本身也是按这条宽度算的
+ * 为什么宽是按像素而不是 dp: 主人说的是像素, 而"一行多少字"这件事本身也是按这条宽度算的
  * (14 sp 的汉字一步约 42 px, 650 / 42 ≈ 15 字, 再加上左右内边距正好 12 字上下) —— 加了两行之后,
  * 一行多少字这个数与它无关 (那是宽度管的事)
+ *
+ * **2026-10-08 主人: "增加文框长度, 2 个词长度"** —— 从 650 加到 734 (+84 px, 正好是两个字宽),
+ * 而**上限跟着来**: 横屏那一档屏幕短边只有 600 出头, 734 的框放进去会压在球上, 所以
+ * [widthFor] 按屏宽的 62% 钳一道 (钳过之后照旧整块留在屏幕里, 见 [BoxSpot.x])
  */
 internal object BallBox {
 
-    /** 主人点名的数: 650 px */
-    const val WIDTH_PX = 650
+    /** 主人点名的数: 原 650 px, 2026-10-08 加两个字 → 734 px */
+    const val WIDTH_PX = 734
+
+    /** 一个字按 14 sp 在 3 倍密度下算出来的宽度 (42 px): 加宽那两个字就是它乘出来的 */
+    const val CHAR_PX = 42
+
+    /** 窄屏上的上限: 框不许超过屏宽的这个比例 (过了就会把球压住, 而球是唯一那个常驻的入口) */
+    const val MAX_WIDTH_PERCENT = 62
+
+    /**
+     * 这一屏上面, 框该有多宽
+     *
+     * 一直是 [WIDTH_PX], 只在**窄屏** (横屏 / 分屏那一档) 上按 [MAX_WIDTH_PERCENT] 收窄 ——
+     * 收窄之后里面的字会自己换行, 而框的高随行数长 ([MAX_LINES] 行封顶)
+     */
+    fun widthFor(screenWidth: Int): Int =
+        minOf(WIDTH_PX, (screenWidth * MAX_WIDTH_PERCENT / 100).coerceAtLeast(1))
 
     /**
      * 行数上限: **7 行** (主人 2026-10-05 给的是 5, 2026-10-06 追加两行)
@@ -77,6 +96,44 @@ internal object BallBox {
      */
     fun newestStart(joined: String, newest: String): Int =
         (joined.length - newest.length).coerceIn(0, joined.length)
+}
+
+/**
+ * 那条 WebView 输入条 (面板 A) 该占多大、摆在哪
+ *
+ * 抽出来是因为**它以前只在创建那一刻算一次** (2026-10-08 主人报的"横竖屏切换时文本框会极大偏移"):
+ * 宽高与坐标都按当时那块屏算好就留在窗口上了, 而转屏之后窗口管理器不会替它重算 —— 竖屏算出来的
+ * 2400 高的条子横过来还是 2400 高, 于是整块跑到屏外
+ *
+ * 三条算式都是纯函数, 没有设备也能量 (见 BallTest): 一条竖屏、一条横屏, 尺寸与坐标一眼看得出来
+ */
+internal object StripSpot {
+
+    /** 左右各留一条边距 */
+    fun x(margin: Int): Int = margin
+
+    /** 宽 = 屏宽减两边距 */
+    fun width(screenWidth: Int, margin: Int): Int =
+        (screenWidth - margin * 2).coerceAtLeast(margin * 2)
+
+    /**
+     * 高 = 屏高乘那个百分比 (**不是短边**: 竖屏那一档一直是按屏高算的, 换算法会顺带把竖屏也改小),
+     * 上下各留一条边距封顶
+     */
+    fun height(screenHeight: Int, margin: Int, percent: Int): Int {
+        val wanted = screenHeight * percent / 100
+        return wanted.coerceIn(1, (screenHeight - margin * 2).coerceAtLeast(1))
+    }
+
+    /**
+     * 停靠的 y: 从屏幕底部往上留 [lift] 那一截 (它给的是"别贴着底边", 不是键盘 —— 键盘由 inset 那一层
+     * 另算), 再钳进屏幕里
+     */
+    fun restY(screenHeight: Int, height: Int, margin: Int, lift: Int): Int {
+        val wanted = screenHeight - height - lift
+        val ceiling = (screenHeight - height - margin).coerceAtLeast(margin)
+        return wanted.coerceIn(margin, ceiling)
+    }
 }
 
 /**
