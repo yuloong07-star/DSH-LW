@@ -11,6 +11,8 @@
  */
 
 import { createRequire } from 'node:module'
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
 let yaml = null
@@ -20,6 +22,18 @@ for (const candidate of ['js-yaml', 'yaml']) {
     break
   } catch {
     // 换下一个
+  }
+}
+// 本仓那棵树 (`app/build/host-tree`) 里带着 `yaml`, 而它不在 tools/ 的解析路径上 —— 打好的树在的
+// 时候直接取它, 这样这一步不用先装一个包才能跑 (它量的就是"那份 overlay 拼出来能不能解析")
+if (yaml === null) {
+  const tree = new URL('../app/build/host-tree/node_modules/yaml/package.json', import.meta.url)
+  if (existsSync(fileURLToPath(tree))) {
+    try {
+      yaml = createRequire(fileURLToPath(tree))('yaml')
+    } catch {
+      yaml = null
+    }
   }
 }
 if (yaml === null) {
@@ -36,6 +50,8 @@ const bundleOff = `# Written by LittleWhale on every host start, edits are overw
       name: '/data/user/0/pkg/files/host/node_modules/littlewhale-channel/index.mjs'
     - id: dsh-web-mobile
       name: '/data/user/0/pkg/files/host/node_modules/dsh-web-mobile/lib/index.js'
+    - id: imagegen
+      name: '/data/user/0/pkg/files/host/node_modules/@dickpy/dsh-imagegen/lib/index.js'
     - id: speech-to-text
       name: '/data/user/0/pkg/files/host/node_modules/@deepseek-ai/dsh-experimental-speech-to-text/lib/index.js'
       config:
@@ -60,6 +76,8 @@ const bundleOn = `# Written by LittleWhale on every host start, edits are overwr
       name: '/data/user/0/pkg/files/host/node_modules/littlewhale-channel/index.mjs'
     - id: dsh-web-mobile
       name: '/data/user/0/pkg/files/host/node_modules/dsh-web-mobile/lib/index.js'
+    - id: imagegen
+      name: '/data/user/0/pkg/files/host/node_modules/@dickpy/dsh-imagegen/lib/index.js'
 `
 
 /** 曾经发出去过的那一版: 少了一对引号, 就是它把真机的 host 弄挂的 —— 这一条必须被判为坏 */
@@ -72,8 +90,8 @@ function check(name, condition, detail = '') {
 }
 
 for (const [name, text, wantRows, wantOverride] of [
-  ['bundle 关着: 五行 insert', bundleOff, 5, false],
-  ['bundle 开着: 一条覆盖 + 两行 insert', bundleOn, 2, true],
+  ['bundle 关着: 六行 insert', bundleOff, 6, false],
+  ['bundle 开着: 一条覆盖 + 三行 insert', bundleOn, 3, true],
 ]) {
   let doc = null
   try {

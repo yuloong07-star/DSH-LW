@@ -23,7 +23,7 @@ import { createWriteStream } from 'node:fs'
 import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { join, dirname } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
@@ -333,6 +333,251 @@ function pictureType(data, path) {
   if (data[0] === 0xff && data[1] === 0xd8) return 'image/jpeg'
   if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return 'image/png'
   throw new Error(`${path} is neither a JPEG nor a PNG picture`)
+}
+
+/**
+ * 这张图是附件库认识的哪一种 (四种都认, 与 dsh 的 `ImageMediaType` 同一份表)
+ *
+ * `pictureType` 只给相机与截图那条路用, 那两处交出来的不是 JPEG 就是 PNG; 而 p 图那一侧进来的
+ * 可能是相册里任何一张图 (WebP 与 GIF 都在 dsh 接受的那四个里)。认不出来就抛, **不猜** ——
+ * 附件库会拿声明的类型与字节比对, 猜错那一步的报错在库里面, 比这里少一个路径
+ */
+function attachmentImageType(data, path) {
+  if (data[0] === 0xff && data[1] === 0xd8) return 'image/jpeg'
+  if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return 'image/png'
+  if (data.length > 11 && Buffer.from(data.subarray(4, 8)).toString('latin1') === 'WEBP') return 'image/webp'
+  if (data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46) return 'image/gif'
+  throw new Error(
+    `${path} is not a picture the image tools take: the attachment store accepts PNG, JPEG,` +
+      ' WebP and GIF, and the bytes name none of them',
+  )
+}
+
+/** 一个引用对象给不给得动附件库: 四个字段一个都不能少, 类型也要在那四个里面 */
+function isAttachmentRef(value) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const ref = value
+  return typeof (ref.attachmentId ?? ref.attachment_id) === 'string'
+    && ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+      .includes(ref.mediaType ?? ref.media_type)
+    && Number.isInteger(ref.bytes) && ref.bytes > 0
+    && Number.isInteger(ref.width) && ref.width > 0
+    && Number.isInteger(ref.height) && ref.height > 0
+}
+
+/**
+ * 模型手里那个引用对象 (snake_case, 与 `edit_image` 的 `source_image` 同一份形状) 换成附件库的
+ *
+ * 两种拼法都收 (`attachment_id` 与 `attachmentId`): 模型从工具结果里抄的是前者, 而有人手工拼一个
+ * 出来时会按 TypeScript 那份写后者。**错的形状要在这里拒**, 不要带着一个 `undefined` 往下走 ——
+ * 那时失败会发生在附件库里, 报的是一句与真正原因无关的话
+ */
+function attachmentRefOf(value) {
+  if (!isAttachmentRef(value)) {
+    throw new Error(
+      'that is not an image reference: pass the whole object a generation or an edit answered' +
+        ` with (attachment_id, media_type, bytes, width, height), and nothing else`,
+    )
+  }
+  const name = value.name
+  return {
+    attachmentId: value.attachmentId ?? value.attachment_id,
+    mediaType: value.mediaType ?? value.media_type,
+    bytes: value.bytes,
+    width: value.width,
+    height: value.height,
+    ...typeof name === 'string' && name !== '' ? { name } : {},
+  }
+}
+
+/** 一条消息的 content 里最新的那张图 (图块可能包在 tool-result 里面) */
+function imageRefInContent(content) {
+  if (!Array.isArray(content)) return undefined
+  for (let index = content.length - 1; index >= 0; index -= 1) {
+    const block = content[index]
+    if (typeof block !== 'object' || block === null || Array.isArray(block)) continue
+    if (block.type === 'image' && isAttachmentRef(block.attachment)) return block.attachment
+    if (block.type === 'tool-result') {
+      const nested = imageRefInContent(block.content)
+      if (nested !== undefined) return nested
+    }
+  }
+  return undefined
+}
+
+/**
+ * 这一场会话里最新的一张图
+ *
+ * 它可能是主人自己在会话里发的那一张 (相册里挑的 / 拍下来的), 也可能是指代不明时应用自动附上的
+ * 那张主屏截图。两者对 p 图是同一样东西: **主人指的是这一张**
+ *
+ * 读的是 dsh 自己的会话对象 (`exec.agent.session`), 与生图插件里那条 `/edit_image` 命令同一条路
+ * (`latestSessionImage`), 所以"哪一张最新"两处算出来的是同一张
+ */
+function newestConversationImage(exec) {
+  const messages = exec?.agent?.session?.deriveMessages?.()
+  if (!Array.isArray(messages)) return undefined
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const found = imageRefInContent(messages[index]?.content)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
+/** 路径按调用方写的形状落地: 绝对的照原样, 相对的按宿主的工作区算 (它是进程的 cwd) */
+function picturePath(asked) {
+  return isAbsolute(asked) ? asked : resolve(process.cwd(), asked)
+}
+
+/** 附件库给的那份引用, 印成生图工具要的形状 (snake_case, 与 `edit_image` 的 source_image 一样) */
+function projectImageRef(ref) {
+  return {
+    attachment_id: String(ref.attachmentId),
+    media_type: ref.mediaType,
+    bytes: ref.bytes,
+    width: ref.width,
+    height: ref.height,
+    ...ref.name === undefined || ref.name === '' ? {} : { name: ref.name },
+  }
+}
+
+/**
+ * 交给生图接口的那一份图按它自己的像素来, **不按"模型的上下文预算"**
+ *
+ * 设置页「截图」那两条预算管的是"一张图进模型上下文有多大", 而这里这张图的去处是上游的生图接口:
+ * 它不经过模型, 所以先压到 64 万像素只会让改图少一半细节。落进模型上下文的仍然只是改完之后的
+ * 结果 (那条结果照旧受预算管), 两件事不冲突
+ */
+const IMAGE_SOURCE_PIXELS = 4_000_000
+const IMAGE_SOURCE_BYTES = 16 * 1024 * 1024
+
+/** 拍一块屏, 拿最清楚的那一份 (`fullPath` 是没缩过的那张, `path` 是按预算缩过的) */
+async function photographScreen(displayId) {
+  const id = Number.isInteger(displayId) ? displayId : 0
+  const shot = await call('screenshot', {
+    displayId: id,
+    maxPixels: IMAGE_SOURCE_PIXELS,
+    maxBytes: IMAGE_SOURCE_BYTES,
+  })
+  const path = String(shot?.fullPath ?? '').trim() || String(shot?.path ?? '').trim()
+  if (path === '') {
+    throw new Error(
+      `no picture came back from screen ${id}: ${shot?.error || 'the device did not say why'}`,
+    )
+  }
+  return path
+}
+
+/** 读一个文件当图片, 读不到时把真正读的那个路径说清楚 (相对路径换算过之后才知道是哪一个) */
+async function readPictureFile(path, asked) {
+  try {
+    return await readFile(path)
+  } catch (error) {
+    throw new Error(
+      `there is no picture to read at ${path} (asked as "${asked}"): ${error?.message ?? error}`,
+    )
+  }
+}
+
+/**
+ * `lw_image op=ref`: 把一张图交给附件库, 回那个引用对象
+ *
+ * 三个来源共用后半段 —— 拍屏 / 读文件 / 会话里最新那张。**会话那一档直接交回已有的引用** (它本来就是
+ * 附件库给的), 不再存一遍: 存两次会得到两个不同的 id, 而它们在模型眼里是同一张图
+ */
+async function stagePictureForImageTools(args, exec) {
+  const attachments = hostCtx?.get?.('attachments')
+  if (typeof attachments?.saveImage !== 'function') {
+    throw new Error(
+      'this host has no attachment store, so a picture cannot be handed to the image tools',
+    )
+  }
+  const asked = typeof args?.path === 'string' ? args.path.trim() : ''
+  const from = String(args?.from ?? 'screen').trim().toLowerCase()
+  if (asked === '' && from === 'conversation') {
+    const ref = newestConversationImage(exec)
+    if (ref === undefined) {
+      throw new Error(
+        'this conversation holds no picture yet: ask the person to send it, or call op=ref' +
+          ' without `from` to photograph the screen they are pointing at',
+      )
+    }
+    return JSON.stringify(projectImageRef(ref))
+  }
+  let data
+  let source
+  if (asked !== '') {
+    source = picturePath(asked)
+    data = await readPictureFile(source, asked)
+  } else if (from === 'screen') {
+    source = await photographScreen(args?.displayId)
+    data = await readPictureFile(source, source)
+  } else {
+    throw new Error(`from has to be screen or conversation, not "${args.from}"`)
+  }
+  const mediaType = attachmentImageType(data, source)
+  const ref = await attachments.saveImage({ data, mediaType, name: basename(source) })
+  return JSON.stringify(projectImageRef(ref))
+}
+
+/**
+ * 相册那份的名字: 去掉路径成分与控制字符, 空的时候用一个带时间戳的
+ *
+ * 没带扩展名就按真实的媒体类型补一个 —— 相册与文件管理器按后缀认东西, 一份叫 `edited` 的 PNG 在
+ * 有些地方是打不开的
+ */
+function albumName(asked, extension) {
+  const cleaned = String(asked ?? '')
+    .split(/[\\/]/)
+    .pop()
+    .trim()
+    .replace(/[\u0000-\u001f]/g, '')
+  const base = cleaned === '' || cleaned === '.' || cleaned === '..' ? '' : cleaned
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const named = base === '' ? `edited-${stamp}` : base
+  return named.includes('.') ? named : `${named}.${extension}`
+}
+
+/**
+ * `lw_image op=album`: 把成图放进相册 (那一步只有应用这一侧做得到) 并打开它
+ *
+ * 字节先落在工作区的 `pictures/` 下, 再让应用那一侧从那儿拷进媒体库: 桥是一条一行 JSON 的短连接,
+ * 几兆的图不该从它上面过。工作区那份**留着** (与 `lw_screenshot` / `lw_take_photo` 同一个规矩:
+ * 模型手里要有一个能指的路径), 相册那份才是给主人看的
+ */
+async function fileFinishedPicture(args) {
+  const attachments = hostCtx?.get?.('attachments')
+  const asked = typeof args?.path === 'string' ? args.path.trim() : ''
+  const given = args?.image
+  let data
+  let mediaType
+  let name = typeof args?.name === 'string' ? args.name.trim() : ''
+  if (given !== undefined && given !== null) {
+    if (typeof attachments?.readImage !== 'function') {
+      throw new Error('this host has no attachment store, so an image reference cannot be read back')
+    }
+    const stored = await attachments.readImage(attachmentRefOf(given))
+    data = stored.data
+    mediaType = stored.ref.mediaType
+    if (name === '' && typeof stored.ref.name === 'string') name = stored.ref.name
+  } else if (asked !== '') {
+    const source = picturePath(asked)
+    data = await readPictureFile(source, asked)
+    mediaType = attachmentImageType(data, source)
+    if (name === '') name = basename(source)
+  } else {
+    throw new Error(
+      'op=album has to be given the picture: pass the reference a generation or an edit answered' +
+        ' with in `image`, or a picture file in `path`',
+    )
+  }
+  const extension = mediaType === 'image/jpeg' ? 'jpg' : mediaType.split('/')[1]
+  name = albumName(name, extension)
+  const staged = join(process.cwd(), 'pictures', name)
+  await mkdir(dirname(staged), { recursive: true })
+  await writeFile(staged, data)
+  const answer = await call('gallery', { source: staged, name, open: args?.open !== false })
+  return answerOf(answer)
 }
 
 /**
@@ -2962,6 +3207,86 @@ const TOOLS = [
         return `${answer.detail} (${answer.hits} hit(s) this run)`
       }
       throw new Error(`op has to be status, prepare, keywords, start or stop, not "${args.op}"`)
+    },
+  }),
+
+  // ---- p 图那一条: 把一张图变成生图插件认的引用, 再把成图放进相册 ----
+  //
+  // 生图插件 (`@dickpy/dsh-imagegen`) 的 `edit_image` 只认一个引用对象 (attachment_id / media_type /
+  // bytes / width / height), 而**屏幕上那张图没有这样一个对象**: 模型看到的是图块, 抄不到 id。所以
+  // 中间那一步只有应用这一侧做得了 —— 它能把屏幕拍下来、把字节交给附件库, 再把库给的那份引用原样
+  // 印出来。成图那条路反着走同样的道理: 引用里的字节只有在宿主这一侧读得出来, 而"进相册"只有应用
+  // 那一侧做得到 (媒体库是它的表)
+  defineTool({
+    name: 'lw_image',
+    description:
+      'Move a picture between this phone and the image tools. **Two jobs, told apart by op.** '
+      + 'op=ref turns a picture into the exact reference object the image-generation tools take: '
+      + 'pass that whole object, unchanged, as their source image. It photographs one of this '
+      + "phone's screens (the person's own screen, displayId 0, unless you name another), or reads "
+      + 'a picture file, or takes the newest picture already in this conversation (one the person '
+      + 'sent, or the screenshot that was attached automatically when they pointed at their '
+      + 'screen) - and answers with the reference. Nothing else here can make what is on a screen '
+      + 'into something an image edit will accept, so this is the step between "look at this '
+      + 'picture" and "change it". op=album takes a finished picture - the reference a generation '
+      + "or an edit answered with, or a file - puts a copy in the phone's own album "
+      + '(Pictures/DSH-LW, where the gallery app lists it), and opens it so the person is looking '
+      + 'at the result; it answers with where the album copy landed. This tool does not change a '
+      + 'picture itself: the configured image service does that, through the generation tools.',
+    parameters: {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'ref: turn a picture into the reference the image tools take. album: put a '
+          + "finished picture into the phone's album and show it",
+        enum: ['ref', 'album'],
+      },
+      path: {
+        type: 'string',
+        description: 'For op=ref: a picture file to stage instead of photographing a screen '
+          + '(relative paths start at the work area). For op=album: the finished picture to file '
+          + 'when you have a file rather than an image reference',
+      },
+      from: {
+        type: 'string',
+        description: 'For op=ref: where the picture comes from. "screen" (the default, and what '
+          + '"this picture" almost always means) photographs a screen. "conversation" takes the '
+          + 'newest picture already in this conversation instead - use that when the person sent '
+          + 'the picture themselves rather than pointing at their screen. A path overrides both',
+        enum: ['screen', 'conversation'],
+      },
+      displayId: {
+        type: 'integer',
+        description: "For op=ref from a screen: which screen to photograph. Defaults to 0, the "
+          + "person's own screen, which is the picture they mean by \"this\" while holding the "
+          + 'phone; name a virtual screen\'s id only when the picture to change is on that screen',
+      },
+      image: {
+        type: 'object',
+        additionalProperties: true,
+        description: 'For op=album: the image reference a generate_image / edit_image / '
+          + 'get_image_generation_task result carried - pass that entire object unchanged',
+      },
+      name: {
+        type: 'string',
+        description: 'For op=album: the file name to give the album copy. Defaults to the '
+          + "reference's own name, or a timestamped one",
+      },
+      open: {
+        type: 'boolean',
+        description: 'For op=album: open the picture once it is filed, so the person sees the '
+          + 'result. Defaults to true; set false only when they asked for it to be saved and said '
+          + 'nothing about looking at it',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args, exec) {
+      if (args.op === 'ref') return await stagePictureForImageTools(args, exec)
+      if (args.op === 'album') return await fileFinishedPicture(args)
+      throw new Error(`op has to be ref or album, not "${args.op}"`)
     },
   }),
 ]

@@ -13,7 +13,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
@@ -421,6 +421,97 @@ try {
   )
 }
 console.log(`pack-host: ${webui} imports cleanly`)
+
+// 随包发的第三方插件: `@dickpy/dsh-imagegen` (DSH 生图), 也就是 p 图那条链上真正的"改图"那一半
+//
+// 做法与 `dsh-web-mobile` 同一个形状, 但**取的是 tarball 而不是装一棵依赖树**: 我们只要它自己那一个
+// 包目录, 而 `npm install` 会顺手把它声明的依赖也拉下来 (schemastery 这棵树里本来就有, lucide-react
+// 只给打包好的客户端用), 那些装完就得再删。`npm pack` 只把包本身拿下来, 装不进来任何别的东西
+//
+// **裁掉三样**: `docs/` (约 58 MB, 全是 README 里的演示视频与截图)、`src/` 里除 `src/templates/`
+// 之外的全部 (会跑的是 `lib/`, 而 `src/templates/*.json` 是它内置提示词库的离线快照, 运行时真的读)、
+// 以及 `lib/*.map` (3 MB 的调试用 source map)。裁完这一包约 7 MB
+//
+// 装完 import 一次, 理由与上面那一步一样: 少一个依赖时 npm 不会说话, 而它要到**加载时**才抛 ——
+// 设备上的表现是"生图那一整块不见了", 不是一句安装错误
+const imagePlugin = { name: '@dickpy/dsh-imagegen', version: '1.6.7' }
+
+/** 拉 npm 的那条 registry: 这台开发机上 registry.npmjs.org 不通, 缺省走 npmmirror */
+const npmRegistry = process.env.LW_NPM_REGISTRY ?? 'https://registry.npmmirror.com'
+
+const imageStage = join(out, '.imagegen-stage')
+mkdirSync(imageStage, { recursive: true })
+run(
+  'npm',
+  [
+    'pack',
+    `${imagePlugin.name}@${imagePlugin.version}`,
+    '--registry', npmRegistry,
+    '--pack-destination', imageStage,
+  ],
+  imageStage,
+)
+const imageTarball = readdirSync(imageStage).find(name => name.endsWith('.tgz'))
+if (imageTarball === undefined) {
+  throw new Error(`npm pack produced no tarball for ${imagePlugin.name}@${imagePlugin.version}`)
+}
+run('tar', ['-xzf', join(imageStage, imageTarball), '-C', imageStage], imageStage)
+const imageRoot = join(out, 'node_modules', ...imagePlugin.name.split('/'))
+mkdirSync(dirname(imageRoot), { recursive: true })
+cpSync(join(imageStage, 'package'), imageRoot, { recursive: true })
+rmSync(imageStage, { recursive: true, force: true })
+
+const imageSources = join(imageRoot, 'src')
+for (const name of readdirSync(imageSources)) {
+  if (name !== 'templates') rmSync(join(imageSources, name), { recursive: true, force: true })
+}
+const imageLib = join(imageRoot, 'lib')
+for (const name of readdirSync(imageLib)) {
+  if (name.endsWith('.map')) rmSync(join(imageLib, name), { force: true })
+}
+rmSync(join(imageRoot, 'docs'), { recursive: true, force: true })
+
+/**
+ * 补一处上游的小毛病: 它有三处数据目录写死成 `~/.dsh/dsh-imagegen`, 没看 `$DSH_HOME`
+ *
+ * 那三处是提示词模板快照 / 模板收藏 / "打开数据文件夹" 那个按钮 (`templates-store` 与
+ * `template-favorites` 是模块级的常量, 路由里还有一处内联的), 而这一棵树上 `HOME` 指向**工作区**
+ * (`/sdcard/DSH`, 见 `DshHost.spawn` 里那两行), 于是它会在主人的工作区根下建一个 `.dsh/dsh-imagegen`
+ * 并把两兆的模板 JSON 写进去 —— 真机上实测到了 (2026-10-08: `/sdcard/DSH/.dsh/dsh-imagegen/templates/`,
+ * 它自己的历史与画廊反倒规规矩矩落在 `$DSH_HOME` 里, 因为那几处走的是 `imageDataRoot()`)
+ *
+ * 换法就是照它自己 `image-storage-path.ts` 里那句写成一样的 (那份是对的), 三处一起换。
+ * **数目对不上就让构建失败**: 上游换个写法时, 悄悄不换的后果正是"主人的工作区里又多一个 `.dsh`",
+ * 而那件事没人会去查
+ */
+const imageLibEntry = join(imageLib, 'index.js')
+const workspaceHome = 'path.join(homedir(), ".dsh", "dsh-imagegen")'
+const knownHome = 'path.join(process.env.DSH_HOME?.trim() || path.join(homedir(), ".dsh"), "dsh-imagegen")'
+const imageBundle = readFileSync(imageLibEntry, 'utf8')
+const rewritten = imageBundle.split(workspaceHome).length - 1
+if (rewritten !== 3) {
+  throw new Error(
+    `${imagePlugin.name}: expected 3 occurrences of ${workspaceHome} in lib/index.js (templates,`
+      + ` favorites, data folder), found ${String(rewritten)}; the upstream layout changed, so the`
+      + ' rewrite that keeps its data inside $DSH_HOME has to be revisited',
+  )
+}
+writeFileSync(imageLibEntry, imageBundle.split(workspaceHome).join(knownHome))
+console.log(`pack-host: pointed ${String(rewritten)} of ${imagePlugin.name}'s data paths at DSH_HOME`)
+
+const imageManifest = JSON.parse(readFileSync(join(imageRoot, 'package.json'), 'utf8'))
+const imageEntry = typeof imageManifest.main === 'string' ? imageManifest.main : 'index.js'
+try {
+  await import(pathToFileURL(join(imageRoot, imageEntry)).href)
+} catch (error) {
+  throw new Error(
+    `${imagePlugin.name} cannot be imported after installation (${error?.message ?? error}): it is`
+      + ' missing a dependency it actually imports, or it needs a package this tree does not carry',
+  )
+}
+console.log(
+  `pack-host: installed ${imagePlugin.name}@${imagePlugin.version} from ${npmRegistry}`,
+)
 
 // LittleWhale's own host plugin is copied in rather than packed: it is a few hundred lines of
 // plain ESM with no build step, and it has to sit under node_modules so that its import of

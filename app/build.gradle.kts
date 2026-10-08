@@ -18,14 +18,14 @@ val dshCheckout = rootProject.layout.projectDirectory.dir("third_party/deepseek-
 val hostTree = layout.buildDirectory.dir("host-tree")
 val hostAssets = layout.buildDirectory.dir("generated/host-assets")
 
-// 首启要落到 $DSH_HOME 里的那两项 (三份技能 + 两条样例快捷指令) 也是构建产物: 源在仓库根的
+// 首启要落到 $DSH_HOME 里的那两项 (四份技能 + 两条样例快捷指令) 也是构建产物: 源在仓库根的
 // `skills/` 与 `quick-commands/`, 拷成 assets 的形状由下面的 copySeedAssets 做。**显式列这几份,
 // 不整目录拷** —— `skills/android-device-control` 这一版不随包 (主人 2026-10-08 选的),
 // 要收口时把它加进那张表就行, 见 docs/DSH-LW-2.5.0-批次7-开发计划.md
 val seedAssets = layout.buildDirectory.dir("generated/seed-assets")
 
 /** 随包发的技能: 目录名 = frontmatter 里的 `name` */
-val shippedSkills = listOf("web-search", "weather", "calendar")
+val shippedSkills = listOf("web-search", "weather", "calendar", "photo-edit")
 
 /** 随包发的样例快捷指令: 文件名去掉 `.md` 就是它在设置页里的名字 */
 val shippedQuickCommands = listOf("制定旅游计划", "今天要做什么")

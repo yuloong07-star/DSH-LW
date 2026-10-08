@@ -11,10 +11,13 @@ import java.io.File
  * command line names, and this app is what composes that command line. Writing the overlay here
  * rather than into the profile keeps the profile the user's own
  *
- * Two plugins are named, and they got into the tree in two different ways - this app's own channel
- * plugin is copied in by the packaging step, while `dsh-web-mobile` is an ordinary dependency of
- * that tree. Either way the row has to be written here, because a package that is merely installed
- * is not part of any composition
+ * Three plugins are named, and they got into the tree in three different ways - this app's own
+ * channel plugin is copied in by the packaging step, `dsh-web-mobile` is an ordinary dependency of
+ * that tree, and `@dickpy/dsh-imagegen` (the AI image plugin, which is what the p 图 skill drives)
+ * is fetched from the registry by `tools/pack-host.mjs` at packaging time. Either way the row has
+ * to be written here, because a package that is merely installed is not part of any composition,
+ * and `write()` drops any row whose file is not in the tree, so a tree packed before a plugin
+ * joined the roster still boots
  */
 object PluginOverlay {
 
@@ -43,6 +46,7 @@ object PluginOverlay {
     private val PLUGINS = listOf(
         Row("littlewhale-channel", "node_modules/littlewhale-channel/index.mjs"),
         Row("dsh-web-mobile", "node_modules/dsh-web-mobile/lib/index.js"),
+        Row("imagegen", "node_modules/@dickpy/dsh-imagegen/lib/index.js"),
         Row(
             "speech-to-text",
             "node_modules/@deepseek-ai/dsh-experimental-speech-to-text/lib/index.js",

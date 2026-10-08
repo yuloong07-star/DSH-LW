@@ -9,6 +9,7 @@ import io.github.miuzarte.littlewhale.tool.LwAutomation
 import io.github.miuzarte.littlewhale.tool.LwCalendar
 import io.github.miuzarte.littlewhale.tool.LwEvents
 import io.github.miuzarte.littlewhale.tool.LwFiles
+import io.github.miuzarte.littlewhale.tool.LwGallery
 import io.github.miuzarte.littlewhale.tool.LwKeepAwake
 import io.github.miuzarte.littlewhale.tool.LwMedia
 import io.github.miuzarte.littlewhale.tool.LwNotifications
@@ -952,6 +953,9 @@ object PrivilegedBridge {
         // 1.0.3 批次 4: 工作区里那几个文件与手机那一侧的读数、让媒体库看见、拍一张照
         "files" -> appContext { LwFiles.dispatch(it, request) }
         "mediaScan" -> appContext { LwMedia.dispatch(it, request) }
+        // p 图那条链的最后一站 (2.5.0 批次 9): 把成图放进相册, 顺手打开。写的是 MediaStore,
+        // 所以"所有文件访问权限"有没有给都不影响这一条
+        "gallery" -> appContext { LwGallery.dispatch(it, request) }
         "takePhoto" -> appContext { LwPhoto.dispatch(it, request) }
         // 通知栏那一侧: 读的是系统绑在本进程里的监听服务, 与无障碍同一条路
         "notifications" -> appContext { LwNotifications.dispatch(it, request) }

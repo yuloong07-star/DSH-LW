@@ -489,6 +489,65 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
   **删除只在桥上** (`op=delete`), 给模型的是 list / read / write / status / history
 - **工具数**: 这一批把插件从 58 个工具抬到 59 个, `tools/check-host-plugin.mjs` 的 `FLOOR` 跟着改
 
+## p 图 (AI 改图, 2026-10-08, 2.5.0 批次 9)
+
+主人说一句「帮我把这张图的背景改为海边」, 本机要自己把它做完: **截当前那张图 → 上游图生图 → 成图进相册
+→ 打开它**。这一条由三样东西拼起来, 各管一段:
+
+| 谁 | 做什么 |
+| :-- | :-- |
+| `@dickpy/dsh-imagegen` 插件 (第三方, **随包**) | 改图那一步: `edit_image` 走主人在「设置 → 生图配置」里配的渠道, 另有 `generate_image` (文生图) 与一整套 GUI (画廊 / 无限画布 / 提示词库 / 电商套图) |
+| `skills/photo-edit/SKILL.md` (随包技能) | 那四步的工作流 (认图 → 改图 → 进相册 → 回报) 与红线 |
+| `lw_image` (本仓第 60 个工具) | 两头: `op=ref` 把一张图变成 `edit_image` 认的引用, `op=album` 把成图放进相册并打开 |
+
+- **为什么中间那一步必须由本仓做**: `edit_image` 只认一个引用对象 (`attachment_id` / `media_type` /
+  `bytes` / `width` / `height`), 而**屏幕上那张图没有这样一个对象** —— 模型看到的是图块, 抄不到 id。
+  `lw_image op=ref` 拍一块屏 (缺省 `displayId 0`, 就是主人手里那块) 交给附件库, 再把库给的那份印成
+  snake_case 的 JSON; 会话里已经有图时 (`from:"conversation"`) 直接把那条图块的引用原样交回去。
+  **拍的是 `fullPath` 那一份** (没按"给模型看的预算"缩过的): 它的去处是上游接口, 不经过模型上下文
+- **成图那条路反着走**: 插件把结果存成附件并把引用印进工具结果的 JSON (所以模型拿得到 id), 而字节只有
+  宿主这一侧读得出来 —— `lw_image op=album` 把它读回来写进工作区 `pictures/`, 再让应用那一侧经
+  `gallery` 这条桥拷进媒体库
+- **进相册走 MediaStore, 不往 `Pictures/` 里扔文件**: 从 Android 10 起一个应用可以往媒体库插自己的
+  图片而**不需要任何权限**, 而直接写公共目录要"所有文件访问权限" (本机是可选的第三档)。`tool/LwGallery.kt`
+  用 `IS_PENDING` 分两半写 (先占行再写字节, 并在写失败时撤掉那一行), 写完**读回**名字与路径, 再
+  `ACTION_VIEW` 打开它 —— 后台启动 activity 可能被系统丢掉, 所以答案说的是"请系统打开它", 不承诺
+  主人已经在看
+- **插件是随包发的, 不是机内装的**: `tools/pack-host.mjs` 用 `npm pack` 把它取进 host 树的
+  `node_modules/@dickpy/dsh-imagegen` (只取包本身, **不装它声明的依赖** —— `@deepseek-ai/schemastery`
+  这棵树里本来就有, `lucide-react` 只给打好的客户端用)。**裁掉 `docs/` (58 MB 的演示视频与截图) /
+  `src/` 里除 `src/templates/` 之外的部分 (`lib/` 才是会跑的, 而 `src/templates/*.json` 是它内置提示词
+  库的离线快照, 运行时真读) / `lib/*.map`**, 剩约 7 MB。registry 走 `LW_NPM_REGISTRY`, 缺省
+  `registry.npmmirror.com` (这台开发机上 `registry.npmjs.org` 不通)。装完当场 import 一次: 少一个依赖
+  时 npm 不会说话, 而它要到加载时才抛
+- **装了不等于挂了**: `host/PluginOverlay.kt` 那一行才是把它挂进 web profile 的东西 (`id imagegen`, 指向
+  包里的 `lib/index.js`); 它客户端那一半 (`lib/client.js`) 由 dsh 的 client-modules 按 `dsh.client` 扫
+  出来, 与 `dsh-web-mobile` 同一条路。`write()` 会丢掉树里没有的那些行, 所以更早打出来的树照旧起得来
+- **它挂不上也不会把 host 弄挂**: dsh 那份"必须起来"的名单 (`requiredStartupEntryIds`) 只有
+  `agent-loop` / `webserver` / `modules` / `connection` / `headless-runner` / `acp` /
+  `sdk-jsonrpc-server` 七个, 我们这一行是 best-effort —— 它失败时打一行
+  `warning: 1 entry did not activate` 而 host 照旧起来, 代价只是生图那一块 (工具 + 面板) 一起不在
+- **给它补一处上游的小毛病**: 提示词模板快照 / 模板收藏 / "打开数据文件夹"那三处的目录写死成
+  `~/.dsh/dsh-imagegen` (没看 `$DSH_HOME`), 而这一棵树上 `HOME` 指着**工作区**, 于是它会在
+  `/sdcard/DSH` 下建一个 `.dsh` 并把两兆的模板 JSON 写进去 (2026-10-08 在模拟器上实测到)。历史与画廊
+  那两处是对的 (它们走 `imageDataRoot()`), 所以只是那三处。`tools/pack-host.mjs` 在装完之后按它自己
+  `image-storage-path.ts` 那句换掉, **并且数一数换了几处: 不是 3 处就让构建失败** —— 上游换个写法时
+  悄悄不换的后果, 是主人的工作区里又多一个没人会去查的 `.dsh`
+- 判据表在 `tools/check-image-edit.mjs` (17 条): 那五个字段的名字 / 两个 op 两侧一致 / 相册目录只有一份
+  口径 / 三个清单 (pack-host 的包名、overlay 的行、技能的随包表) 对得上 / 那三处 `~/.dsh` 的换法还在
+- **验过的 (2026-10-08, 模拟器 `emulator-5554`)**: 出包装机后 host 起来 (`dsh web: http://…`)、
+  GUI 渲染 (`rootChildren: 1`)、**两半都挂上了** (宿主那一半把模板快照写进了
+  `$DSH_HOME/dsh-imagegen/templates/`; 客户端那一半的名字出现在首页那份模块表里:
+  `plugins/??…@dickpy/dsh-imagegen/client.js…`)、没有任何 `did not activate`。应用那一侧单独验过:
+  一条 `gallery` 桥调用把 `/sdcard/DSH/screenshots/screen-0.png` 放进相册 —— 文件落在
+  `/sdcard/Pictures/DSH-LW/`, 媒体库读出 `_display_name=lw-gallery-test.png` 带
+  `relative_path=Pictures/DSH-LW/`, 而且**真的弹起来了** (`Displayed
+  com.google.android.apps.photos/.pager.HostPhotoPagerActivity`); 大预算的 `screenshot` 回的
+  `fullPath` 是 1080x2400、`scale 1.0` 那一份 (没走"给模型看的预算"), 正是 `op=ref` 要的
+- **没验的**: 真机上从"说一句话"到"相册里多一张图"的**整链** (要一个配好渠道与密钥的 image API);
+  以及客户端那一半在 dsh 0.2.1 上的界面表现 (它是按 0.1.2-alpha.2 的 devDependencies 编的, 只验到
+  "在模块表里、首页能起来")
+
 ## 工作区与存储
 
 工作区在共享存储里, dsh 自己的配置在 app 沙盒里:

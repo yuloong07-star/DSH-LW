@@ -1,11 +1,11 @@
 /**
- * 快捷指令与那三份技能的判据表 (2.5.0 批次 7)
+ * 快捷指令与那几份技能的判据表 (2.5.0 批次 7, 批次 9 起多一份 photo-edit)
  *
  * 这一批有四件东西**漂开了也不会当场报错**, 只会在设备上变成"看起来能用"的样子, 所以在这里核:
  *
  *   1. **两个新工具的 op 名单两侧一致**: 应用那侧 (`LwCalendar.OPERATIONS` / `LwQuick.MODEL_OPERATIONS`)
  *      与插件那侧 (`enum:` 那一行) 是两份实现 —— 漂开的样子是"工具说明里有一个 op 其实没实现"
- *   2. **随包那五项都在**: 三份技能与两条样例 (源在仓库 `skills/` 与 `quick-commands/`)
+ *   2. **随包那几项都在**: 四份技能与两条样例 (源在仓库 `skills/` 与 `quick-commands/`)
  *   3. **技能 frontmatter 合规**: dsh 的 skill-filesystem 只认 kebab-case 的 `name` 与非空
  *      `description`, 写错了整份技能会被静默跳过 (模型目录里连一行提示都没有)
  *   4. **build.gradle.kts 那张随包表与仓库里的文件对得上**: 表里多一个名字就是构建失败, 少一个就是
@@ -102,7 +102,7 @@ check(
 const shippedSkills = kotlinList(gradle, 'shippedSkills')
 const shippedCommands = kotlinList(gradle, 'shippedQuickCommands')
 
-check('随包的技能是那三份', shippedSkills, ['web-search', 'weather', 'calendar'])
+check('随包的技能是那四份', shippedSkills, ['web-search', 'weather', 'calendar', 'photo-edit'])
 check('随包的样例快捷指令是那两条', shippedCommands, ['制定旅游计划', '今天要做什么'])
 
 for (const name of shippedSkills) {

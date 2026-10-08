@@ -175,8 +175,11 @@ check(
 
 await scene({ mode: 'video', owner: OTHER, agoMs: 21 * 60 * 1000 })
 check('过期的占用 (21 分钟没有续期) 不再挡取景', ask('lw_look', {}).verdict, 'allow')
-await scene({ mode: 'video', owner: OTHER, agoMs: 20 * 60 * 1000 })
-check('刚好 20 分钟还算占着 (边界那一侧)', ask('lw_look', {}).verdict, 'refuse')
+// 边界那一侧要留一点余量: `scene` 把 `at` 写成"此刻减 agoMs", 而闸里读的是**它自己那一刻**的
+// `Date.now()` —— 两者之间还隔着一次文件写入, 拿"正好 20 分钟"去比就是与墙钟赛跑, 这一条因此在
+// 2026-10-08 实测里时过时不过 (跑五次过了一次)。差 250ms 落在同一侧, 判据要说的那件事一个字没变
+await scene({ mode: 'video', owner: OTHER, agoMs: 20 * 60 * 1000 - 250 })
+check('差一点到 20 分钟还算占着 (边界这一侧)', ask('lw_look', {}).verdict, 'refuse')
 
 await scene({ mode: 'video' })
 await writeFile(join(home, 'modes', 'camera-owner.json'), '{"sessionId":"who"', 'utf8')

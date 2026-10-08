@@ -5,7 +5,7 @@ import android.util.Log
 import java.io.File
 
 /**
- * 随包发的那两份"首启内容": 三份技能与两条样例快捷指令
+ * 随包发的那两份"首启内容": 四份技能与两条样例快捷指令
  *
  * 技能落在 `$DSH_HOME/skills/`, 快捷指令落在 `$DSH_HOME/quick-commands/`, 两份都落在 dsh 自己的家
  * 里而不是 assets 里 —— 与模式正文同一条道理 (见 [io.github.miuzarte.littlewhale.channel.LwModes]):
@@ -21,8 +21,8 @@ import java.io.File
  * 落位失败 (assets 缺 / 磁盘满) 只记日志: 这一件事不该拦住 host 起来, 而缺哪一份在设置页与技能
  * 目录里一眼看得见
  *
- * 随包的那五项由构建拷进 assets (见 `app/build.gradle.kts` 的 `copySeedAssets`), 源在仓库的
- * `skills/` 与 `quick-commands/` 两处, 只有这三份技能与两条样例进包
+ * 随包的那几项由构建拷进 assets (见 `app/build.gradle.kts` 的 `copySeedAssets`), 源在仓库的
+ * `skills/` 与 `quick-commands/` 两处, 只有那四份技能与两条样例进包
  */
 internal object LwSeed {
 
@@ -41,7 +41,7 @@ internal object LwSeed {
     private const val STAMP = ".lw-seed"
 
     /** 随包的技能: 目录名 = frontmatter 里的 `name`, 两份都要对得上 */
-    private val skills = listOf("web-search", "weather", "calendar")
+    private val skills = listOf("web-search", "weather", "calendar", "photo-edit")
 
     /** 随包的样例快捷指令: 文件名去掉 `.md` 就是它在设置页里的名字 */
     private val commands = listOf("制定旅游计划", "今天要做什么")
