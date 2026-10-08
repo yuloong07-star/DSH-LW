@@ -547,6 +547,9 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
 - **没验的**: 真机上从"说一句话"到"相册里多一张图"的**整链** (要一个配好渠道与密钥的 image API);
   以及客户端那一半在 dsh 0.2.1 上的界面表现 (它是按 0.1.2-alpha.2 的 devDependencies 编的, 只验到
   "在模块表里、首页能起来")
+- **这一批随 2.5.0 一起发了** (2026-10-08): `versionCode 7 / versionName "2.5.0"`, 干净构建
+  225,777,502 字节 (215.3 MiB), `tools/apk-bytes.py` 量出最大无归属区间 4,098 字节; 发在
+  `yuloong07-star/DSH-LW` 的 `v2.5.0` (Release 正文在 `docs/DSH-LW-2.5.0-release-notes.md`)
 
 ## 工作区与存储
 

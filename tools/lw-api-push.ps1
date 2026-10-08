@@ -77,7 +77,12 @@ foreach ($commit in $commits) {
 
     $entries = @()
     # 与第一父逐条比: merge 提交直接 `git diff-tree <commit>` 什么都不输出, 显式给两棵树才是那个 diff
-    foreach ($raw in @(git diff-tree -r --raw --no-commit-id $parentSha $commit)) {
+    #
+    # **`core.quotePath=false` 是必须的** (2026-10-08 踩的): 默认那一档下 git 把非 ASCII 路径印成
+    # `"quick-commands/\346\226\207..."` 这种转义形式, 而下面那个正则把整段当成路径 —— 建出来的树里
+    # 于是多了一个转义过的怪名字, 树 SHA 自然对不上 (那一次卡在 `tree mismatch at 89494b4`), 而
+    # 本仓的提交里真有中文文件名 (`quick-commands/制定旅游计划.md`, `skills/photo-edit` 那一批)
+    foreach ($raw in @(git -c core.quotePath=false diff-tree -r --raw --no-commit-id $parentSha $commit)) {
         if ($raw -notmatch '^:(\d+) (\d+) ([0-9a-f]+) ([0-9a-f]+) ([A-Z])\s+(.+)$') {
             throw "unparsed diff line: $raw"
         }

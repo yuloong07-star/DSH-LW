@@ -201,10 +201,11 @@ android {
         // decision: the accessibility tree path needs API 30, and nothing here has been run below 33.
         minSdk = 33
         targetSdk = 37
-        // 2.0.0: 1.3.0 的正文 (虚拟屏工具与无障碍 / OCR / 事件订阅那一批) 加上虚拟屏保活面、语音输入与
-        // 输出、浮窗面板 A、唤醒词; 版本号从 1.3.0 的 5 往上走, 不回退到草稿分支那个 4
-        versionCode = 6
-        versionName = "2.0.0"
+        // 2.5.0: 2.0.0 的正文 (虚拟屏保活面 / 语音输入输出 / 浮窗 / 唤醒词) 加上 2.5.0 那九批 ——
+        // 浮标几何与模式硬闸、锁屏与唤醒、两个模式、指代不明自动截图、快捷指令、自动指令、
+        // 以及 p 图 (随包的生图插件 + photo-edit 技能 + lw_image)
+        versionCode = 7
+        versionName = "2.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
