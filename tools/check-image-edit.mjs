@@ -159,6 +159,13 @@ check(
   row?.[1],
   '@dickpy/dsh-imagegen',
 )
+// **两张表都要有** (2026-10-08 真机上踩的): 官方语音 bundle 开着时走的是 OWN_PLUGINS, 只加进 PLUGINS
+// 的那一份在那种机器上根本不挂 —— 现象是 `lw_image` 在而 `edit_image` 不在, 模拟器上却看不出来
+check(
+  '那一行在 PLUGINS 与 OWN_PLUGINS 两张表里各有一份',
+  (overlay.match(/Row\("imagegen", "node_modules\/@dickpy\/dsh-imagegen\/lib\/index\.js"\)/g) ?? []).length,
+  2,
+)
 
 check(
   'photo-edit 技能在 build.gradle.kts 的随包表里',

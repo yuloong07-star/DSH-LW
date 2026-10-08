@@ -61,12 +61,18 @@ object PluginOverlay {
      * 而 `api-speech-to-text` 里的 `speechController` 不许重复注册 —— 现象是那一行带着
      * "service speechController has been registered" 变成异常, 而语音模型的下载正好走它
      *
-     * 所以 bundle 开着的时候**只留自己那两个包, 再用"按 id 改配置"把 provider 指到本机那份**:
+     * 所以 bundle 开着的时候**只留自己这几个包, 再用"按 id 改配置"把 provider 指到本机那份**:
      * `speech-to-text` 这个 id 两边一样, 于是是一次配置覆盖而不是第二次挂载
+     *
+     * **这张表与 [PLUGINS] 是并列的两份, 加插件时两边都要加** (2026-10-08 真机上踩的):
+     * `imagegen` 只加进 [PLUGINS] 时, 在这台开着官方语音 bundle 的手机上它根本不会挂 —— 现象是
+     * `lw_image` 在、`edit_image` 不在 (生图那一整块没了), 而模拟器上 bundle 关着, 一点异常都看不见。
+     * `tools/check-image-edit.mjs` 现在会数这张表里那一行在不在
      */
     private val OWN_PLUGINS = listOf(
         Row("littlewhale-channel", "node_modules/littlewhale-channel/index.mjs"),
         Row("dsh-web-mobile", "node_modules/dsh-web-mobile/lib/index.js"),
+        Row("imagegen", "node_modules/@dickpy/dsh-imagegen/lib/index.js"),
     )
 
     /** 官方 bundle 的名字: 它在 profile 的 package.json 里出现就说明被打开了 */
