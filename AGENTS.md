@@ -548,8 +548,12 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
   以及客户端那一半在 dsh 0.2.1 上的界面表现 (它是按 0.1.2-alpha.2 的 devDependencies 编的, 只验到
   "在模块表里、首页能起来")
 - **这一批随 2.5.0 一起发了** (2026-10-08): `versionCode 7 / versionName "2.5.0"`, 干净构建
-  225,777,502 字节 (215.3 MiB), `tools/apk-bytes.py` 量出最大无归属区间 4,098 字节; 发在
+  225,777,526 字节 (215.3 MiB), `tools/apk-bytes.py` 量出最大无归属区间 4,098 字节; 发在
   `yuloong07-star/DSH-LW` 的 `v2.5.0` (Release 正文在 `docs/DSH-LW-2.5.0-release-notes.md`)
+- **挂插件要往两张表里各加一行** (2026-10-08 在真机上踩的): `PluginOverlay` 里 `PLUGINS` 与
+  `OWN_PLUGINS` 是并列的两张表 —— 官方语音 bundle 关着走前者, 开着走后者。`imagegen` 只加进前者时,
+  在这台**开着 bundle 的手机**上它根本不挂 (`lw_image` 在、`edit_image` 不在), 而模拟器上 bundle 关着,
+  一点异常都看不见。`tools/check-image-edit.mjs` 现在数那一行在两处各出现一次
 
 ## 工作区与存储
 
