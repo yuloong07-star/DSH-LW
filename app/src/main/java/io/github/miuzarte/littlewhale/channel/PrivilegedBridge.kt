@@ -5,6 +5,7 @@ import android.os.SystemClock
 import android.util.Log
 import io.github.miuzarte.littlewhale.lock.LwLock
 import io.github.miuzarte.littlewhale.tool.LwCamera
+import io.github.miuzarte.littlewhale.tool.LwAutomation
 import io.github.miuzarte.littlewhale.tool.LwCalendar
 import io.github.miuzarte.littlewhale.tool.LwEvents
 import io.github.miuzarte.littlewhale.tool.LwFiles
@@ -956,7 +957,9 @@ object PrivilegedBridge {
         "notifications" -> appContext { LwNotifications.dispatch(it, request) }
         // 2.5.0 批次 7: 日程 (读日历 / 建一条 / 改一条 / 查空闲) 与快捷指令 (dsh 家里那几个 md)
         "calendar" -> appContext { LwCalendar.dispatch(it, request) }
-        "quick" -> appContext { LwQuick.dispatch(it, request) }
+                "quick" -> appContext { LwQuick.dispatch(it, request) }
+                // 自动指令 (2.5.0 批次 8): 规则 / 设置 / 历史 / 现在能不能用, 都在这一条上
+                "automation" -> appContext { LwAutomation.dispatch(it, request) }
         // 1.0.3 批次 6: 事件订阅 —— 让模型"等到一件事发生", 而不是反复读屏
         "eventsSubscribe" -> LwEvents.subscribe(request)
         "eventsWait" -> LwEvents.wait(request)

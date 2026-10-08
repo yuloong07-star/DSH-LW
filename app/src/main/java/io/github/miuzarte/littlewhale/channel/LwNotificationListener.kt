@@ -7,6 +7,7 @@ import android.service.notification.NotificationListenerService.Ranking
 import android.service.notification.NotificationListenerService.RankingMap
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * 通知栏那一侧的读数
@@ -36,6 +37,30 @@ class LwNotificationListener : NotificationListenerService() {
     override fun onDestroy() {
         instance = null
         super.onDestroy()
+    }
+
+    /**
+     * 来了一条通知 —— 这是"事件驱动"那一半
+     *
+     * 自动指令那条链挂一个回调就不必轮询通知栏 (读一次要过 binder, 而且大多数时候读到的与上一次
+     * 一模一样)。**监听表为空时这里什么都不做**, 所以既有那条"主动列通知栏"的路一个字都没变
+     */
+    override fun onNotificationPosted(sbn: StatusBarNotification?) {
+        val posted = sbn ?: return
+        if (watchers.isEmpty()) return
+        val described = try {
+            describe(posted, currentRanking)
+        } catch (error: Throwable) {
+            Log.w(TAG, "could not describe a posted notification", error)
+            return
+        }
+        watchers.forEach { watcher ->
+            try {
+                watcher.onPosted(described)
+            } catch (error: Throwable) {
+                Log.w(TAG, "a notification watcher failed", error)
+            }
+        }
     }
 
     /** 通知栏里的一条, 按"给人看"的顺序摆好 */
@@ -74,6 +99,28 @@ class LwNotificationListener : NotificationListenerService() {
         /** 系统拥有服务的生命周期, 所以这是 app 唯一握得住它的地方 */
         @Volatile
         private var instance: LwNotificationListener? = null
+
+        /** 进程内的事件回调: 自动指令那条链挂在这里 (它只要"新来了一条", 不要整张通知栏) */
+        private val watchers = CopyOnWriteArrayList<PostedWatcher>()
+
+        /** 一条新通知 */
+        fun interface PostedWatcher {
+            fun onPosted(posted: Posted)
+        }
+
+        /**
+         * 挂一个回调, 返回的那个东西用来摘掉它
+         *
+         * 摘掉很重要: 它不是"再多收一份", 而是"通知来时多做一次判定" —— 没有那一类规则时摘掉,
+         * 一天几千条通知就一条都不用看了
+         */
+        fun watch(watcher: PostedWatcher): AutoCloseable {
+            watchers += watcher
+            return AutoCloseable { watchers.remove(watcher) }
+        }
+
+        /** 此刻挂了几个回调 (排查用) */
+        val watcherCount: Int get() = watchers.size
 
         /** 系统有没有把这个服务绑上 —— "设置里写着"与"真的活着"是两件事 */
         val running: Boolean get() = instance != null

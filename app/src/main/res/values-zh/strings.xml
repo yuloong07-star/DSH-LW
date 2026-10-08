@@ -185,7 +185,7 @@
     <string name="settings_wake_power_window_bad">看不懂这个写法; 要的是 23:00-07:00 这种一段 (小时 0-23, 分钟 0-59)</string>
     <string name="settings_wake_power_window_empty">起止相同等于空窗, 那样永远不省电; 换个时间, 或者清空这一行关掉定时</string>
     <string name="settings_wake_power_save_automation">省电时连自动指令的监测一起停</string>
-    <string name="settings_wake_power_save_automation_summary">只停费电的那几种 (天气、地点、前台应用), 通知与时间照旧; 自动指令那一批落地后生效</string>
+    <string name="settings_wake_power_save_automation_summary">只停费电的那两种 (天气与地点); 通知 / 前台应用 / 光感 / 时间照旧</string>
     <string name="settings_wake_need_model">唤醒词模型还没下, 用下面那一行「下载唤醒词模型」</string>
     <string name="settings_wake_action">叫醒之后</string>
     <string name="settings_wake_action_summary">命中那一下除了震一下、响一声、把界面叫起来, 还要不要顺手做一件事; 「切模式」那两条走的是与说出来一样的那条命令路 (命令词表只有一份, 在宿主那一侧)</string>
@@ -336,7 +336,60 @@
 
     <string name="settings_section_automation">自动指令</string>
     <string name="settings_section_automation_summary">满足条件就做一件事 (提醒一声, 或者开一场会话干活)</string>
-    <string name="settings_automation_placeholder">还没做: 条件触发式的指令排在 2.5.0 的第 8 批, 这一版先把位置留出来</string>
+    <string name="settings_automation_empty">还没有自动指令。存在这里: %1$s; 点下面的「新建」说一句"到点 / 到了某地 / 收到某条通知就做什么", 规则由模型写</string>
+    <string name="settings_automation_new">新建一条自动指令</string>
+    <string name="settings_automation_new_summary">说一句"什么时候、要做什么", 条件与参数交给模型写</string>
+    <string name="settings_automation_new_title">新建自动指令</string>
+    <string name="settings_automation_new_dialog_summary">只要一行: 什么时候、要做什么。规则由模型写成 JSON, 写完这一页就能看见它</string>
+    <string name="settings_automation_new_hint">例如: 每天八点提醒我带伞</string>
+    <string name="settings_automation_create">交给模型写</string>
+    <string name="settings_automation_create_prompt">请把下面这件事做成一条自动指令, 用 lw_automation op=write 写进 automations, 名字你起一个短的中文名, when 挑最合适的那一种条件, then 用 remind (提醒一声) 或 task (开一场会话去干活): %1$s</string>
+    <string name="settings_automation_manage">删掉或改一改一条</string>
+    <string name="settings_automation_manage_summary">先选一条, 再选做什么</string>
+    <string name="settings_automation_manage_title">哪一条?</string>
+    <string name="settings_automation_pick_summary">选中之后再选: 立刻跑一次 / 改一改 / 删掉</string>
+    <string name="settings_automation_open_title">这条自动指令</string>
+    <string name="settings_automation_run">立刻跑一次</string>
+    <string name="settings_automation_edit">改一改</string>
+    <string name="settings_automation_edit_title">改哪一处?</string>
+    <string name="settings_automation_edit_summary">说一句要怎么改; 模型先读它现在是什么, 再把改好的写回去</string>
+    <string name="settings_automation_edit_hint">例如: 改成工作日八点, 每天最多两次</string>
+    <string name="settings_automation_edit_prompt">请改一改自动指令「%1$s」: %2$s —— 先用 lw_automation op=read 读它现在是什么, 再用 op=write 把改好的写回去</string>
+    <string name="settings_automation_delete">删掉这一条</string>
+    <string name="settings_automation_delete_summary">删掉「%1$s」这个文件, 不可恢复</string>
+    <string name="settings_automation_deleted">已经删掉「%1$s」</string>
+    <string name="settings_automation_delete_failed">「%1$s」没删掉: 文件不在或者删不动</string>
+    <string name="settings_automation_sent">已经投出去了: 每次触发都新开一场会话, 提醒的措辞由模型现写</string>
+    <string name="settings_automation_send_failed">没能投出去 (队列文件写不进去)</string>
+    <string name="settings_automation_broken">这一条读不出来: %1$s</string>
+    <string name="settings_automation_rule_state">今天 %1$d/%2$d 次</string>
+    <string name="settings_automation_last">上次 %1$s</string>
+    <string name="settings_automation_monitors">六个监测器: 没有启用的规则就不注册 (省电那条口径的落点)</string>
+    <string name="settings_automation_monitor_notice">通知</string>
+    <string name="settings_automation_monitor_foreground">前台应用</string>
+    <string name="settings_automation_monitor_light">光感</string>
+    <string name="settings_automation_monitor_time">时间</string>
+    <string name="settings_automation_monitor_place">地点</string>
+    <string name="settings_automation_monitor_weather">天气</string>
+    <string name="settings_automation_every_minutes">每 %1$d 分钟</string>
+    <string name="settings_automation_every_meters">至少移动 %1$d 米</string>
+    <string name="settings_automation_weather_every">天气多久问一次</string>
+    <string name="settings_automation_weather_every_summary">便宜的免 key 数据源 (Open-Meteo); 同一个地点问一次, 几条规则共用那一份</string>
+    <string name="settings_automation_place_every">位置多久问一次</string>
+    <string name="settings_automation_place_every_summary">只用网络定位 (WiFi 与基站), 极少开 GPS; 省电时整条不注册</string>
+    <string name="settings_automation_place_meters">位置至少移动多远</string>
+    <string name="settings_automation_place_meters_summary">移动不到这个距离就不叫"换了地方"</string>
+    <string name="settings_automation_quiet">静默时段</string>
+    <string name="settings_automation_quiet_summary">这一段里条件照判, 只是不响 (与省电时段是两笔账)</string>
+    <string name="settings_automation_quiet_title">静默时段</string>
+    <string name="settings_automation_quiet_dialog_summary">写成 23:00-07:00 这样; 跨零点也认, 起止相同等于不静默</string>
+    <string name="settings_automation_quiet_hint">例如: 23:00-07:00</string>
+    <string name="settings_automation_quiet_bad">这句时间看不懂, 没有改</string>
+    <string name="settings_automation_allow_acting">允许它自己动手</string>
+    <string name="settings_automation_allow_acting_summary">开着时标了 task 的那几条才会真的去做 (默认关); 提醒那一种不受它管</string>
+    <string name="settings_automation_history">最近做了什么</string>
+    <string name="settings_automation_history_empty">还没有判定过。若有规则该响而没响, 上面监测器那几行的状态与"为什么可能不响"就是答案</string>
+    <string name="settings_automation_note">规则正文由模型写, 这一页只读它; 点一条的开关 = 启用 / 停用, 其余动作在「删掉或改一改一条」里</string>
 
     <string name="settings_section_quick">快捷指令</string>
     <string name="settings_section_quick_summary">点一下就交给模型去跑的那几条工作流, 一条一个 md 文件</string>

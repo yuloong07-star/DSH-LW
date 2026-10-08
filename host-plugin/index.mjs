@@ -2254,6 +2254,65 @@ const TOOLS = [
     },
   ),
 
+  // ---- 2.5.0 批次 8: 自动指令 ----
+  //
+  // 与 lw_quick 同一个形状 (一份文件一条), 差别在"正文是一份 JSON, 而且它会自己响": 所以说明里要把
+  // 六个 kind 与两种动作写死 (模型是照这一段写的), 而 `op=status` / `op=history` 是它自己排查用的两条
+  // —— "它怎么没响"这个问题只有那两条答得出来
+
+  simpleTool(
+    'lw_automation',
+    'The automatic commands on this phone: the rules that fire by themselves, one JSON file each in'
+    + ' DSH_HOME/automations, listed on the app\'s Settings -> 自动指令 page. **Reach for op=write'
+    + ' when the user says something like "每天八点提醒我带伞", "到了公司提醒我", "收到微信就告诉我",'
+    + ' "打开王者时别吵我"** - sitting on the rule and remembering it only in your head loses it. A'
+    + ' rule is {"name","enabled","when":{"kind",...},"then":{"kind","text"},"cooldownMinutes",'
+    + '"dailyLimit","quietHours"}. The six kinds of when: notice {packages:[], contains, titleContains}'
+    + ' fires on a posted notification; foreground {package} fires when that app comes to the front'
+    + ' (needs accessibility, and only works while it is on); light {below|above, forSeconds} on a'
+    + ' light level; time {at:"07:30", weekdays:[1..7], 1 is Monday} on the clock; place {place,'
+    + ' radiusMeters} when the phone comes within that many metres of a named place; weather {place,'
+    + ' metric:"temperature"|"precipitation"|"weatherCode", below|above|atLeast} on a periodic'
+    + ' Open-Meteo reading. then.kind is "remind" (say a line, post a notification and answer) or'
+    + ' "task" (open a conversation and do the thing - that only runs while the user has turned on'
+    + ' 允许它自己动手). **Do not write the wording of a reminder into then.text: that sentence is'
+    + ' written when the rule fires, in the conversation the rule opens**; put there what the user'
+    + ' asked for (for example "提醒主人今天是妈妈的生日"). Leave the two limits out unless the user'
+    + ' asked for something else: the defaults are cooldownMinutes (30) and dailyLimit (5);'
+    + ' at most one rule with the same name exists,'
+    + ' so op=write overwrites. op=list shows the rules, op=read one, op=status says which of the six'
+    + ' watches can run right now and what is holding a rule back (no notification access,'
+    + ' accessibility off, no exact alarms, power save, quiet hours), op=history says what was'
+    + ' decided recently and why it did not fire. Deleting is not available here: that is a button on'
+    + ' the settings page.',
+    'automation',
+    {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'list the rules, read one, write one (create or overwrite), the watches\' state,'
+          + ' or the recent decisions',
+        enum: ['list', 'read', 'write', 'status', 'history'],
+      },
+      name: {
+        type: 'string',
+        description: 'Which rule, without the .json. Required by read and write',
+      },
+      json: {
+        type: 'string',
+        description: 'The whole rule as one JSON object, required by write',
+      },
+      limit: {
+        type: 'integer',
+        description: 'For op=history: how many decisions to show. Default 20, at most 200',
+      },
+      rule: {
+        type: 'string',
+        description: 'For op=history: only the decisions of this rule',
+      },
+    },
+  ),
+
   // ---- 1.0.3 批次 6: 事件订阅 ----
   //
   // 这一批要改的是模型的**读法**: 按一下之后不要马上反复 lw_ui, 而是先说清"我在等什么", 再等它发生。
@@ -5021,7 +5080,11 @@ async function createVoiceMessage(text, images = []) {
 async function voiceDeliver(ctx, line) {
   // 先看它是不是一句命令 (批次 4.5): 是的话走 applyMode, 不进会话 —— 所以这一句既不插正在跑的那
   // 一轮, 也不开新对话, 更不理会 `line.wake`。命令是"对这台手机说的", 不是"对助手说的一句话"
-  const command = matchVoiceCommand(line.text)
+  //
+  // **自动指令那一路不进命令表** (2.5.0 批次 8): 它投的是"某件事到了", 而一句话的正文由我们拼 (里面
+  // 有规则名与它让模型做的事) —— 万一凑巧等于"手机模式"这种词, 那也不该变成切模式
+  const automated = line.source === 'automation'
+  const command = automated ? null : matchVoiceCommand(line.text)
   if (command !== null) {
     // 打断那一支与三句模式命令不是同一种动作 (一边切模式, 一边取消一轮), 所以从这里分开走 ——
     // 理由写在 [runVoiceInterrupt] 上面
@@ -5055,7 +5118,11 @@ async function voiceDeliver(ctx, line) {
   }
   const signal = new AbortController().signal
   const fresh = line.wake === true
-  const target = await voiceTargetSession(controller, signal, fresh, line.to)
+  // **自动指令每次新开一场** (主人 2026-10-08 定): 不接回复框点名, 也不复用浮标那 20 分钟的一场 ——
+  // "到点了提醒我"不是接着刚才那件事说, 而一次性提醒也不该把上下文带进主人的聊天里
+  const target = automated
+    ? { sessionId: null, running: false, why: 'an automatic command opened its own conversation' }
+    : await voiceTargetSession(controller, signal, fresh, line.to)
   // **新开的对话落在浮标那个专用工作区里** (主人 2026-10-06): 只对"这一句要开新对话"那一条路生效
   // (没有可复用的当前对话时: 那笔账过了 / 那一场不在了 / 从来没有过); 复用一个已经在跑的会话时不改它
   // 的目录 —— 一个会话的 cwd 是它自己的事, 中途换掉就是 `ApiSessionCwdConflict`

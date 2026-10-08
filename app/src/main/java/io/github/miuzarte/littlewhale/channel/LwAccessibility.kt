@@ -180,6 +180,28 @@ class LwAccessibility : AccessibilityService() {
         @Volatile
         private var instance: LwAccessibility? = null
 
+        /** 进程内的事件回调: 自动指令那条链要"事件一到就叫一声", 而不是每 150 ms 读一次队列 */
+        private val watchers = java.util.concurrent.CopyOnWriteArrayList<WindowWatcher>()
+
+        /** 窗口变了 (通知栏之外最常被问到的那件事: 现在是哪个应用在前台) */
+        fun interface WindowWatcher {
+            fun onWindow(packageName: String, kind: String)
+        }
+
+        /**
+         * 挂一个回调, 返回的那个东西用来摘掉它
+         *
+         * 回调在主线程上跑 (事件就是送到那里的), 所以里面只做"转手": 引擎把它丢进自己的工作线程,
+         * 判定与写文件都不在无障碍这条链上做
+         */
+        fun watchWindows(watcher: WindowWatcher): AutoCloseable {
+            watchers += watcher
+            return AutoCloseable { watchers.remove(watcher) }
+        }
+
+        /** 此刻挂了几个回调 (排查用) */
+        val watcherCount: Int get() = watchers.size
+
         /** Whether the device has the service on, which is the first thing a caller has to be told */
         val running: Boolean get() = instance != null
 
@@ -267,6 +289,16 @@ class LwAccessibility : AccessibilityService() {
                     while (buffer.size > MAX_HEARD) {
                         buffer.removeFirst()
                         dropped++
+                    }
+                }
+            }
+            // 进程内的那声"窗口变了" (自动指令那条链): 放在锁外面, 回调再慢也不该占着队列
+            if (kind == "window" && packageName.isNotEmpty() && watchers.isNotEmpty()) {
+                watchers.forEach { watcher ->
+                    try {
+                        watcher.onWindow(packageName, kind)
+                    } catch (error: Throwable) {
+                        Log.w(TAG, "a window watcher failed", error)
                     }
                 }
             }

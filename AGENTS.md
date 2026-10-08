@@ -458,6 +458,37 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
 - **日程那条工具**: `lw_calendar` 六条 op (`list` / `events` / `read` / `create` / `update` / `free`),
   走 app 进程的 `ContentResolver`; 写入落在第一本可写日历 (可用 `calendarId` 指名), **没有可写的就拒**
 
+## 自动指令 (2026-10-08, 2.5.0 批次 8)
+
+"到什么时候做什么"那一条: 一份 JSON 一条规则, 六个监测器看条件, 命中之后把一句话投进会话。
+施工单在 `docs/DSH-LW-2.5.0-批次8-开发计划.md`; 要记住的:
+
+| 文件 | 是什么 | 谁写 |
+| :-- | :-- | :-- |
+| `$DSH_HOME/automations/<名字>.json` | 一条规则 (`name` / `enabled` / `when` / `then` / 冷却 / 上限 / 静默) | 模型 (`lw_automation op=write`) 与设置页那个开关 |
+| `$DSH_HOME/automations/settings.json` | 六个监测器开关 + 频率档 + 静默时段 + 「允许它自己动手」 | 设置页 |
+| `$DSH_HOME/automations/history.jsonl` | 一行一次判定与原因 (冷却与上限就是从它现算的) | 引擎 |
+| `$DSH_HOME/automations/places.json` | 地名 → 经纬度 (geocoding 的结果) | 引擎 |
+
+- **六个监测器: 通知 / 前台应用 / 光感 / 时间 / 地点 / 天气**. 它们的低功耗口径是这一批的硬约束:
+  **没有启用的规则就不注册**; 通知与前台应用是事件驱动 (后者只认无障碍事件, **不退回 UsageStats
+  轮询**); 光感一条 `SENSOR_DELAY_NORMAL` 的监听; 时间**只排一个**闹钟 (精确优先, 拿不到就退
+  `setAndAllowWhileIdle` 并把"不精确"写进读数); 轮询只剩天气 (默认 60 分钟) 与地点
+  (`NETWORK_PROVIDER`，默认 10 分钟 · 500 米)
+- **省电联动**: `LwWakeWord.powerSave` 生效时只停轮询那两条, 事件类照常; 恢复时不补跑错过的轮询
+- **动作层是"投一句话"**: 命中之后写 `voice/inbox.jsonl`, 来源 `automation`。宿主对那一个来源有
+  两处特别处理 —— **不进命令表匹配**, 且**每次触发新开一场会话** (不接浮标那 20 分钟的一场);
+  设置页的「新建 / 改一改」走另一个来源 `automation-setup`, 它与快捷指令一样落在主人当前那一场
+- **提醒的措辞不在规则里**: 规则只写"要做什么", 那句给主人看的话由模型在触发时现写 (它开的是一场
+  新会话, 回答照旧被朗读念出来); `task` 那一种会真的动手机, 所以它多一道全局总闸
+  「允许它自己动手」(默认关)
+- **防骚扰**: 全局静默时段 (默认 23:00-07:00, 解析复用 `PowerWindow`) + 每条规则冷却 30 分钟 +
+  每天 5 次; 每一次判定都落 `history.jsonl`, "它为什么没响"只有那一份答得出来
+- **`lw_automation` 的 op 名单两份实现**: `tool/LwAutomation.kt` 的 `OPERATIONS` /
+  `MODEL_OPERATIONS` 与 `host-plugin` 里那条 `enum`, 漂开由 `tools/check-automations.mjs` 拦;
+  **删除只在桥上** (`op=delete`), 给模型的是 list / read / write / status / history
+- **工具数**: 这一批把插件从 58 个工具抬到 59 个, `tools/check-host-plugin.mjs` 的 `FLOOR` 跟着改
+
 ## 工作区与存储
 
 工作区在共享存储里, dsh 自己的配置在 app 沙盒里:

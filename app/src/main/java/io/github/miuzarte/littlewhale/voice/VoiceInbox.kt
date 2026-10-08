@@ -76,6 +76,23 @@ internal object VoiceInbox {
      */
     const val SOURCE_QUICK = "quick"
 
+    /**
+     * 自动指令投的那一句 (2.5.0 批次 8): 条件命中之后应用写进来的
+     *
+     * 它**不是主人说的一句话**, 而是"某件事到了" —— 宿主那一侧对它有两个特别的处理 (不参与命令表
+     * 匹配, 且每次触发都新开一场), 所以这一个来源记号是那条链的开关, 不是纯记号
+     */
+    const val SOURCE_AUTOMATION = "automation"
+
+    /**
+     * 设置页「新建 / 改一改」投的那一段提示词 (2.5.0 批次 8)
+     *
+     * 与 [SOURCE_AUTOMATION] 分开是**刻意的**: 那一个说的是"某条规则响了", 宿主对它有两个特别处理
+     * (不参与命令表匹配, 每次触发新开一场); 而这一句是"帮我写一条规则", 与批次 7 的快捷指令那一段
+     * 一样要落在**主人此刻看着的那一场会话**里 —— 写规则这件事主人要看得见
+     */
+    const val SOURCE_AUTOMATION_SETUP = "automation-setup"
+
     /** 超过这个大小就从尾部留 [KEEP_LINES] 行重写: 上千句话才可能走到, 到了也不该无限涨 */
     private const val CAP_BYTES = 1 shl 20
     private const val KEEP_LINES = 200

@@ -47,6 +47,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.miuzarte.littlewhale.R
+import io.github.miuzarte.littlewhale.automation.AutomationEngine
+import io.github.miuzarte.littlewhale.automation.AutomationStore
 import io.github.miuzarte.littlewhale.channel.AccessibilitySetting
 import io.github.miuzarte.littlewhale.channel.CameraOwner
 import io.github.miuzarte.littlewhale.channel.ChannelSetting
@@ -62,6 +64,7 @@ import io.github.miuzarte.littlewhale.lock.LockSecret
 import io.github.miuzarte.littlewhale.lock.LockSecretData
 import io.github.miuzarte.littlewhale.lock.LockSetting
 import io.github.miuzarte.littlewhale.tool.LwCamera
+import io.github.miuzarte.littlewhale.tool.LwAutomation
 import io.github.miuzarte.littlewhale.tool.LwQuick
 import io.github.miuzarte.littlewhale.tool.VideoLooks
 import io.github.miuzarte.littlewhale.voice.VoiceInbox
@@ -95,12 +98,16 @@ import io.github.miuzarte.littlewhale.util.PermissionCatalog
 import io.github.miuzarte.littlewhale.util.PermissionGate
 import io.github.miuzarte.littlewhale.util.PermissionRequests
 import io.github.miuzarte.littlewhale.wake.WakeWordDownload
+import io.github.miuzarte.littlewhale.wake.PowerWindow
 import io.github.miuzarte.littlewhale.wake.WakeWordState
 import io.github.miuzarte.littlewhale.wake.WakeWordWords
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Button
@@ -517,9 +524,7 @@ fun SettingsScreen() {
                 collapsed = collapsed,
                 onToggle = toggleSection,
             ) {
-                Card {
-                    PlaceholderItems(stringResource(R.string.settings_automation_placeholder))
-                }
+                Card { AutomationItems() }
             }
 
             // 快捷指令那一段 (批次 7): 与「自动指令」挨着, 因为两段都是"主人自己定的那几件事",
@@ -1168,6 +1173,511 @@ private fun QuickCreateDialog(
         }
     }
 }
+
+/** 六个监测器的名字: 与 `AutomationRule.WHEN_KINDS` 一对一 (顺序就是那一份的顺序) */
+private val AutomationMonitorTitles = linkedMapOf(
+    "notice" to R.string.settings_automation_monitor_notice,
+    "foreground" to R.string.settings_automation_monitor_foreground,
+    "light" to R.string.settings_automation_monitor_light,
+    "time" to R.string.settings_automation_monitor_time,
+    "place" to R.string.settings_automation_monitor_place,
+    "weather" to R.string.settings_automation_monitor_weather,
+)
+
+/**
+ * 「自动指令」那一段 (2.5.0 批次 8)
+ *
+ * 这一页**只读规则、只动开关**: 正文是模型写的 JSON, 所以"新建"与"改一改"都是往会话里投一句话
+ * (与批次 7 的快捷指令同形), 界面里不做条件/参数表单
+ *
+ * 三行读数在这一页上最要紧, 因为"它怎么没响"是一个没有读数就答不出来的问题:
+ *
+ * - 最上面那一行总账: 几条规则、今天响了几次、此刻什么拦着它 (省电 / 静默 / 无障碍 / 精确闹钟)
+ * - 每一行规则: 条件 → 动作, 今天几次、上限几次, 上次什么时候响的
+ * - 六个监测器逐行: 此刻能不能用 (缺哪条权限、这台设备有没有光感、无障碍关着)
+ *
+ * 规则删掉或关掉, 下一拍监测器就跟着摘 —— "没启用的规则一个都不注册"那句口径的落点就在这里
+ */
+@Composable
+private fun AutomationItems() {
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    var revision by remember { mutableIntStateOf(0) }
+    var creating by rememberSaveable { mutableStateOf(false) }
+    var managing by rememberSaveable { mutableStateOf(false) }
+    var editingQuiet by rememberSaveable { mutableStateOf(false) }
+    var acting by remember { mutableStateOf<String?>(null) }
+    var editing by remember { mutableStateOf<String?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+
+    // 这一页上的每一次改动都让 revision 变一下, 上面那几份读出来时自然就重读了
+    val entries = remember(revision) { LwAutomation.entries(context) }
+    val rules = entries.mapNotNull { it.rule }
+    val settings = remember(revision) { LwAutomation.settings(context) }
+    val overview = remember(revision) { LwAutomation.overview(context) }
+    val monitors = remember(revision) { LwAutomation.monitorStates(context) }
+    val history = remember(revision) { LwAutomation.history(context, 10) }
+
+    fun save(next: AutomationStore.Settings) {
+        LwAutomation.saveSettings(context, next)
+        revision += 1
+    }
+
+    PlaceholderItems(overview)
+
+    if (entries.isEmpty()) {
+        PlaceholderItems(
+            stringResource(
+                R.string.settings_automation_empty,
+                LwAutomation.directory(context).absolutePath,
+            ),
+        )
+    } else {
+        entries.forEach { entry ->
+            val rule = entry.rule
+            if (rule == null) {
+                PlaceholderItems(
+                    stringResource(R.string.settings_automation_broken, entry.problem.orEmpty()),
+                )
+            } else {
+                val parts = mutableListOf(rule.summary())
+                parts += context.getString(
+                    R.string.settings_automation_rule_state,
+                    AutomationEngine.firedTodayCount(entry.name),
+                    rule.dailyLimit,
+                )
+                AutomationEngine.lastFiredAt(entry.name)?.let { at ->
+                    parts += context.getString(
+                        R.string.settings_automation_last,
+                        SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date(at)),
+                    )
+                }
+                SwitchPreference(
+                    title = entry.name,
+                    summary = parts.joinToString(" · "),
+                    checked = rule.enabled,
+                    onCheckedChange = { on ->
+                        LwAutomation.setEnabled(context, entry.name, on)
+                        revision += 1
+                    },
+                )
+            }
+        }
+    }
+
+    ArrowPreference(
+        title = stringResource(R.string.settings_automation_new),
+        summary = stringResource(R.string.settings_automation_new_summary),
+        onClick = {
+            haptic.contextClick()
+            creating = true
+        },
+    )
+    if (rules.isNotEmpty()) {
+        ArrowPreference(
+            title = stringResource(R.string.settings_automation_manage),
+            summary = stringResource(R.string.settings_automation_manage_summary),
+            onClick = {
+                haptic.contextClick()
+                managing = true
+            },
+        )
+    }
+
+    PlaceholderItems(stringResource(R.string.settings_automation_monitors))
+    AutomationMonitorTitles.forEach { (kind, title) ->
+        SwitchPreference(
+            title = stringResource(title),
+            summary = monitors.firstOrNull { it.first == kind }?.second.orEmpty(),
+            checked = settings.monitor(kind),
+            onCheckedChange = { on ->
+                save(settings.copy(monitors = settings.monitors + (kind to on)))
+            },
+        )
+    }
+    // 频率那三个数都能改: 它们是"低功耗"与"及时"之间那根绳子, 而主人自己知道要哪一头
+    OverlayDropdownPreference(
+        title = stringResource(R.string.settings_automation_weather_every),
+        summary = stringResource(R.string.settings_automation_weather_every_summary),
+        items = AutomationStore.WEATHER_CHOICES.map {
+            context.getString(R.string.settings_automation_every_minutes, it)
+        },
+        selectedIndex = AutomationStore.WEATHER_CHOICES.indexOf(settings.weatherMinutes)
+            .coerceAtLeast(0),
+        onSelectedIndexChange = { index ->
+            save(settings.copy(weatherMinutes = AutomationStore.WEATHER_CHOICES[index]))
+        },
+    )
+    OverlayDropdownPreference(
+        title = stringResource(R.string.settings_automation_place_every),
+        summary = stringResource(R.string.settings_automation_place_every_summary),
+        items = AutomationStore.PLACE_MINUTE_CHOICES.map {
+            context.getString(R.string.settings_automation_every_minutes, it)
+        },
+        selectedIndex = AutomationStore.PLACE_MINUTE_CHOICES.indexOf(settings.placeMinutes)
+            .coerceAtLeast(0),
+        onSelectedIndexChange = { index ->
+            save(settings.copy(placeMinutes = AutomationStore.PLACE_MINUTE_CHOICES[index]))
+        },
+    )
+    OverlayDropdownPreference(
+        title = stringResource(R.string.settings_automation_place_meters),
+        summary = stringResource(R.string.settings_automation_place_meters_summary),
+        items = AutomationStore.PLACE_METER_CHOICES.map {
+            context.getString(R.string.settings_automation_every_meters, it)
+        },
+        selectedIndex = AutomationStore.PLACE_METER_CHOICES.indexOf(settings.placeMeters)
+            .coerceAtLeast(0),
+        onSelectedIndexChange = { index ->
+            save(settings.copy(placeMeters = AutomationStore.PLACE_METER_CHOICES[index]))
+        },
+    )
+    SwitchPreference(
+        title = stringResource(R.string.settings_automation_quiet),
+        summary = stringResource(R.string.settings_automation_quiet_summary),
+        checked = settings.quietEnabled,
+        onCheckedChange = { save(settings.copy(quietEnabled = it)) },
+    )
+    ArrowPreference(
+        title = stringResource(R.string.settings_automation_quiet_title),
+        summary = settings.quietWindow,
+        onClick = {
+            haptic.contextClick()
+            editingQuiet = true
+        },
+    )
+    SwitchPreference(
+        title = stringResource(R.string.settings_automation_allow_acting),
+        summary = stringResource(R.string.settings_automation_allow_acting_summary),
+        checked = settings.allowActing,
+        onCheckedChange = { save(settings.copy(allowActing = it)) },
+    )
+
+    PlaceholderItems(stringResource(R.string.settings_automation_history))
+    if (history.isEmpty()) {
+        PlaceholderItems(stringResource(R.string.settings_automation_history_empty))
+    } else {
+        PlaceholderItems(history.joinToString("\n") { AutomationStore.line(it) })
+    }
+    PlaceholderItems(message ?: stringResource(R.string.settings_automation_note))
+
+    if (creating) {
+        AutomationCreateDialog(
+            onDismiss = { creating = false },
+            onCreate = { said ->
+                creating = false
+                message = sendAutomationSetup(
+                    context,
+                    context.getString(R.string.settings_automation_create_prompt, said),
+                )
+            },
+        )
+    }
+
+    if (managing) {
+        AutomationPickDialog(
+            names = rules.map { it.name },
+            onDismiss = { managing = false },
+            onPick = { name ->
+                managing = false
+                acting = name
+            },
+        )
+    }
+
+    acting?.let { name ->
+        AutomationActionDialog(
+            name = name,
+            onDismiss = { acting = null },
+            onRun = {
+                acting = null
+                message = LwAutomation.fireNow(context, name)
+                revision += 1
+            },
+            onEdit = {
+                acting = null
+                editing = name
+            },
+            onDelete = {
+                acting = null
+                message = if (LwAutomation.delete(context, name)) {
+                    context.getString(R.string.settings_automation_deleted, name)
+                } else {
+                    context.getString(R.string.settings_automation_delete_failed, name)
+                }
+                revision += 1
+            },
+        )
+    }
+
+    editing?.let { name ->
+        AutomationEditDialog(
+            name = name,
+            onDismiss = { editing = null },
+            onEdit = { said ->
+                editing = null
+                message = sendAutomationSetup(
+                    context,
+                    context.getString(R.string.settings_automation_edit_prompt, name, said),
+                )
+            },
+        )
+    }
+
+    if (editingQuiet) {
+        AutomationQuietDialog(
+            current = settings.quietWindow,
+            onDismiss = { editingQuiet = false },
+            onSave = { text ->
+                editingQuiet = false
+                if (PowerWindow.parse(text) == null) {
+                    message = context.getString(R.string.settings_automation_quiet_bad)
+                } else {
+                    save(settings.copy(quietWindow = text.trim()))
+                    message = null
+                }
+            },
+        )
+    }
+}
+
+/**
+ * 新建 / 改一改投出去的那一句: 与自动指令自己响的那条路**分开一个来源**
+ *
+ * 响的那一条 (`SOURCE_AUTOMATION`) 宿主会新开一场会话; 而"帮我写一条规则"这件事要和批次 7 的快捷
+ * 指令一样落在主人此刻看着的那一场里 —— 写规则的过程主人要看得见
+ */
+private fun sendAutomationSetup(context: Context, line: String): String {
+    val seq = VoiceInbox.append(context, line, source = VoiceInbox.SOURCE_AUTOMATION_SETUP)
+    return if (seq == null) {
+        context.getString(R.string.settings_automation_send_failed)
+    } else {
+        context.getString(R.string.settings_automation_sent)
+    }
+}
+
+/** 新建那一问: 只要一行"什么时候、要做什么" */
+@Composable
+private fun AutomationCreateDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = stringResource(R.string.settings_automation_new_title),
+        summary = stringResource(R.string.settings_automation_new_dialog_summary),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismiss,
+    ) {
+        var text by rememberSaveable { mutableStateOf("") }
+        SuperTextField(
+            modifier = Modifier.padding(bottom = 16.dp),
+            value = text,
+            onValueChange = { text = it },
+            label = stringResource(R.string.settings_automation_new_hint),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        )
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                text = stringResource(R.string.button_cancel),
+                onClick = {
+                    haptic.contextClick()
+                    onDismiss()
+                },
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                text = stringResource(R.string.settings_automation_create),
+                onClick = {
+                    // 空的一行什么都不做: 投出去也只是一句"请把这件事做成自动指令:" —— 没有内容
+                    if (text.isNotBlank()) {
+                        haptic.confirm()
+                        onCreate(text)
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
+}
+
+/** 先选一条: 规则多了之后, 一行一行摆四个动作会把这一段撑得很长 */
+@Composable
+private fun AutomationPickDialog(
+    names: List<String>,
+    onDismiss: () -> Unit,
+    onPick: (String) -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = stringResource(R.string.settings_automation_manage_title),
+        summary = stringResource(R.string.settings_automation_pick_summary),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismiss,
+    ) {
+        names.take(MAX_PICKED_RULES).forEach { name ->
+            TextButton(
+                text = name,
+                onClick = {
+                    haptic.confirm()
+                    onPick(name)
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        TextButton(
+            text = stringResource(R.string.button_cancel),
+            onClick = {
+                haptic.contextClick()
+                onDismiss()
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** 一条规则能做什么: 立刻跑一次 / 改一改 / 删掉 */
+@Composable
+private fun AutomationActionDialog(
+    name: String,
+    onDismiss: () -> Unit,
+    onRun: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = name,
+        summary = stringResource(R.string.settings_automation_open_title),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismiss,
+    ) {
+        TextButton(
+            text = stringResource(R.string.settings_automation_run),
+            onClick = {
+                haptic.confirm()
+                onRun()
+            },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.textButtonColorsPrimary(),
+        )
+        TextButton(
+            text = stringResource(R.string.settings_automation_edit),
+            onClick = {
+                haptic.confirm()
+                onEdit()
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        TextButton(
+            text = stringResource(R.string.settings_automation_delete),
+            onClick = {
+                haptic.confirm()
+                onDelete()
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        TextButton(
+            text = stringResource(R.string.button_cancel),
+            onClick = {
+                haptic.contextClick()
+                onDismiss()
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** 改一改那一问: 只要一行"要怎么改" */
+@Composable
+private fun AutomationEditDialog(name: String, onDismiss: () -> Unit, onEdit: (String) -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = stringResource(R.string.settings_automation_edit_title),
+        summary = stringResource(R.string.settings_automation_edit_summary),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismiss,
+    ) {
+        var text by rememberSaveable { mutableStateOf("") }
+        SuperTextField(
+            modifier = Modifier.padding(bottom = 16.dp),
+            value = text,
+            onValueChange = { text = it },
+            label = stringResource(R.string.settings_automation_edit_hint),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        )
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                text = stringResource(R.string.button_cancel),
+                onClick = {
+                    haptic.contextClick()
+                    onDismiss()
+                },
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                text = stringResource(R.string.settings_automation_edit),
+                onClick = {
+                    if (text.isNotBlank()) {
+                        haptic.confirm()
+                        onEdit(text)
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
+}
+
+/** 静默时段那一问: 与省电时段同一个写法 (纯文本, 解析是 `PowerWindow` 的事) */
+@Composable
+private fun AutomationQuietDialog(current: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = stringResource(R.string.settings_automation_quiet_title),
+        summary = stringResource(R.string.settings_automation_quiet_dialog_summary),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismiss,
+    ) {
+        var text by rememberSaveable { mutableStateOf(current) }
+        SuperTextField(
+            modifier = Modifier.padding(bottom = 16.dp),
+            value = text,
+            onValueChange = { text = it },
+            label = stringResource(R.string.settings_automation_quiet_hint),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        )
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                text = stringResource(R.string.button_cancel),
+                onClick = {
+                    haptic.contextClick()
+                    onDismiss()
+                },
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                text = stringResource(R.string.button_confirm),
+                onClick = {
+                    haptic.confirm()
+                    onSave(text)
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
+}
+
+/** 一次最多列出几条规则 (再多就该去会话里让模型删了) */
+private const val MAX_PICKED_RULES = 12
 
 /**
  * 权限那一段

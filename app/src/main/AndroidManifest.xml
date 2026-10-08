@@ -259,6 +259,14 @@
             android:enabled="true"
             android:exported="true"
             android:multiprocess="false" />
+
+        <!-- 自动指令那条「到点」的条件: 排一个闹钟, 到点由系统把这一条广播送回来 (2.5.0 批次 8)。
+             exported=false —— 只有本应用自己的 PendingIntent 叫得动它; 系统在应用进程不在时也会把
+             进程拉起来送这一条, 所以"到点"不会因为进程被回收而丢。清单里**没有** RECEIVE_BOOT_COMPLETED:
+             重启之后监测随 host 服务一起等主人打开应用, 这一版不做开机自启 -->
+        <receiver
+            android:name=".automation.AutomationAlarmReceiver"
+            android:exported="false" />
     </application>
 
     <queries>

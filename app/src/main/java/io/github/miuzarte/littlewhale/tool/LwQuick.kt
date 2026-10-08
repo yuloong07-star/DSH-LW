@@ -41,9 +41,6 @@ internal object LwQuick {
     /** 一次最多列多少条 */
     private const val MAX_LISTED = 200
 
-    /** 名字最长多少字 (太长会在设置页那一段里折成两行) */
-    private const val MAX_NAME = 60
-
     /** 一次读回多少字节: 快捷指令是给人看的工作流, 64 KiB 已经是"写得太多"那一档 */
     private const val MAX_READ_BYTES = 64 * 1024
 
@@ -99,31 +96,12 @@ internal object LwQuick {
     }
 
     /**
-     * 名字规范化: **只在这一处**
+     * 名字规范化: **只在这一处** (实现搬到 [normalizeArtifactName], 与自动指令共用同一份判据)
      *
-     * 拒的那几样都是"写出去会长到别处或读不回来"的写法: 路径分隔符能把文件写到目录外, `..` 同理,
-     * 控制字符会让设置页那一行看起来是空的
+     * 两处各写一遍的代价不是重复, 而是"一条能建出来却读不回来" —— 名字那几条规则长一个样, 所以
+     * 只留一份实现, 这里只是把"这一份是谁"说清楚
      */
-    fun normalize(name: String): String {
-        val trimmed = name.trim().removeSuffix(".md").trim()
-        if (trimmed.isEmpty()) throw IllegalArgumentException("a quick command needs a name")
-        if (trimmed.contains('/') || trimmed.contains('\\')) {
-            throw IllegalArgumentException("a quick command's name cannot contain a path separator: $trimmed")
-        }
-        if (trimmed.contains("..")) {
-            throw IllegalArgumentException("a quick command's name cannot contain \"..\": $trimmed")
-        }
-        if (trimmed.any { it.isISOControl() }) {
-            throw IllegalArgumentException("a quick command's name cannot contain control characters")
-        }
-        if (trimmed.startsWith(".")) {
-            throw IllegalArgumentException("a quick command's name cannot start with a dot: $trimmed")
-        }
-        if (trimmed.length > MAX_NAME) {
-            throw IllegalArgumentException("a quick command's name is at most $MAX_NAME characters")
-        }
-        return trimmed
-    }
+    fun normalize(name: String): String = normalizeArtifactName(name, "a quick command", ".md")
 
     /** 文件名去掉 `.md` 就是它的名字 */
     private fun nameOf(file: File): String = file.name.removeSuffix(".md")

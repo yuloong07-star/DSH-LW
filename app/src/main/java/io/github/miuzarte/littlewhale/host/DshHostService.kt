@@ -14,6 +14,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import io.github.miuzarte.littlewhale.MainActivity
 import io.github.miuzarte.littlewhale.R
+import io.github.miuzarte.littlewhale.automation.AutomationEngine
 import io.github.miuzarte.littlewhale.channel.LwModes
 import io.github.miuzarte.littlewhale.channel.PrivilegedBridge
 import io.github.miuzarte.littlewhale.channel.PrivilegedChannel
@@ -47,6 +48,9 @@ class DshHostService : Service() {
         LwModes.ensureDefault(this)
         // 随包那五项 (三份技能 + 两条样例快捷指令): 技能缺什么补什么, 样例只发一次
         LwSeed.ensure(this)
+        // 自动指令: 六个监测器按"有没有启用的规则"起落, 而这一句只是把引擎挂上 (一条规则都没有时
+        // 它什么都不注册, 只留一拍 60 秒的心跳)
+        AutomationEngine.ensure(this)
         VirtualScreen.initialize(this)
         PrivilegedBridge.start()
         DshHost.start(this)
@@ -81,6 +85,7 @@ class DshHostService : Service() {
 
     override fun onDestroy() {
         DshHost.stop()
+        AutomationEngine.stop()
         PrivilegedBridge.stop()
         // The privileged process would exit on its own once this one dies, but releasing root
         // explicitly is the difference between a service restart and a root process left running
