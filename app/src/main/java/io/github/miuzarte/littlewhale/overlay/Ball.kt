@@ -11,6 +11,7 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.ViewConfiguration
 import android.view.animation.DecelerateInterpolator
+import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
@@ -57,25 +58,27 @@ private val RING_LISTENING = 0xFF6EF3B0.toInt()
 private val RING_FAILED = 0xFFFF5252.toInt()
 
 /**
- * 球现在该说哪两个字
+ * 球现在该说哪三个字
  *
- * 优先级是**在想 > 在念 > 在听 > 失败** (2026-10-09 主人改的口径: "支持互相打断, 正在听时可以被
- * 正在想打断, 正在说可以打断正在听, 正在说不打断正在想, 不停止任务, 只是优先显示并支持手动打断"):
+ * 优先级是 **在念 > 在想 / 在听 (谁最近变成真的谁上) > 失败** (2026-10-09 主人两轮定下来的口径):
  *
  * | 两条同时成立 | 谁说话 | 主人给的理由 |
  * | :-- | :-- | :-- |
- * | 在想 + 在听 | **在想** | 有一轮在跑这件事最要紧; 双击打断打的就是它 ([BallTaps.kind]) |
- * | 在念 + 在听 | **在念** | 喇叭在说话时那条链整个哑着 (半双工闸), 所以"在念"比"在听"贴近事实 |
- * | 在想 + 在念 | **在想** | "正在说不打断正在想" —— 念是上一轮的事, 跑着的那一轮更要紧 |
+ * | 在念 + 任意 | **在念** | "正在想状态的显示不能遮挡正在说, 以方便打断说话" —— 喇叭在出声的时候 |
+ * | 在想 + 在听 | **时间戳晚的那个** | "在想着点一下球就写正在听": 点一下开麦是刚发生的事, 球上要看得见; 而开麦之后新一轮又起来, 想是刚发生的事, 球上回到想 |
  * | 失败 + 任意 | 让位 | 那三个字说的是"此刻正在发生", 失败说的是"刚刚"; 让位不等于认过 |
  *
+ * **"谁最近变成真的谁上"靠 [thinkingAt] / [listeningAt] 两个时刻** (0 = 现在不是真的): 那一档不成立
+ * 时调用方把它清零, 于是"又变成真的"那一刻会盖上一个新的数。两个数同一拍一起变 (或就是同一个数)
+ * 时给**想** —— 它在跑, 是要紧的那一件
+ *
  * **它只改"显示", 不动任务**: 谁被谁盖住都不取消任何东西 (播报照念、轮次照跑、麦克风照开),
- * 唯一跟它走的是**手动打断**那一下 —— 球上写着「正在想」时双击才是打断
+ * 跟它走的只有**手动打断**那一下 —— 球上写着「正在想」时双击才是打断 (见 [BallTaps.kind])
  *
  * **动作那一边仍然是"念 > 想 > 听"** ([BallTouch.act] 里 `speaking` 排第一): 显示上写着「正在想」
  * 而喇叭同时也在念时, 单点那一下仍然是"别念了" —— 那两件事各说各的, 见 [BallTouch.act]
  *
- * 纯函数, 没有设备也能量 (见 BallStatusTest)
+ * 纯函数, 没有设备也能量 (见 BallTest)
  */
 internal object BallStatus {
     fun wordFor(
@@ -83,11 +86,16 @@ internal object BallStatus {
         thinking: Boolean,
         listening: Boolean,
         failed: Boolean,
+        thinkingAt: Long = 0L,
+        listeningAt: Long = 0L,
     ): BallWord? = when {
-        // 有一轮在跑就压过下面那三档 (2026-10-09 主人: "正在听时可以被正在想打断" /
-        // "正在说不打断正在想" —— 也就是想在最上面)
-        thinking -> BallWord.THINKING
+        // 念回答最上 (2026-10-09 主人: "正在想状态的显示不能遮挡正在说"): 喇叭在出声的时候那件事
+        // 最要紧, 而"别念了"那一下就是点球 ([BallTouch.act] 里 `speaking` 也排第一)
         speaking -> BallWord.SPEAKING
+        // 想与听之间看谁最近变成真的 (见上面那张表): 同一拍一起变时给想
+        thinking && listening ->
+            if (listeningAt > thinkingAt) BallWord.LISTENING else BallWord.THINKING
+        thinking -> BallWord.THINKING
         listening -> BallWord.LISTENING
         failed -> BallWord.FAILED
         else -> null
@@ -278,6 +286,10 @@ internal object BallSpot {
  *    状态变化是这颗球唯一"说话"的机会, 直接跳字会让人以为是闪了一下
  * 5. **侧边半藏由窗口那一侧做** (见 OverlayService 的 `peek` / `unpeek`): 球自己的位置不是一个
  *    view 属性, 挪窗只能改窗口坐标, 所以这里只把"按下了"这件事告诉它
+ * 6. **念与听那两档描边会呼吸** (2026-10-09 主人: "说话时加个边框闪烁, 要像 vivo 蓝心小v那样"):
+ *    环色在满亮与 [BREATH_MIN] 之间 1.2 s 一个来回, 而字色不跟着闪 (12 sp 那三个字要一直读得清)。
+ *    往球外走的那一圈圈涟漪不在这里 —— 它比球大, 画在这块 48 dp 的窗里会被裁掉, 那块窗在
+ *    [BallRipple] / `OverlayService` 那一侧
  */
 internal class BallView(context: Context, private val listener: Listener) : FrameLayout(context) {
 
@@ -341,6 +353,17 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
     }
 
     private var fill: ValueAnimator? = null
+
+    /**
+     * 描边那一口呼吸 (只在"正在说 / 正在听"两档跑)
+     *
+     * 与 [fill] (按下 / 拖动那两档缩放) 分开: 那条动的是球体那一层, 这条只改描边的透明度, 而两者
+     * 可以同时跑 (拖着球说话)
+     */
+    private var breathe: ValueAnimator? = null
+
+    /** 这一口呼吸的底色 (环色): 会话轮换换了色就要拿新的重开一遍 */
+    private var breatheBase: Int = NEUTRAL
 
     /** 平台自己那一档门槛: 标准灵敏度用它, 防误触那一档拿它当垫底 (见 [BallFeel]) */
     private val platformSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -431,6 +454,8 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
         word = next
         lastColor = color
         circle.setStroke(dp(STROKE_DP), color)
+        // 念与听那两档: 描边跟着呼吸 (见类头第 6 条)
+        breathe(color, next == BallWord.SPEAKING || next == BallWord.LISTENING)
         val text = next?.label(context).orEmpty()
         val size = if (next == null) LABEL_SP else WORD_SP
         if (!changed && !recolored && label.text.isNotEmpty()) return
@@ -445,6 +470,55 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
             apply(next, text, size, color)
             label.animate().alpha(1f).setDuration(FADE_MS / 2).start()
         }.start()
+    }
+
+    /**
+     * 那一口呼吸开不开: [on] 为假时**立刻落回满亮的实心描边** (不留在半亮上)
+     *
+     * 同一个底色已经在跑就什么都不做 —— 心跳 400 ms 一拍, 每一拍都重开一次动画会看着像卡住。
+     * 底色换了 (会话轮换) 才拿新色重开, 于是"字没换、颜色换了"那一下在呼吸里也跟得上
+     */
+    private fun breathe(color: Int, on: Boolean) {
+        if (!on) {
+            breathe?.cancel()
+            breathe = null
+            breatheBase = color
+            circle.setStroke(dp(STROKE_DP), color)
+            return
+        }
+        if (breathe?.isRunning == true && breatheBase == color) return
+        breathe?.cancel()
+        breatheBase = color
+        breathe = ValueAnimator.ofFloat(BREATH_MIN, 1f).setDuration(BREATH_MS).apply {
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+            interpolator = LinearInterpolator()
+            addUpdateListener { animator ->
+                circle.setStroke(dp(STROKE_DP), alphaOf(color, animator.animatedValue as Float))
+            }
+            start()
+        }
+    }
+
+    /** 把 [color] 的透明度按 [factor] 缩放 (0..1): 呼吸只动亮度, 不动色相 */
+    private fun alphaOf(color: Int, factor: Float): Int = Color.argb(
+        (Color.alpha(color) * factor.coerceIn(0f, 1f)).toInt(),
+        Color.red(color),
+        Color.green(color),
+        Color.blue(color),
+    )
+
+    /**
+     * 摘下来就把两条动画放掉
+     *
+     * 球窗会被反复摘掉再挂回来 (关掉浮标、服务重建), 留着一条跑在没人看的 view 上的动画是纯浪费
+     */
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        fill?.cancel()
+        fill = null
+        breathe?.cancel()
+        breathe = null
     }
 
     /**
@@ -561,6 +635,16 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
         private const val DRAG_SCALE = 1.06f
         private const val SCALE_MS = 120L
         private const val FADE_MS = 240L
+
+        /**
+         * 描边那一口呼吸: 1.2 s 一个来回 (主人 2026-10-09 选的是"柔和呼吸", 不是快闪)
+         *
+         * 它与往外走的那一圈涟漪 ([BallPulse.RING_MS]) 是同一个节拍, 两件事看起来才像一件事
+         */
+        private const val BREATH_MS = 1200L
+
+        /** 呼吸最暗的那一档: 见底但不熄 —— 描边在的时候那颗球的样子不能变 */
+        private const val BREATH_MIN = 0.45f
 
         /** 蓝紫渐变: 那颗球的身份色, 不随状态变 —— 状态只动描边与那三个字 */
         private val FILL_FROM = 0xFF3D7BFF.toInt()

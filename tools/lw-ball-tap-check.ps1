@@ -92,13 +92,16 @@ function Field($state, $name) {
     return [long]$value
 }
 
-# 球那一块窗 (NOT_FOCUSABLE 把它与菜单 / 通道那两块可获焦的窗分开)
+# 球那一块窗 (NOT_FOCUSABLE 把它与菜单 / 通道那两块可获焦的窗分开; 2026-10-09 加的涟漪窗也是
+# NOT_FOCUSABLE 的, 而它**非触摸** —— 那一条是它与球的区别, 见 lw-ball-check.ps1)
 function BallFrame {
     $out = Sh 'dumpsys window windows'
     $hit = ($out | Select-String 'ty=APPLICATION_OVERLAY') |
         Where-Object {
             $block = $out[($_.LineNumber - 3)..($_.LineNumber + 1)]
-            ($block -join ' ') -match 'littlewhale' -and ($block -join ' ') -match 'NOT_FOCUSABLE'
+            ($block -join ' ') -match 'littlewhale' -and
+            ($block -join ' ') -match 'NOT_FOCUSABLE' -and
+            ($block -join ' ') -notmatch 'NOT_TOUCHABLE'
         } |
         Select-Object -First 1
     if (-not $hit) { return $null }

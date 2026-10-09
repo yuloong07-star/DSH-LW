@@ -112,6 +112,36 @@ class BallPhaseFileTest {
         assertEquals("ok", only?.id)
     }
 
+    /**
+     * **整份清单要一起读回来** (2026-10-09 加的那两笔自动收口要它): 球上那个字只要最近那一场, 而
+     * "同一场起了新的一轮"要能把那一场在这一批里找出来 —— 只留 `latest` 一个就答不了后面那一问。
+     * "最新的开始时刻" ([BallPhaseFile.Snapshot.newestAt]) 是"起了一轮新的"那个边沿的判据
+     */
+    @Test
+    fun `在跑的整份清单与最新的开始时刻`() {
+        val snapshot = BallPhaseFile.Snapshot(
+            running = BallPhaseFile.parseRunning(
+                root("""{"turns":[{"id":"a","startedAt":100},{"id":"b","startedAt":900}]}"""),
+            ),
+            last = null,
+            note = "",
+        )
+        assertEquals(listOf("a", "b"), snapshot.running.map { it.id })
+        assertEquals("b", snapshot.latest?.id)
+        assertEquals(900L, snapshot.newestAt)
+        assertEquals(0L, BallPhaseFile.Snapshot(emptyList(), null, "").newestAt)
+        assertNull(BallPhaseFile.Snapshot(emptyList(), null, "").latest)
+    }
+
+    /** 坏条目跳过而好的那几条照留: 一份坏 entry 不许把整批在跑的带走 */
+    @Test
+    fun `清单里坏的那些跳过`() {
+        val running = BallPhaseFile.parseRunning(
+            root("""{"turns":[{"id":"a","startedAt":100},{"startedAt":9},{"id":"c","startedAt":700}]}"""),
+        )
+        assertEquals(listOf("a", "c"), running.map { it.id })
+    }
+
     @Test
     fun `last 那一条整份读出来`() {
         val ended = BallPhaseFile.parseEnded(

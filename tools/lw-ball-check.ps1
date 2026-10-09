@@ -37,12 +37,16 @@ $half = [int][Math]::Round($ball * 0.5)
 
 function BallAttrs {
     $out = Sh 'dumpsys window windows'
-    # 我们这个包在屏上可能有**两块** overlay 窗: 球 (NOT_FOCUSABLE) 与长按出来的菜单 (可获焦)。
-    # 只认球那一块 —— 取错窗会量到菜单的坐标, 那是自己骗自己
+    # 我们这个包在屏上可能有**三块** overlay 窗: 球 (NOT_FOCUSABLE)、长按出来的菜单 (可获焦),
+    # 以及 2026-10-09 加的**涟漪窗** (说/听两档才挂上)。只认球那一块 —— 取错窗会量到菜单或涟漪的
+    # 坐标, 那是自己骗自己。涟漪窗是**非触摸**的 (FLAG_NOT_TOUCHABLE, 它比球大, 可触摸就会在球周围
+    # 多出一圈吃手指的死区), 而球不吃焦但**可触摸** —— 这两个标志就是它们的区别
     $hit = ($out | Select-String 'ty=APPLICATION_OVERLAY') |
         Where-Object {
             $block = $out[($_.LineNumber - 3)..($_.LineNumber + 1)]
-            ($block -join ' ') -match 'littlewhale' -and ($block -join ' ') -match 'NOT_FOCUSABLE'
+            ($block -join ' ') -match 'littlewhale' -and
+            ($block -join ' ') -match 'NOT_FOCUSABLE' -and
+            ($block -join ' ') -notmatch 'NOT_TOUCHABLE'
         } |
         Select-Object -First 1
     if (-not $hit) { return $null }

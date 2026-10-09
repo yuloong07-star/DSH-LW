@@ -21,7 +21,7 @@ class BallTest {
     private val ball = 144 // 48 dp @ 3x, vivo 那块屏的密度
     private val screen = 1260
 
-    /* ── 状态词: 在想 > 在念 > 在听 > 失败 (2026-10-09 主人定的"互相打断") ─────── */
+    /* ── 状态词: 在念 > 在想/在听 (谁最近变得谁上) > 失败 ──────────────────────── */
 
     @Test
     fun `什么都没在跑时球上画的是那个标`() {
@@ -63,35 +63,61 @@ class BallTest {
     }
 
     /**
-     * **"正在想"盖过"正在念"** (2026-10-09 主人: "正在说不打断正在想")
+     * **"正在念"盖过"正在想"** (2026-10-09 主人: "正在想状态的显示不能遮挡正在说, 以方便打断说话")
      *
      * 两条同时成立是够得着的: 上一轮的回答还在念, 而另一场 (或刚插进来的那一句) 已经跑起来了 ——
-     * 这时球上写「正在想」, 于是双击那一下打的正是跑着的那一轮; 播报**不会**因为这次显示切换被停掉
-     * ("不停止任务"), 想停它就单点那一下 ([BallTouch.act] 里 `speaking` 仍排第一)
+     * 这时球上必须写「正在说」, 因为人那一刻最想按的就是"别念了" ([BallTouch.act] 里 `speaking`
+     * 排第一)。改这一条之前是"想"压着"念", 于是"球上写着正在想、喇叭同时在念"那一档里人看不出
+     * 该点哪里。**跑着的那一轮不受影响**: 这一下只改显示, 而双击打断仍按球上那个字认
+     * ([BallTaps.kind] / `OverlayService.onTap`)
      */
     @Test
-    fun `念回答的时候正在想也盖过正在念`() {
+    fun `念回答的时候正在念盖过正在想`() {
         assertEquals(
-            BallWord.THINKING,
+            BallWord.SPEAKING,
             BallStatus.wordFor(speaking = true, thinking = true, listening = true, failed = false),
+        )
+        // 想与听各自多晚都不影响这一条: 念一直在最上面
+        assertEquals(
+            BallWord.SPEAKING,
+            BallStatus.wordFor(
+                speaking = true,
+                thinking = true,
+                listening = true,
+                failed = false,
+                thinkingAt = 500,
+                listeningAt = 900,
+            ),
         )
     }
 
     /**
-     * **"正在想"盖过"正在听"** (2026-10-09 主人: "正在听时可以被正在想打断")
+     * **"正在想"与"正在听"之间看谁最近变成真的** (2026-10-09 主人: "在想着点一下球, 球显示听"
+     * 与 "开着麦时新一轮起来 → 写回正在想")
      *
-     * 麦克风开着、同时有一轮在跑 —— 现在球上写「正在想」。改这一条之前是"在听"压着"在想" (那一版
-     * 的理由是"点了球开了麦克风, 球上必须看得出来")。现在主人要的是"想"最要紧: 它那一档才有
-     * **双击打断** ([BallTaps.kind] 按球上那个字认双击), 而麦克风开着这件事在别处也看得见 (系统那个
-     * 麦克风指示 + 输入框上沿那个胶囊)。**这只改显示**: 点一下那一档仍是"收回语音窗口"
-     * ([BallTouch.act] 的 `listening` 分支), 打断与收回两件事都还在
+     * 麦克风开着、同时有一轮在跑是够得着的两档: 人在"正在想"那一档点一下球 (开麦, 听是刚发生的)
+     * 与开麦之后新一轮又起来 (想是刚发生的)。两个时间戳一比就分开, 而**同一拍一起变时给想** ——
+     * 它在跑, 是要紧的那一件
      */
     @Test
-    fun `正在想盖过正在听`() {
-        assertEquals(
-            BallWord.THINKING,
-            BallStatus.wordFor(speaking = false, thinking = true, listening = true, failed = false),
-        )
+    fun `正在想与正在听之间谁最近变得谁上`() {
+        val both = { thinkingAt: Long, listeningAt: Long ->
+            BallStatus.wordFor(
+                speaking = false,
+                thinking = true,
+                listening = true,
+                failed = false,
+                thinkingAt = thinkingAt,
+                listeningAt = listeningAt,
+            )
+        }
+        // 点一下球开了麦: 听是刚发生的那一件
+        assertEquals(BallWord.LISTENING, both(100, 900))
+        // 开着麦时新一轮起来: 想是刚发生的那一件
+        assertEquals(BallWord.THINKING, both(900, 100))
+        // 同一拍一起变 (缺省那两个 0 也是这一格): 给想
+        assertEquals(BallWord.THINKING, both(0, 0))
+        assertEquals(BallWord.THINKING, both(500, 500))
     }
 
     /* ── 「失败」那一档: 压过"在想", 让位给语音那两档 (2026-10-08) ─────────────── */
@@ -1213,5 +1239,70 @@ class BallTest {
         assertEquals(BallFeel.GUARD, BallFeel.of("STANDARD "))
         assertEquals(BallFeel.GUARD, BallFeel.of("GUARD"))
         assertEquals(BallFeel.STANDARD, BallFeel.of("STANDARD"))
+    }
+
+    /* ── 球外那几圈涟漪: 说往外扩 / 听往回收 (2026-10-09) ─────────────────────── */
+
+    /** 方向跟着球上那个字: 念 = 往外扩, 听 = 往回收, 别的档位一圈都不画 */
+    @Test
+    fun `涟漪的方向跟着球上那个字`() {
+        assertEquals(BallPulse.Direction.OUT, BallPulse.direction(BallWord.SPEAKING))
+        assertEquals(BallPulse.Direction.IN, BallPulse.direction(BallWord.LISTENING))
+        assertEquals(BallPulse.Direction.NONE, BallPulse.direction(BallWord.THINKING))
+        assertEquals(BallPulse.Direction.NONE, BallPulse.direction(BallWord.FAILED))
+        assertEquals(BallPulse.Direction.NONE, BallPulse.direction(null))
+        assertEquals("out", BallPulse.name(BallWord.SPEAKING))
+        assertEquals("in", BallPulse.name(BallWord.LISTENING))
+        assertEquals("", BallPulse.name(BallWord.THINKING))
+    }
+
+    /**
+     * 半径: 两端正好落在"球的外缘"与"窗里那一圈"上, 而**两个方向是对调的** —— 主人要的
+     * "正在听加一个与正在说相反的收回来特效"就是这一条
+     */
+    @Test
+    fun `涟漪两个方向的半径是对调的`() {
+        val from = 45f
+        val to = 92f
+        assertEquals(from, BallPulse.radiusAt(0f, from, to, BallPulse.Direction.OUT), 0.01f)
+        assertEquals(to, BallPulse.radiusAt(1f, from, to, BallPulse.Direction.OUT), 0.01f)
+        assertEquals(to, BallPulse.radiusAt(0f, from, to, BallPulse.Direction.IN), 0.01f)
+        assertEquals(from, BallPulse.radiusAt(1f, from, to, BallPulse.Direction.IN), 0.01f)
+        assertTrue(
+            "说走了一半是在变大",
+            BallPulse.radiusAt(0.5f, from, to, BallPulse.Direction.OUT) > from,
+        )
+        assertTrue(
+            "听走了一半是在变小",
+            BallPulse.radiusAt(0.5f, from, to, BallPulse.Direction.IN) < to,
+        )
+        // 越界的进度钳在两端 (动画那一头偶尔会多推一点点)
+        assertEquals(from, BallPulse.radiusAt(-1f, from, to, BallPulse.Direction.OUT), 0.01f)
+        assertEquals(to, BallPulse.radiusAt(2f, from, to, BallPulse.Direction.OUT), 0.01f)
+    }
+
+    /** 透明度: 起点最亮、走完淡没 (两个方向都是这一条, 于是"往哪边走"只由半径说) */
+    @Test
+    fun `涟漪越走越淡`() {
+        assertEquals(0.55f, BallPulse.alphaAt(0f, 0.55f), 0.001f)
+        assertEquals(0f, BallPulse.alphaAt(1f, 0.55f), 0.001f)
+        val half = BallPulse.alphaAt(0.5f, 0.55f)
+        assertTrue("一半那会儿介于中间", half > 0f && half < 0.55f)
+        assertEquals(0f, BallPulse.alphaAt(2f, 0.55f), 0.001f)
+    }
+
+    /** 两圈错开半圈: 每隔半圈出一圈, 于是屏上任何一刻都不止一圈 */
+    @Test
+    fun `两圈涟漪错开半圈`() {
+        val at0 = BallPulse.phases(0f)
+        assertEquals(BallPulse.RINGS, at0.size)
+        assertEquals(0f, at0[0], 0.001f)
+        assertEquals(0.5f, at0[1], 0.001f)
+        val at06 = BallPulse.phases(0.6f)
+        assertEquals(0.6f, at06[0], 0.001f)
+        assertEquals(0.1f, at06[1], 0.001f)
+        // 一圈的节拍与描边那口呼吸是同一个 (两件事看起来才像一件事)
+        assertEquals(1200L, BallPulse.RING_MS)
+        assertEquals(96, BallPulse.SPAN_DP)
     }
 }

@@ -40,12 +40,16 @@ $half = [int][Math]::Round($ball * 0.5)
 # —— 1080 宽的屏上量到的因此是 669, 不是 734
 $boxWidth = [Math]::Min(734, [int]($screenW * 0.62))
 
+# 球那一块窗: NOT_FOCUSABLE 分开了"可获焦"的那两块 (菜单 / 通道), 而 2026-10-09 起的**涟漪窗**
+# 也是 NOT_FOCUSABLE —— 它是**非触摸**的, 那一条才是球与它的区别 (见 lw-ball-check.ps1)
 function BallFrame {
     $out = Sh 'dumpsys window windows'
     $hit = ($out | Select-String 'ty=APPLICATION_OVERLAY') |
         Where-Object {
             $block = $out[($_.LineNumber - 3)..($_.LineNumber + 1)]
-            ($block -join ' ') -match 'littlewhale' -and ($block -join ' ') -match 'NOT_FOCUSABLE'
+            ($block -join ' ') -match 'littlewhale' -and
+            ($block -join ' ') -match 'NOT_FOCUSABLE' -and
+            ($block -join ' ') -notmatch 'NOT_TOUCHABLE'
         } |
         Select-Object -First 1
     if (-not $hit) { return $null }

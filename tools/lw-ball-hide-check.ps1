@@ -39,13 +39,17 @@ $env:LW_CHANNEL_TOKEN = $token
 
 function Call($json) { (node tools\lw-channel-call.mjs overlay $json | Out-String).Trim() }
 
-# 球那一块窗: `NOT_FOCUSABLE` 把它与长按菜单 / 输入通道那两块可获焦的窗分开
+# 球那一块窗: `NOT_FOCUSABLE` 把它与长按菜单 / 输入通道那两块可获焦的窗分开; 而 2026-10-09 加的
+# **涟漪窗**也是 NOT_FOCUSABLE 的 (说/听两档才挂上), 所以还要加一条 `-notmatch 'NOT_TOUCHABLE'`
+# —— 涟漪窗非触摸 (它比球大, 可触摸就会在球周围多出一圈吃手指的死区), 球不吃焦但可触摸
 function BallWindow {
     $out = Sh 'dumpsys window windows'
     $hit = ($out | Select-String 'ty=APPLICATION_OVERLAY') |
         Where-Object {
             $block = $out[($_.LineNumber - 3)..($_.LineNumber + 1)]
-            ($block -join ' ') -match 'littlewhale' -and ($block -join ' ') -match 'NOT_FOCUSABLE'
+            ($block -join ' ') -match 'littlewhale' -and
+            ($block -join ' ') -match 'NOT_FOCUSABLE' -and
+            ($block -join ' ') -notmatch 'NOT_TOUCHABLE'
         } |
         Select-Object -First 1
     if (-not $hit) { return $null }

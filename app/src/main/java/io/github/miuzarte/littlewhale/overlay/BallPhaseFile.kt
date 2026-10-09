@@ -75,8 +75,21 @@ internal object BallPhaseFile {
      */
     internal data class Ended(val id: String, val at: Long, val kind: String, val why: String)
 
-    /** 一次读的答案: 在跑的那一场 (最近开始)、最近结束的那一轮、以及读不出来的那句人话 */
-    internal data class Snapshot(val latest: Turn?, val last: Ended?, val note: String)
+    /**
+     * 一次读的答案: 在跑的那几场、最近结束的那一轮、以及读不出来的那句人话
+     *
+     * [running] 是**整份**在跑的清单 (2026-10-09 加的): 球上那个字只要 [latest] 一场, 而"同一场起了
+     * 新的一轮"那条判据要的是"某一场的 id 还在不在这一批里" —— 只留最近那一场就答不了 (见
+     * `OverlayService.refresh` 那两笔自动收口)
+     */
+    internal data class Snapshot(val running: List<Turn>, val last: Ended?, val note: String) {
+
+        /** 球上只显示**最近开始的那一场**: 那一场决定字与环色 (见文件头) */
+        val latest: Turn? get() = running.maxByOrNull { it.startedAt }
+
+        /** 这一批里最新的开始时刻 (0 = 一场都没有): "起了一轮新的"那个边沿靠它认 */
+        val newestAt: Long get() = latest?.startedAt ?: 0L
+    }
 
     fun directory(context: Context): File = File(File(context.filesDir, DshHost.HOME_DIR), DIRECTORY)
 
@@ -90,36 +103,39 @@ internal object BallPhaseFile {
      */
     fun snapshot(context: Context): Snapshot {
         val source = file(context)
-        if (!source.isFile) return Snapshot(null, null, "")
+        if (!source.isFile) return Snapshot(emptyList(), null, "")
         val raw = try {
             source.readText()
         } catch (error: Throwable) {
-            return Snapshot(null, null, "ball-phase.json 读不出来: ${error.message ?: error}")
+            return Snapshot(emptyList(), null, "ball-phase.json 读不出来: ${error.message ?: error}")
         }
         val root = try {
             Json.parseToJsonElement(raw) as? JsonObject
         } catch (error: Throwable) {
-            return Snapshot(null, null, "ball-phase.json 不是 JSON: ${error.message ?: error}")
+            return Snapshot(emptyList(), null, "ball-phase.json 不是 JSON: ${error.message ?: error}")
         }
         root?.get("turns") as? JsonArray
-            ?: return Snapshot(null, null, "ball-phase.json 里没有 turns")
-        return Snapshot(parseTurns(root), parseEnded(root), "")
+            ?: return Snapshot(emptyList(), null, "ball-phase.json 里没有 turns")
+        return Snapshot(parseRunning(root), parseEnded(root), "")
     }
 
     /**
-     * 纯解析: `turns` 那一串里**最近开始**的那一场 (空表 / 读不懂都是 null)
+     * 纯解析: `turns` 那一串里在跑的每一场 (空表 / 读不懂都是空表, 坏的那几条跳过)
      *
      * 纯函数是为了没有设备也能量 (见 BallPhaseFileTest)
      */
-    internal fun parseTurns(root: JsonObject?): Turn? {
-        val turns = root?.get("turns") as? JsonArray ?: return null
+    internal fun parseRunning(root: JsonObject?): List<Turn> {
+        val turns = root?.get("turns") as? JsonArray ?: return emptyList()
         return turns.mapNotNull { entry ->
             val one = entry as? JsonObject ?: return@mapNotNull null
             val id = one["id"]?.jsonPrimitive?.contentOrNull.orEmpty()
             val startedAt = runCatching { one["startedAt"]?.jsonPrimitive?.long }.getOrNull()
             if (id.isEmpty() || startedAt == null) null else Turn(id, startedAt)
-        }.maxByOrNull { it.startedAt }
+        }
     }
+
+    /** 纯解析: `turns` 那一串里**最近开始**的那一场 (空表 / 读不懂都是 null) */
+    internal fun parseTurns(root: JsonObject?): Turn? = parseRunning(root).maxByOrNull { it.startedAt }
 
     /**
      * 纯解析: `last` 那一条

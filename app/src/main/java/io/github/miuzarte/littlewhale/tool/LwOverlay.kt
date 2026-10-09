@@ -299,6 +299,13 @@ internal object LwOverlay {
             put("y", OverlayState.y)
             put("word", OverlayState.word ?: "")
             put("phase", OverlayState.phase)
+            // 球外那一圈涟漪往哪边走 (`out` = 正在说 / `in` = 正在听 / 空 = 没在跑): 那块窗是非触摸的,
+            // 光看 dumpsys 分不出它在画什么, 所以"动效到底跑没跑、往哪边跑"由这一个字段说 (2026-10-09)
+            put("pulse", OverlayState.pulse)
+            // 这一句播报念的是哪一场的回答, 以及自动掐了几次 (同一场起了新轮那一档): 那一笔账为空时
+            // 一条都不掐, 所以这两个数是排障时最先要看的一对
+            put("reading", OverlayState.readingSession)
+            put("speechCuts", OverlayState.speechCuts)
             // 这一轮在跑的是哪一场、它那个环色是什么 (5 色轮转, 见 BallPhaseFile); 读文件读不动时
             // phaseNote 里有人话 —— "球为什么不显示正在想"就靠这一对
             put("session", OverlayState.session)

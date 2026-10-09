@@ -187,6 +187,28 @@ internal object OverlayState {
     var phaseNote: String = ""
 
     /**
+     * 球外那一圈涟漪现在往哪边走: `"out"` = 正在说 (往外扩), `"in"` = 正在听 (往回收), `""` = 没在跑
+     *
+     * 它是 2026-10-09 那套动效的唯一读数: 那块窗是**非触摸**的, 光看 `dumpsys` 分不出它在画什么,
+     * 所以"涟漪到底跑没跑、往哪边跑"由这一个字段说
+     */
+    @Volatile
+    var pulse: String = ""
+
+    /**
+     * 这一句播报念的是哪一场的回答 (空 = 没在念 / 不知道是哪一场)
+     *
+     * 它决定"同一场起了新的一轮"那一条掐不掐 (见 `OverlayService.cutReading`): 不知道是哪一场时
+     * **一个字节都不掐** —— 宁可让它念完, 也不要凭猜把别人的回答掐掉
+     */
+    @Volatile
+    var readingSession: String = ""
+
+    /** 自动掐播报掐了几次 (同一场起了新轮那一档): 与 [interrupts] 一样, 动过的都要有个数 */
+    @Volatile
+    var speechCuts: Int = 0
+
+    /**
      * 刚结束的那一轮是怎么收的 (见 [BallPhaseFile.Ended])
      *
      * 三条都是那份文件里的 `last` 原样搬过来的 —— 球上只认 [BallFailure.counts] 那三种 (写成
@@ -402,6 +424,16 @@ class OverlayService : Service() {
     private var ballView: BallView? = null
     private var ballParams: WindowManager.LayoutParams? = null
 
+    /**
+     * 球外那一圈圈涟漪那块窗 (2026-10-09): **只在"正在说 / 正在听"两档挂着**, 落下就摘
+     *
+     * 与球窗分开的理由只有一个: 涟漪比球大 (96 dp 对 48 dp), 画在球那块窗里会被窗口裁掉。它
+     * `FLAG_NOT_TOUCHABLE`, 所以多挂一块窗**一个触摸都不会多吃** —— 球"只吃自己那 48 dp"那条性质
+     * 与它无关
+     */
+    private var rippleView: RippleView? = null
+    private var rippleParams: WindowManager.LayoutParams? = null
+
     private var stripView: View? = null
     private var stripParams: WindowManager.LayoutParams? = null
     private var web: WebView? = null
@@ -569,6 +601,39 @@ class OverlayService : Service() {
     private var lastWord: BallWord? = null
 
     /**
+     * 「正在想」与「正在听」各自**最近一次变成真的**是什么时候 (0 = 现在不是真的)
+     *
+     * 这是 2026-10-09 那条口径的实现: 球上写"想"还是"听"看这两个数谁大 ([BallStatus.wordFor]) ——
+     * "点一下开麦就写正在听"与"开麦之后新一轮又起来就写回正在想"两件事都落在这两个数上, 而 400 ms
+     * 一拍就是它们的粒度
+     */
+    private var thinkingAt = 0L
+    private var listeningAt = 0L
+
+    /**
+     * 那一份 `ball-phase.json` 里现在在跑的那几场 ([BallPhaseFile.Turn], id 与开始时刻)
+     *
+     * 两笔自动收口都要它: "起了一轮新的"看最新的开始时刻 ([lastTurnAt]), 而"同一场起了新轮"要把
+     * 正在念那一句的会话 id 在这一批里找一遍
+     */
+    private var turns: List<BallPhaseFile.Turn> = emptyList()
+
+    /** 上一次读到的那一批里最新的开始时刻 (0 = 上一次读到的是空表) */
+    private var lastTurnAt = 0L
+
+    /** 第一次读到那份文件没有: **那一次只当基线**, 不把"已经有轮在跑"当成"刚刚起了一轮" */
+    private var turnsBaseline = false
+
+    /** 这一句播报念的是哪一场的回答 (null = 没在念 / 不知道是哪一场), 见 [cutReading] */
+    private var readingSession: String? = null
+
+    /** 这一句播报已经掐过一次了没有 (一次念只掐一次, 停不掉时不许每一拍都再叫一遍) */
+    private var readingCut = false
+
+    /** 上一拍在不在念: "念开始了"那一个边沿用来记下这一句是谁的回答 */
+    private var lastSpeaking = false
+
+    /**
      * 这一次点击要跑的那个动作 (只有"正在想"的单点会被推迟 [BallMinutes.DOUBLE_TAP_MS])
      *
      * 留着它是为了**双击到了就取消它**: 不取消的话双击的第一下会先把"正在想"那一档的单点动作做掉
@@ -601,6 +666,9 @@ class OverlayService : Service() {
      */
     private fun readBallPhase() {
         val snapshot = BallPhaseFile.snapshot(this)
+        // **整份清单**留着给两笔自动收口用 (见 [turns]): 球上那个字只要最近那一场, 而"同一场起了
+        // 新轮"要能把那一场在这里面找出来
+        turns = snapshot.running
         val turn = snapshot.latest
         OverlayState.phase = if (turn == null) OverlayState.PHASE_IDLE else OverlayState.PHASE_THINKING
         OverlayState.session = turn?.id.orEmpty()
@@ -696,6 +764,8 @@ class OverlayService : Service() {
         // (2026-10-06 真机实测, 见 [hideBall])。正常那条路已经在 hideBall 里摘过了, 这里挡的是
         // "别的入口把服务停了"那几种情形; 那句回执这里不看, 但**摘不掉要留一行**
         if (!detachBall()) Log.w(TAG, "the service is going down with the ball window still on screen")
+        // 涟漪那块窗同理: 它比球大, 留下来是一圈没人管得了的光晕 —— 而它必须在 `window` 置空之前摘
+        runCatching { detachRipple() }
         web?.let { runCatching { it.destroy() } }
         web = null
         ballView = null
@@ -1279,6 +1349,8 @@ class OverlayService : Service() {
                 held.x = animator.animatedValue as Int
                 OverlayState.ballWindowX = held.x
                 runCatching { window?.updateViewLayout(ballView, held) }
+                // 半隐那一下球是一格一格滑的: 涟漪不跟着走就会看到它自己留在原地
+                placeRipple()
             }
             doOnEnd {
                 done?.invoke()
@@ -1302,6 +1374,8 @@ class OverlayService : Service() {
         OverlayState.y = ballBaseY
         // 半隐是"球收边了没有"那一条判据的读数 (窗口坐标差 63 px, 光看图很难分)
         OverlayState.peeked = peeked
+        // 涟漪窗跟着球心 (拖着球说话时它每一帧都要跟)
+        placeRipple()
         // 球这一块的坐标也进那份读数: 拖完那一下要看得见它落在哪儿 (转屏那次则由 [noteRects] 一起写)
         noteRects()
     }
@@ -1476,6 +1550,7 @@ class OverlayService : Service() {
         // 四块窗一起收: 菜单与通道是可获焦的那两块, 先收它们, 免得摘球的时候它们还抓着输入法
         runCatching { closeMenu() }
         runCatching { closeChannel() }
+        runCatching { detachRipple() }
         runCatching { collapse() }
         // 摘窗那一段整块包起来: 它里面可能抛 (已经摘过的 view 再摘一次就会), 而**后面那两步一步都
         // 不能省** —— 偏好不写, 下一次应用起来球自己又冒出来; 服务不停, 那块窗连摘都摘不掉
@@ -2180,19 +2255,30 @@ class OverlayService : Service() {
         // `force` 那一支每个回答、每次焦点变化都会走到 —— 那里只该刷新读数, 不该动窗口
         if (metrics.widthPixels != lastWidth || metrics.heightPixels != lastHeight) relayoutAll(force = true)
         else if (force) noteRects()
+        // **念那一路有两个来源** (2026-10-09 真机: 在线引擎念的时候球上写着「正在听」):
+        // `VoiceState.speaking` 是半双工那道闸的标记, 而三条引擎各自的 `speaking` 是
+        // [LwSpeak.speakingNow] —— 只看前者时, 在线那两条 (Edge / API) 念的那几秒球会说成
+        // "正在听"。点球那一下 ([tapAction]) 早就是两个一起看的, 这里对齐它
+        val speaking = VoiceState.speaking || LwSpeak.speakingNow
+        // 「正在想」: 宿主说有一轮在跑 (那份文件是真相, 见 [BallPhaseFile]); 宿主没在跑时一律不采纳,
+        // 否则宿主崩了球会永远停在"正在想"
+        val thinking = OverlayState.phase == OverlayState.PHASE_THINKING && DshHost.status is HostStatus.Running
+        // "正在听"说的就是这一句话的窗口开着 ([VoiceState.capturing]): 唤醒词一直守着, 而守着这件事
+        // 不该在球上写成"正在听" —— 那是常态, 一直挂着只会让人以为麦克风在被吃
+        val listening = VoiceState.capturing
+        // 三笔边沿账 (想/听各自"什么时候变成真的"、念的开始与结束、"起了一轮新的") 都在这一处算,
+        // 而它们同时是那两笔自动收口的触发点 (见 [noteEdges])
+        noteEdges(System.currentTimeMillis(), speaking, thinking, listening)
         val word = BallStatus.wordFor(
-            // **念那一路有两个来源** (2026-10-09 真机: 在线引擎念的时候球上写着「正在听」):
-            // `VoiceState.speaking` 是半双工那道闸的标记, 而三条引擎各自的 `speaking` 是
-            // [LwSpeak.speakingNow] —— 只看前者时, 在线那两条 (Edge / API) 念的那几秒球会说成
-            // "正在听"。点球那一下 ([tapAction]) 早就是两个一起看的, 这里对齐它
-            speaking = VoiceState.speaking || LwSpeak.speakingNow,
-            thinking = OverlayState.phase == OverlayState.PHASE_THINKING && DshHost.status is HostStatus.Running,
-            // "正在听"说的就是这一句话的窗口开着 ([VoiceState.capturing]): 唤醒词一直守着, 而守着这件事
-            // 不该在球上写成"正在听" —— 那是常态, 一直挂着只会让人以为麦克风在被吃
-            listening = VoiceState.capturing,
+            speaking = speaking,
+            thinking = thinking,
+            listening = listening,
             // 「失败」: 上一轮是 error / blocked / max-tokens 收的, 而且主人还没点过球 (那一笔账在
             // [OverlayState.failedNow] 里 —— 它比时间窗口诚实, 时间窗口一到就自己落字反而看不见)
             failed = OverlayState.failedNow(),
+            // 想与听同时成立时谁上就看这两个数 (见 [BallStatus.wordFor]): 晚的那个是"刚发生的事"
+            thinkingAt = thinkingAt,
+            listeningAt = listeningAt,
         )
         val changed = word != lastWord
         // **环色也得算进"变了没有"**: 两个会话轮流在想时那个字一直是「正在想」, 而颜色要跟着换
@@ -2203,6 +2289,8 @@ class OverlayService : Service() {
             stripTitle?.text = title(word)
             lastRing = ring
         }
+        // 球外那几圈涟漪 (说往外扩 / 听往回收): 那两档才挂窗, 别的档位把窗摘掉 (见 [applyPulse])
+        applyPulse(word, ring)
         // 有状态就滑出来说话, 闲着就收边 (参考那套的 `floating_ball_idle_to_edge`)
         //
         // **语音在跑时不收边, 但计时照走** (主人 2026-10-06 报的: "开了语音输入之后就没法空闲隐藏
@@ -2279,6 +2367,159 @@ class OverlayService : Service() {
             lastNotice = notice
             announce(notice)
         }
+    }
+
+    /**
+     * 这一拍的三笔边沿账, 以及挂在它们上面的两条自动收口 (2026-10-09 主人定的口径)
+     *
+     * 1. **想与听各自"什么时候变成真的"** ([thinkingAt] / [listeningAt]): 球上写哪一个由
+     *    [BallStatus.wordFor] 比这两个数决定 —— 点一下开麦就写「正在听」、开麦之后新一轮又起来就
+     *    写回「正在想」, 两件事都是这里的一行
+     * 2. **念开始了 / 念完了**: 开始那一下把"这一句念的是哪一场的回答"记进 [readingSession]
+     *    (宿主推回复那一条就带着会话 id, 见 [OverlayState.replySession]), 念完把那笔账清掉
+     * 3. **"起了一轮新的"**: 那份文件里最新的开始时刻比上一次读到的更新 —— 两笔自动收口都挂在
+     *    这一个边沿上 ([onNewTurn])。**第一次读只当基线**: 服务起来时"已经有一轮在跑"不是"刚刚起了
+     *    一轮", 拿它当边沿会平白把语音窗口收掉一次
+     */
+    private fun noteEdges(now: Long, speaking: Boolean, thinking: Boolean, listening: Boolean) {
+        if (thinking) {
+            if (thinkingAt == 0L) thinkingAt = now
+        } else {
+            thinkingAt = 0L
+        }
+        if (listening) {
+            if (listeningAt == 0L) listeningAt = now
+        } else {
+            listeningAt = 0L
+        }
+        if (speaking && !lastSpeaking) {
+            readingSession = OverlayState.replySession?.takeIf { it.isNotBlank() }
+            readingCut = false
+            OverlayState.readingSession = readingSession.orEmpty()
+        } else if (!speaking) {
+            readingSession = null
+            readingCut = false
+            OverlayState.readingSession = ""
+        }
+        lastSpeaking = speaking
+        val newest = turns.maxOfOrNull { it.startedAt } ?: 0L
+        val fresh = turnsBaseline && newest > lastTurnAt
+        lastTurnAt = newest
+        turnsBaseline = true
+        if (fresh) onNewTurn()
+    }
+
+    /**
+     * 后台起了一轮新的: 两条"该收的收掉"
+     *
+     * - **同一场起了新轮就掐播报** (主人 2026-10-09: "只掐「同一场」的新轮"): 正在念的那一句是这个
+     *   会话上一轮的回答, 而它已经又跑起来了 —— 那一句念完也没人要听。别的会话跑起来**不碰**这一句
+     *   ([readingSession] 对不上就不动), 而那一笔账是空的时 (手动 `lw_speak` 念的一句、或者回复没带
+     *   会话 id) 一样不掐: 宁可让它念完, 也不要凭猜把别人的回答掐掉
+     * - **新一轮出现就把「正在听」收回来** (主人 2026-10-09: "把「正在听」一并收掉"): 麦克风那条链与
+     *   它上面那个输入条一起收, 走的是三击那条同一个入口 ([LwWakeWord.hushWindow])。代价写在
+     *   AGENTS 里: 人说到一半时被新一轮收掉, 下半句就没了
+     *
+     * 两条都**只动播报与麦克风, 一个轮次都不取消**; 球上那个字仍然只按 [BallStatus.wordFor] 算
+     */
+    private fun onNewTurn() {
+        val reading = readingSession
+        if (reading != null && !readingCut && turns.any { it.id == reading }) {
+            readingCut = true
+            note("$reading started another turn: cutting the reply it was reading")
+            stopSpeaking()
+            OverlayState.speechCuts += 1
+        }
+        if (VoiceState.capturing) {
+            note("a new turn started: taking the voice window back")
+            runCatching { LwWakeWord.hushWindow(this) }
+        }
+    }
+
+    /**
+     * 球外那几圈涟漪: 说 (往外扩) 与听 (往回收) 两档才挂那块窗, 别的档位一个字节都不留
+     *
+     * 涟漪的颜色跟**当前那个字的环色**走 (说=紫 / 听=绿): 它只是那个字的一种说法, 不是另一种状态
+     */
+    private fun applyPulse(word: BallWord?, ring: Int?) {
+        OverlayState.pulse = BallPulse.name(word)
+        if (word != BallWord.SPEAKING && word != BallWord.LISTENING) {
+            if (rippleView != null) detachRipple()
+            return
+        }
+        val color = ring ?: word.ring()
+        val view = rippleView ?: attachRipple() ?: return
+        view.pulse(word, color)
+        placeRipple()
+    }
+
+    /**
+     * 挂上涟漪那块窗: 96 dp 见方, 圆心与球心重合
+     *
+     * **`FLAG_NOT_TOUCHABLE` 是它唯一的硬条件**: 涟漪比球大 (96 dp 对 48 dp), 可触摸的话球周围会多出
+     * 一圈吃手指的死区 —— 球"只吃自己那 48 dp"那条性质就是这么保住的 ([WindowManager] 会跳过不可
+     * 触摸的窗, 所以它在球窗上面也不会抢走任何一下)
+     *
+     * 挂不上就算了 (返回 null): 涟漪是"在动"的旁注, 少了它球上那三个字照旧
+     */
+    private fun attachRipple(): RippleView? {
+        val manager = window ?: return null
+        val ball = ballParams ?: return null
+        val span = dp(BallPulse.SPAN_DP)
+        val ballSize = dp(BallView.BALL_SIZE_DP)
+        val view = RippleView(this)
+        val layout = WindowManager.LayoutParams(
+            span,
+            span,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            // 球窗画在它那 48 dp 的正中, 而球体又画在球窗正中 —— 于是"圆心"就是球窗的中心
+            x = ball.x + (ballSize - span) / 2
+            y = ball.y + (ballSize - span) / 2
+            // 标题显式写一个: 认球窗那几份脚本按 `dumpsys window windows` 走, 多出来的这块要认得出来
+            title = BallPulse.TITLE
+        }
+        return try {
+            manager.addView(view, layout)
+            rippleView = view
+            rippleParams = layout
+            view
+        } catch (error: Throwable) {
+            note("the ripple window was refused: ${error.message ?: error}")
+            null
+        }
+    }
+
+    /** 涟漪窗的圆心跟着球心: 拖球、半隐那两条滑动、转屏都从这里过一遍 */
+    private fun placeRipple() {
+        val manager = window ?: return
+        val view = rippleView ?: return
+        val ball = ballParams ?: return
+        val layout = rippleParams ?: return
+        val ballSize = dp(BallView.BALL_SIZE_DP)
+        val span = dp(BallPulse.SPAN_DP)
+        val wantX = ball.x + (ballSize - span) / 2
+        val wantY = ball.y + (ballSize - span) / 2
+        if (layout.x == wantX && layout.y == wantY) return
+        layout.x = wantX
+        layout.y = wantY
+        runCatching { manager.updateViewLayout(view, layout) }
+    }
+
+    /** 摘掉涟漪那块窗: 那一档过去之后屏上不许留一块看不见的常驻窗 */
+    private fun detachRipple() {
+        OverlayState.pulse = ""
+        val view = rippleView ?: return
+        rippleView = null
+        rippleParams = null
+        runCatching { window?.removeView(view) }
     }
 
     /** 输入条那条标题: 「DSH-LW · 正在听 · 视频模式」(手机模式是缺省那一档, 不占一个字) */
