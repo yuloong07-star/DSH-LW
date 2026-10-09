@@ -207,8 +207,8 @@ android {
         // 2.6.5: 唤醒那一摊的整批修 (内置 custom 预设随包安装 + 语音开新会话回退 / 唤醒召回调参 +
         // 命中去抖 / 唤醒到开麦的延迟 / 在线引擎念回答时的半双工闸 / 球的状态优先级改成"想 > 说 > 听" /
         // 说完一句就收窗 / 自动指令的冷却由主人自己定)
-        versionCode = 9
-        versionName = "2.6.5"
+        versionCode = 10
+        versionName = "2.6.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

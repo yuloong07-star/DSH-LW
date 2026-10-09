@@ -242,7 +242,14 @@ internal object LockReplay {
      * 桌面还接着按才是错的), **过了预算就如实说没走完**。计数与留痕由 [report] 收尾
      */
     private fun replay(context: Context, source: String): ReplayReport {
-        val steps = LockSetting.steps(context)
+        val recorded = LockSetting.steps(context)
+        val (secret, secretError) = LockSecret.load(context)
+        // 注入解锁 (2026-10-09): 开关开着而密码是能打的那种时, 序列就地收成一步 —— 于是这一段只做
+        // "亮屏, 注入密码, 回车", 录制的滑动/图案与每一步之间的停顿都不走 (判据在 [LockSteps.injected])
+        // **录下来的那一条只是没被走, 没有被删**: `recorded` 与磁盘上那份 `unlock.json` 一个字节都不动,
+        // 所以注入解不开时关掉那个开关就回到它 (主人 2026-10-09 点名的口径)
+        // **只有密码、没录过手势的机器也走这一条**: 序列这时是空的, 而 `injected` 照样给一步密码
+        val steps = LockSteps.injected(recorded, secret, LockSetting.injectUnlock(context))
         if (steps.isEmpty()) {
             return report(
                 context,
@@ -250,7 +257,6 @@ internal object LockReplay {
                 ReplayReport(false, 0, 0, "nothing has been recorded yet", true),
             )
         }
-        val (secret, secretError) = LockSecret.load(context)
         val proxy = PrivilegedChannel.ensure()
             ?: return report(
                 context,
@@ -505,6 +511,8 @@ internal object LockReplay {
             put("locked", LockSetting.locked(app))
             put("wakeScreen", LockSetting.wakeScreen(app))
             put("autoUnlock", LockSetting.autoUnlock(app))
+            // 注入解锁: 开着时重放只做"注入密码再回车", 不走录制的那条序列
+            put("injectUnlock", LockSetting.injectUnlock(app))
             put("steps", steps.size)
             put("stepList", LockSetting.describe(steps).joinToString(" | "))
             put("recordedAt", LockSetting.recordedSentence(LockSetting.recordedAt(app)))
@@ -540,6 +548,9 @@ internal object LockReplay {
         append(if (LockSetting.wakeScreen(app)) " on" else " off")
         append("; automatic unlock is ${if (LockSetting.autoUnlock(app)) "on" else "off"}")
         append(", with ${(LockTries.LIMIT - LockSetting.tries(app)).coerceAtLeast(0)} attempt(s) left")
+        if (LockSetting.injectUnlock(app)) {
+            append("; it injects the password instead of walking the recording through")
+        }
         append("; the privileged channel is ${if (connected) "up" else "not connected"}")
         lastReport?.let { append(". Last replay: $it") }
     }

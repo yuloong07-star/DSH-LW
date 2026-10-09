@@ -149,8 +149,10 @@ check(
   [true, true],
 )
 check(
-  '没录过就不许把自动解锁打开',
-  setting.includes('if (on && !recorded(context))'),
+  // 2026-10-09: 口径从"没录过就不许开"放宽成"没录过也能开, 只要注入解锁开着而密码格里有一段可注入的
+  // 密码" —— 「注入密码」那一行让这条路不必先录手势 (判据在 LockSteps.injected 与 LockSetting.typable)
+  '没录过也不许把自动解锁打开, 除非注入解锁开着而密码格里有可注入的密码',
+  setting.includes('if (on && !recorded(context) && !(injectUnlock(context) && typable(context)))'),
   true,
 )
 

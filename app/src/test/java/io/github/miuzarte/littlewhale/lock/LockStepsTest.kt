@@ -113,6 +113,31 @@ class LockStepsTest {
     }
 
     @Test
+    fun `injecting keeps the password step alone and leaves everything else alone`() {
+        val recorded = listOf(
+            LockStep.Stroke(listOf(listOf(0.1f, 0.1f), listOf(0.5f, 0.5f)), 200L),
+            LockStep.Swipe(0.5f, 0.4f, 0.5f, 0.8f, 100L),
+            LockStep.Secret,
+        )
+        val typed = LockSecretData(kind = LockSecretData.TEXT, text = "074151")
+        // 开着: 一条录好的序列收成"只注入密码"那一步, 手势一步都不走
+        assertEquals(listOf(LockStep.Secret), LockSteps.injected(recorded, typed, inject = true))
+        // 关着: 一个字都不动
+        assertEquals(recorded, LockSteps.injected(recorded, typed, inject = false))
+        // 图案没有可注入的东西
+        val pattern = LockSecretData(kind = LockSecretData.PATH, points = listOf(listOf(0.1f, 0.2f)))
+        assertEquals(recorded, LockSteps.injected(recorded, pattern, inject = true))
+        // 空密码与"还没有秘密"同样原样交回去
+        assertEquals(recorded, LockSteps.injected(recorded, LockSecretData(text = ""), inject = true))
+        assertEquals(recorded, LockSteps.injected(recorded, null, inject = true))
+        // 只有密码、没录过手势的机器照样收成一步 —— 「注入密码」那一行靠的就是这一条
+        assertEquals(listOf(LockStep.Secret), LockSteps.injected(emptyList(), typed, inject = true))
+        // 但"没密码又没录过"仍然是空的: 那句"还没有可用的解锁"归调用方说
+        assertEquals(emptyList<LockStep>(), LockSteps.injected(emptyList(), null, inject = true))
+        assertEquals(emptyList<LockStep>(), LockSteps.injected(emptyList(), typed, inject = false))
+    }
+
+    @Test
     fun `three failures in a row is where it stops`() {
         assertEquals(1, LockTries.after(0, ok = false))
         assertEquals(2, LockTries.after(1, ok = false))

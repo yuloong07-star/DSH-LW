@@ -197,6 +197,28 @@ internal object LockSteps {
         val replaced = bounded.map { if (it === stroke) LockStep.Secret else it }
         return replaced to stroke.points
     }
+
+    /**
+     * 注入解锁那一条: 把一条录好的序列收成一步 [LockStep.Secret] 的判据
+     *
+     * **收成一步就是"更快"的全部**: 重放从此只做"亮屏, 注入密码, 回车" —— 录制的滑动与图案一步都不
+     * 走, 每一步之间那 [LockReplay.STEP_SETTLE_MS] 的停顿也一并省掉, 而那条路上真正让锁屏让开的东西
+     * 本来就只有密码这一个
+     *
+     * 两个条件缺一不可 (所以它是一条纯函数, 判据在 `LockStepsTest`):
+     *
+     * - 那个开关开着
+     * - 秘密是**一段打得出来的密码** —— 图案 ([LockSecretData.PATH]) 没有可注入的东西, 空密码同理
+     *
+     * **序列是空的也收**: 只有密码、没录过手势的机器照样能开 —— 那正是「注入密码」这一行的用处。不满足
+     * 时原样交回去 (空表还是空表), 于是"图案锁"与"锁屏不认注入按键"的机器照旧走录制的动作, 而"什么都
+     * 没有"那句由调用方说
+     */
+    fun injected(steps: List<LockStep>, secret: LockSecretData?, inject: Boolean): List<LockStep> {
+        if (!inject) return steps
+        val typable = secret != null && secret.kind == LockSecretData.TEXT && secret.text.isNotEmpty()
+        return if (typable) listOf(LockStep.Secret) else steps
+    }
 }
 
 /**

@@ -100,6 +100,7 @@ import io.github.miuzarte.littlewhale.theme.ThemeStore
 import io.github.miuzarte.littlewhale.tool.LwEdgeSpeech
 import io.github.miuzarte.littlewhale.tool.LwOverlay
 import io.github.miuzarte.littlewhale.tool.LwPlugin
+import io.github.miuzarte.littlewhale.tool.LwPower
 import io.github.miuzarte.littlewhale.tool.LwSpeak
 import io.github.miuzarte.littlewhale.tool.LwTts
 import io.github.miuzarte.littlewhale.tool.LwWakeWord
@@ -118,6 +119,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -694,6 +697,7 @@ private fun LockItems() {
     val scope = rememberCoroutineScope()
     var dialog by remember { mutableStateOf(false) }
     var script by remember { mutableStateOf(false) }
+    var password by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var testing by remember { mutableStateOf(false) }
     val snapshot = remember(LockSetting.revision) {
@@ -701,13 +705,24 @@ private fun LockItems() {
         LockSummary(
             wakeScreen = LockSetting.wakeScreen(context),
             autoUnlock = LockSetting.autoUnlock(context),
+            injectUnlock = LockSetting.injectUnlock(context),
             steps = LockSetting.steps(context).size,
             recordedAt = LockSetting.recordedAt(context),
-            secret = secret?.describe ?: "nothing",
+            secretKind = secret?.kind,
+            secretLength = secret?.let { if (it.kind == LockSecretData.PATH) it.points.size else it.text.length }
+                ?: 0,
             problem = problem,
         )
     }
     val recording = LockRecord.recording
+    // 密码格现在是什么样的: 这一句同时给「录制解锁」与「注入密码」两行用, 所以只说"存了没有、多少位"
+    val secretLabel = when {
+        snapshot.secretKind == null -> stringResource(R.string.settings_lock_secret_none)
+        snapshot.secretKind == LockSecretData.PATH ->
+            stringResource(R.string.settings_lock_secret_pattern, snapshot.secretLength)
+
+        else -> stringResource(R.string.settings_lock_secret_password, snapshot.secretLength)
+    }
 
     SwitchPreference(
         title = stringResource(R.string.settings_lock_wake_screen),
@@ -722,15 +737,38 @@ private fun LockItems() {
         // 没录过就不许打开: 打开了只会"喊了没反应", 那是这一批最难查的一档
         onCheckedChange = { on -> message = LockSetting.setAutoUnlock(context, on) },
     )
+    // 注入解锁: 开着时解锁只做"注入密码再回车", 不走录制的那条序列, 所以快得多
+    SwitchPreference(
+        title = stringResource(R.string.settings_lock_inject_unlock),
+        summary = stringResource(R.string.settings_lock_inject_unlock_summary),
+        checked = snapshot.injectUnlock,
+        // 图案锁与"还没存过密码"这两档开不起来, 理由由 LockSetting 那句话给
+        onCheckedChange = { on -> message = LockSetting.setInjectUnlock(context, on) },
+    )
+    // 注入密码: 不录手势也能有一段可注入的密码 —— 落在 LockSecret 那唯一一处加密的存法里
+    ArrowPreference(
+        title = stringResource(R.string.settings_lock_inject_password),
+        summary = if (snapshot.secretKind == LockSecretData.TEXT && snapshot.secretLength > 0) {
+            stringResource(R.string.settings_lock_inject_password_set, snapshot.secretLength)
+        } else {
+            stringResource(R.string.settings_lock_inject_password_none)
+        },
+        onClick = { password = true },
+    )
     ArrowPreference(
         title = stringResource(R.string.settings_lock_record),
         summary = when {
             recording -> stringResource(R.string.settings_lock_record_running, LockRecord.collected)
             snapshot.steps > 0 -> stringResource(
-                R.string.settings_lock_record_done,
+                // 注入开着时这一行顺带说清"它一直留着, 是退路" (主人 2026-10-09 点名的口径)
+                if (snapshot.injectUnlock) {
+                    R.string.settings_lock_record_done_inject
+                } else {
+                    R.string.settings_lock_record_done
+                },
                 snapshot.steps,
                 LockSetting.recordedSentence(snapshot.recordedAt),
-                snapshot.secret,
+                secretLabel,
             )
 
             else -> stringResource(R.string.settings_lock_record_none)
@@ -749,9 +787,15 @@ private fun LockItems() {
                 testing = true
                 message = null
                 scope.launch {
-                    // 重放要几百毫秒到几秒, 而且它自己在后台线程上, 这里只等结果
+                    // **先锁上再测**: 手机正开着锁的时候, 这一趟一步都走不到, 那个"成功"是假的
+                    // (锁屏、亮屏、重放三件都不该落在主线程上, 所以整段在 IO 线程里等结果)
                     val report = withContext(Dispatchers.IO) {
-                        runCatching { LockReplay.replayNow(context, "the settings page") }.getOrNull()
+                        runCatching {
+                            LwPower.dispatch(context, buildJsonObject { put("op", "lock") })
+                            Thread.sleep(LOCK_BEFORE_TEST_MS)
+                            LockReplay.wakeScreen(context, allowConnecting = true)
+                            LockReplay.replayNow(context, "the settings page")
+                        }.getOrNull()
                     }
                     testing = false
                     message = report?.detail
@@ -801,6 +845,22 @@ private fun LockItems() {
                     }
                     message = problem
                         ?: context.getString(R.string.settings_lock_record_running, 0)
+                }
+            },
+        )
+    }
+    if (password) {
+        LockPasswordDialog(
+            onDismissRequest = { password = false },
+            onSave = { text ->
+                password = false
+                message = if (text.isEmpty()) {
+                    // 留空保存 = 清除那一格 (密文与那把 Keystore 密钥一起删)
+                    LockSetting.setPassword(context, "")
+                    context.getString(R.string.settings_lock_inject_password_cleared)
+                } else {
+                    LockSetting.setPassword(context, text)
+                        ?: context.getString(R.string.settings_lock_inject_password_saved)
                 }
             },
         )
@@ -857,11 +917,76 @@ private fun LockItems() {
 private data class LockSummary(
     val wakeScreen: Boolean,
     val autoUnlock: Boolean,
+    val injectUnlock: Boolean,
     val steps: Int,
     val recordedAt: Long,
-    val secret: String,
+    /** 密码格里放的是什么: `null` 是空的, 其余是 [LockSecretData] 的 kind */
+    val secretKind: String?,
+    /** 密码的位数, 或者图案的点数 (给"已保存 N 位"那一句用) */
+    val secretLength: Int,
     val problem: String?,
 )
+
+/**
+ * 「测试一次」按下之后, 先锁屏再等这么久才叫醒它
+ *
+ * 锁屏那一屏画出来要一点时间 (与 [LockReplay] 那条 `GUARD_READY_MS` 是同一个理由), 而这一条是给人
+ * 按的, 多等这一下换"测出来的结果是真的"
+ */
+private const val LOCK_BEFORE_TEST_MS = 400L
+
+/**
+ * 「注入密码」那一个对话框: 只写密码格, 不录任何手势 (2026-10-09)
+ *
+ * 与「录制解锁」那个对话框同一副样子 (密码样式, 点一下可以看明文), 而它只在内存里过一手 —— 存下去走
+ * [LockSetting.setPassword], 也就是 [LockSecret] 那唯一一处加密的存法。留空保存 = 清除
+ */
+@Composable
+private fun LockPasswordDialog(
+    onDismissRequest: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = stringResource(R.string.settings_lock_inject_password_dialog),
+        summary = stringResource(R.string.settings_lock_inject_password_dialog_summary),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismissRequest,
+    ) {
+        var text by rememberSaveable { mutableStateOf("") }
+        SuperTextField(
+            modifier = Modifier.padding(bottom = 16.dp),
+            value = text,
+            onValueChange = { text = it },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.NumberPassword,
+                imeAction = ImeAction.Done,
+            ),
+        )
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                text = stringResource(R.string.button_cancel),
+                onClick = {
+                    haptic.contextClick()
+                    onDismissRequest()
+                },
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                text = stringResource(R.string.settings_lock_inject_password_confirm),
+                onClick = {
+                    haptic.confirm()
+                    onSave(text)
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
+}
 
 /**
  * 「导入解锁脚本」那一个对话框 (批次 5 追加): 脚本正文 + 密码 (可留空) + 导入
