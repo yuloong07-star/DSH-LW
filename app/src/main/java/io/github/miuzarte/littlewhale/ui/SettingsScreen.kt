@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.speech.tts.Voice
+import android.widget.Toast
 import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.lazy.LazyListScope
@@ -18,9 +19,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -33,6 +37,7 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
@@ -43,6 +48,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -76,6 +83,10 @@ import io.github.miuzarte.littlewhale.overlay.BallFeel
 import io.github.miuzarte.littlewhale.overlay.BallSpot
 import io.github.miuzarte.littlewhale.overlay.BallSwitch
 import io.github.miuzarte.littlewhale.overlay.OverlayState
+import io.github.miuzarte.littlewhale.plugin.PluginAudit
+import io.github.miuzarte.littlewhale.plugin.PluginCapabilities
+import io.github.miuzarte.littlewhale.plugin.PluginManager
+import io.github.miuzarte.littlewhale.plugin.PluginStore
 import io.github.miuzarte.littlewhale.scaffolds.ArrowSlider
 import io.github.miuzarte.littlewhale.scaffolds.GroupTitle
 import io.github.miuzarte.littlewhale.scaffolds.LazyColumn
@@ -87,6 +98,7 @@ import io.github.miuzarte.littlewhale.theme.ThemeSettings
 import io.github.miuzarte.littlewhale.theme.ThemeStore
 import io.github.miuzarte.littlewhale.tool.LwEdgeSpeech
 import io.github.miuzarte.littlewhale.tool.LwOverlay
+import io.github.miuzarte.littlewhale.tool.LwPlugin
 import io.github.miuzarte.littlewhale.tool.LwSpeak
 import io.github.miuzarte.littlewhale.tool.LwTts
 import io.github.miuzarte.littlewhale.tool.LwWakeWord
@@ -537,6 +549,18 @@ fun SettingsScreen() {
                 onToggle = toggleSection,
             ) {
                 Card { QuickItems() }
+            }
+
+            // 插件那一段 (2.5.1 批次 9 的 P0 / P1): 这一段是生态的入口 —— 装 / 启用 / 停用 / 卸 /
+            // 勾能力 / 看审计都在这里, 而"能力勾了才给"这一条只有这一页能答应
+            settingsSection(
+                key = "plugin",
+                title = R.string.settings_section_plugin,
+                summary = R.string.settings_section_plugin_summary,
+                collapsed = collapsed,
+                onToggle = toggleSection,
+            ) {
+                Card { PluginItems() }
             }
 
             // 工作区与网络这两段已经从这里撤掉 (主人 2026-10-06): 工作区落在哪是 host 启动时按
@@ -1052,6 +1076,231 @@ private fun QuickItems() {
                 )
             },
         )
+    }
+}
+
+/**
+ * 「插件」那一段 (2.5.1 批次 9 的 P0 / P1)
+ *
+ * 这一页是**生态的入口**, 也是"能力勾了才给"那句话唯一能答应的地方: 装进来的包默认什么都拿不到,
+ * 敏感档默认不勾。列表与 `lw_plugin op=list` 读的是同一份 ([PluginManager.entries]), 所以"界面上
+ * 看得见而模型读不到"这种事不会发生
+ *
+ * 三条与别处不同的口径:
+ *
+ * - **装一份包不等于启用它**: 装完还要勾能力再点启用, 而启用的那一步才真去绑伴侣的 Service
+ * - **卸载要问那一句**: 它自己那份数据删不删, 两个按钮各是一个答案 (协议第 7 节)
+ * - **未签名的包只在开发者模式里进得来**: 那一个开关开着时, 上面常驻一句红字提示
+ */
+@Composable
+private fun PluginItems() {
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    var revision by remember { mutableIntStateOf(0) }
+    var developer by remember { mutableStateOf(LwPlugin.developerMode(context)) }
+    var acting by remember { mutableStateOf<String?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    val entries = remember(revision) { PluginManager.entries(context) }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            message = installPickedPackage(context, uri)
+            revision += 1
+        }
+    }
+
+    if (entries.isEmpty()) {
+        PlaceholderItems(stringResource(R.string.settings_plugin_empty, PluginStore.root(context).absolutePath))
+    } else {
+        entries.forEach { entry ->
+            ArrowPreference(
+                title = listOf(entry.name, entry.version).filter { it.isNotBlank() }.joinToString(" "),
+                summary = pluginSummary(context, entry),
+                onClick = {
+                    haptic.contextClick()
+                    acting = entry.id
+                },
+            )
+        }
+    }
+
+    ArrowPreference(
+        title = stringResource(R.string.settings_plugin_install),
+        summary = stringResource(R.string.settings_plugin_install_summary),
+        onClick = {
+            haptic.contextClick()
+            // 不写死 mime: `.lwp` 就是一个 zip, 而各家文件管理给的 type 并不统一
+            picker.launch(arrayOf("*/*"))
+        },
+    )
+    SwitchPreference(
+        title = stringResource(R.string.settings_plugin_developer),
+        summary = stringResource(R.string.settings_plugin_developer_summary),
+        checked = developer,
+        onCheckedChange = { on ->
+            developer = on
+            LwPlugin.setDeveloperMode(context, on)
+            revision += 1
+        },
+    )
+    PlaceholderItems(message ?: stringResource(R.string.settings_plugin_note))
+
+    acting?.let { id ->
+        PluginDialog(
+            id = id,
+            revision = revision,
+            onDismiss = { acting = null },
+            onChanged = { said ->
+                message = said
+                revision += 1
+            },
+        )
+    }
+}
+
+/** 一行的读数: 现在什么状态 · 谁发的 · 授权几条 */
+private fun pluginSummary(context: Context, entry: PluginManager.Entry): String {
+    val state = when {
+        entry.problem != null -> context.getString(R.string.settings_plugin_state_broken)
+        entry.enabled && entry.hostProblem == null -> context.getString(R.string.settings_plugin_state_enabled)
+        entry.enabled -> context.getString(R.string.settings_plugin_state_unlinked, entry.hostProblem.orEmpty())
+        else -> context.getString(R.string.settings_plugin_state_stopped)
+    }
+    val trust = when (entry.trust) {
+        PluginManager.Trust.OFFICIAL -> context.getString(R.string.settings_plugin_trust_official)
+        PluginManager.Trust.SIGNED -> context.getString(R.string.settings_plugin_trust_signed)
+        PluginManager.Trust.NEW_PUBLISHER -> context.getString(R.string.settings_plugin_trust_new)
+        PluginManager.Trust.UNSIGNED -> context.getString(R.string.settings_plugin_trust_unsigned)
+    }
+    val publisher = entry.manifest?.publisherName?.takeIf { it.isNotBlank() } ?: trust
+    val declared = entry.manifest?.declared?.size ?: 0
+    return context.getString(R.string.settings_plugin_summary_line, state, publisher, entry.granted.size, declared)
+}
+
+/** 从系统选择器拿到的那一份: 先拷进 cache (SAF 给的是一个 uri, 而安装器要的是文件), 再走同一条装 */
+private fun installPickedPackage(context: Context, uri: android.net.Uri): String {
+    val picked = java.io.File(context.cacheDir, "picked-plugin-${System.currentTimeMillis()}")
+    return try {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            picked.outputStream().use { output -> input.copyTo(output) }
+        } ?: return "读不到你选的那一份"
+        LwPlugin.install(context, picked)
+    } catch (error: Throwable) {
+        "装不上: ${error.message ?: error.javaClass.simpleName}"
+    } finally {
+        picked.delete()
+    }
+}
+
+/**
+ * 一条插件的详情: 能力逐条开关 + 启用停用 + 打开它的界面 + 卸载 (问那一句) + 最近的审计
+ *
+ * `revision` 传进来是为了"勾一条能力, 这一页上的读数立刻跟着变" —— 每一次改动都由外面把 revision
+ * 加一, 于是这里读到的永远是最新那一份
+ */
+@Composable
+private fun PluginDialog(
+    id: String,
+    revision: Int,
+    onDismiss: () -> Unit,
+    onChanged: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    val entry = remember(revision) { PluginManager.entries(context).firstOrNull { it.id == id } }
+    val audit = remember(revision) { PluginAudit.tail(context, id, 5) }
+
+    if (entry == null) {
+        onDismiss()
+        return
+    }
+
+    OverlayDialog(
+        show = true,
+        title = entry.name,
+        summary = entry.manifest?.let { "${it.id} · ${it.version}" } ?: entry.id,
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismiss,
+    ) {
+        // **正文要自己能滚, 而且得封一个上限** (2026-10-08 在设备上量到的那条毛病): 这一份内容会
+        // 长过一屏 —— 22 条能力全勾上就是 22 行开关, 底下还压着审计与五个按钮 —— 而 Miuix 的
+        // `OverlayDialog` 自己不滚、也没有 maxHeight 那个口子 (参数只有 maxWidth)。不封顶时它按
+        // 内容量高度, 超出去的那一截被窗裁掉: 这台 1080x2400 的模拟器上「卸载 (连数据一起删)」与
+        // 「卸载 (留下数据)」两个按钮就在屏幕外面, **点都点不到**, 而"卸载要问那一句"是这一段的
+        // 验收判据。上限取屏高的六成, 剩下的留给标题、那一行摘要与对话框自己的上下边距
+        val screenHeight = LocalConfiguration.current.screenHeightDp
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = (screenHeight * 0.6f).dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            if (entry.problem != null) {
+                PlaceholderItems("${entry.problem}")
+            }
+            entry.manifest?.let { manifest ->
+                manifest.declared.forEach { declared ->
+                    val wired = PluginCapabilities.isWired(declared)
+                    val dangerous = PluginCapabilities.isDangerous(declared)
+                    SwitchPreference(
+                        title = (if (dangerous) "★ " else "") + declared,
+                        summary = buildString {
+                            append(PluginCapabilities.summaryOf(declared))
+                            if (!wired) append(" · ").append(context.getString(R.string.settings_plugin_not_wired))
+                        },
+                        checked = declared in entry.granted,
+                        onCheckedChange = { on ->
+                            onChanged(PluginManager.grant(context, id, declared, on))
+                        },
+                    )
+                }
+            }
+
+            TextButton(
+                text = stringResource(
+                    if (entry.enabled) R.string.settings_plugin_disable else R.string.settings_plugin_enable,
+                ),
+                onClick = {
+                    haptic.confirm()
+                    onChanged(
+                        if (entry.enabled) {
+                            PluginManager.disable(context, id)
+                        } else {
+                            PluginManager.enable(context, id)
+                        },
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+            TextButton(
+                text = stringResource(R.string.settings_plugin_open),
+                onClick = { haptic.confirm(); onChanged(PluginManager.open(context, id)) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            PlaceholderItems(
+                stringResource(R.string.settings_plugin_audit) + "\n" +
+                    audit.joinToString("\n").ifBlank { stringResource(R.string.settings_plugin_audit_empty) },
+            )
+            TextButton(
+                text = stringResource(R.string.settings_plugin_uninstall),
+                onClick = { haptic.confirm(); onChanged(PluginManager.uninstall(context, id, keepData = false)) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TextButton(
+                text = stringResource(R.string.settings_plugin_uninstall_keep),
+                onClick = { haptic.confirm(); onChanged(PluginManager.uninstall(context, id, keepData = true)) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TextButton(
+                text = stringResource(R.string.button_cancel),
+                onClick = {
+                    haptic.contextClick()
+                    onDismiss()
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }
 
@@ -2393,8 +2642,22 @@ private fun SpeakItems() {
             }
             speaking = true
             scope.launch {
-                withContext(Dispatchers.IO) { runCatching { LwSpeak.preview(context) } }
+                val answer = withContext(Dispatchers.IO) { runCatching { LwSpeak.preview(context) } }
                 speaking = false
+                // 没念出来必须当场说一句: 在线那两条的失败只写在回执的 detail 里 (服务端会因为它不认的
+                // 那个音色当场关掉这条 WebSocket), 原来这里把回执整个丢掉 —— 于是现象是"点了试听没声音,
+                // 屏幕上什么也没有, 那行字 60 秒后才变回试听" (2026-10-09 真机上报的那一次)
+                val problem = answer.fold(
+                    onSuccess = { LwSpeak.spokenProblem(it) },
+                    onFailure = { it.message ?: it.toString() },
+                )
+                if (problem != null) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.settings_speak_preview_failed, problem),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
             }
         },
     )

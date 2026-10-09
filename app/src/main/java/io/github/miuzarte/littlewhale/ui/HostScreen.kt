@@ -828,13 +828,18 @@ private fun HostWebView(url: String, modifier: Modifier = Modifier) {
     LaunchedEffect(ballRequest?.seq, page) {
         val request = ballRequest ?: return@LaunchedEffect
         val view = page ?: return@LaunchedEffect
+        // 空 = [BallReturn.NEW_SESSION]: 这一跳不是"切到某一场", 而是"回到新会话界面" —— 会话界面自己
+        // 没有"新建一场"的公开入口, 所以做法是把"看的是哪一场"那一笔擦掉再重载, dsh 那侧会自己开一场
+        // 新的 (与冷启动时键还空着那一条是同一条路, 见 `ui-workspace` 的 `restoreSelection`)
+        val fresh = request.session.isEmpty()
+        val label = if (fresh) "a new conversation" else request.session
         // 页面还没落在 http 上时 localStorage 还不可用 (about:blank 那一档): 等它的 onPageFinished
         if (view.url?.startsWith("http") != true) {
-            noteReturn("holding the return to ${request.session} until the GUI is up")
+            noteReturn("holding the return to $label until the GUI is up")
             if (!awaitFinish(finishes)) {
                 // 等不到就把这一次请求收干净再说一句: 留在半路上 ("状态里还挂着请求"而界面上没人会
                 // 再动它) 比明说一次没成更糟
-                noteReturn("return to ${request.session}: failed: the GUI never came up")
+                noteReturn("return to $label: failed: the GUI never came up")
                 BallReturn.done(request.seq)
                 return@LaunchedEffect
             }
@@ -842,7 +847,7 @@ private fun HostWebView(url: String, modifier: Modifier = Modifier) {
         var outcome = "failed: the page never answered"
         for (attempt in 1..RETURN_TRIES) {
             val before = finishes
-            val answer = ask(view, RETURN_TO_BALL_JS(request.session))?.trim()?.removeSurrounding("\"")
+            val answer = ask(view, returnJs(request))?.trim()?.removeSurrounding("\"")
             if (answer == "already") {
                 outcome = "already on it"
                 break
@@ -857,6 +862,12 @@ private fun HostWebView(url: String, modifier: Modifier = Modifier) {
                 outcome = "failed: the page did not come back"
                 continue
             }
+            // **新会话那一档没有 id 可对**: 做完 (clear + reload) 就算成 —— 读回那个键只会读到
+            // dsh 自己新建那一场的新 id, 拿它跟要的那个空值比永远不等
+            if (fresh) {
+                outcome = "verified on try $attempt (a new conversation)"
+                break
+            }
             val now = ask(view, CURRENT_SESSION_JS)?.trim()?.removeSurrounding("\"")
             if (now == request.session) {
                 outcome = "verified on try $attempt"
@@ -864,7 +875,7 @@ private fun HostWebView(url: String, modifier: Modifier = Modifier) {
             }
             outcome = "failed: the GUI came back on ${now?.takeIf { it.isNotEmpty() } ?: "nothing"}"
         }
-        noteReturn("return to ${request.session}: $outcome")
+        noteReturn("return to $label: $outcome")
         BallReturn.done(request.seq)
     }
 }
@@ -896,6 +907,30 @@ private fun RETURN_TO_BALL_JS(session: String): String =
         "var cur=null;try{cur=JSON.parse(localStorage.getItem(k)||'null')}catch(e){cur=null}" +
         "if(cur&&cur.sessionId===want.sessionId){return 'already'}" +
         "localStorage.setItem(k,JSON.stringify(want));location.reload();return 'reload'}catch(e){return 'failed:'+e}})()"
+
+/**
+ * 这一跳该跑哪一段 JS: 空会话 = **去新会话界面**
+ *
+ * 是新是旧只看有没有 id, 判据与 [BallReturn.NEW_SESSION] 是同一个: 带 id 就切到那一场, 不带就擦掉
+ * "看的是哪一场"那一笔再重载。分成两个函数而不是一个带 `if` 的, 是为了让"新会话"那一段 JS 短到
+ * 一眼能读完 (它只做一件事: 删键 + 重载)
+ */
+private fun returnJs(request: BallReturn.Request): String =
+    if (request.session.isEmpty()) BALL_NEW_SESSION_JS else RETURN_TO_BALL_JS(request.session)
+
+/**
+ * 那一段 JS: **回到新会话界面**
+ *
+ * 会话界面的"新建一场"没有公开入口, 而它启动那一步会把 `dsh.sessions.current` 当"上次看的那一场"
+ * ([`ui-workspace`] 的 `restoreSelection`) —— 那个键指向的会话还在、而且是个空会话时它会**复用**它,
+ * 所以"最坏"也只是复用一场已经空着的会话 —— 那与新建一场对主人是同一件事 (一块干净的新对话), 而
+ * dsh 那侧**没有把会话列表写进 localStorage** (那份清单走 rpc), 页面里判不出"现在这本账是不是空
+ * 的"。所以这里只有一条动作: 删键 + 重载。验证那一半在 [HostScreen] 里也是"做完就算成" —— 新建
+ * 之后的 id 是本机生成的, 拿它跟要的那个空值比永远不等
+ */
+private const val BALL_NEW_SESSION_JS =
+    "(function(){try{localStorage.removeItem('dsh.sessions.current');location.reload();" +
+        "return 'reload'}catch(e){return 'failed:'+e}})()"
 
 /**
  * 读回"现在这个键里写着哪一场": 切换那一步的判据 (空串 = 读不出来)

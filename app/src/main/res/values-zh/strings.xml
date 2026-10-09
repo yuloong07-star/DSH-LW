@@ -1,6 +1,8 @@
 <resources>
     <string name="app_name">DSH-LW</string>
     <string name="a11y_description">允许 DSH 读取屏幕上文本及其精确位置以减少端侧 OCR 调用</string>
+    <string name="permission_plugin_label">连接 DSH-LW 插件</string>
+    <string name="permission_plugin_description">允许一个伴侣应用作为 DSH-LW 插件: 应用会绑定它的服务, 并把你在插件页勾过的那几条能力交给它</string>
 
     <string name="button_cancel">取消</string>
     <string name="button_confirm">确定</string>
@@ -201,7 +203,7 @@
     <string name="settings_ball_on">浮标一直在</string>
     <string name="settings_ball_on_summary">开着时屏幕上留一颗小球: 点一下说话, 长按出菜单, 拖到边上收进去; 它要「显示在其他应用上层」那条权限, 缺了会把缺哪一条说出来</string>
     <string name="settings_ball_feel">手势灵敏度</string>
-    <string name="settings_ball_feel_summary">长按要按多久、抖多少算拖动、三击要戳多快; 现在: %1$s</string>
+    <string name="settings_ball_feel_summary">长按要按多久、抖多少算拖动、三击要戳多快、两下要多近才算双击、两次点击之间要隔多久; 现在: %1$s</string>
     <string name="settings_ball_feel_standard">标准</string>
     <string name="settings_ball_feel_guard">防误触</string>
     <string name="settings_ball_state_up">球在屏幕上, 停在%1$s</string>
@@ -227,6 +229,7 @@
     <string name="ball_state_listening">正在听</string>
     <string name="ball_state_thinking">正在想</string>
     <string name="ball_state_speaking">正在说</string>
+    <string name="ball_state_failed">失败</string>
     <string name="ball_menu_title">浮标 · %1$s</string>
     <string name="ball_menu_return">返回应用</string>
     <string name="ball_menu_release_camera">释放视频模式</string>
@@ -302,6 +305,7 @@
     <string name="settings_speak_preview">试听</string>
     <string name="settings_speak_previewing">正在说...</string>
     <string name="settings_speak_preview_summary">用上面选的音色与语速说一句, 好让耳朵来定</string>
+    <string name="settings_speak_preview_failed">没念出来: %1$s</string>
     <string name="settings_speak_sample">回答会以这个样子说出来。</string>
 
     <string name="settings_section_lock">锁屏</string>
@@ -411,6 +415,32 @@
     <string name="settings_quick_deleted">已经删掉「%1$s」</string>
     <string name="settings_quick_delete_failed">「%1$s」没删掉: 文件不在或者删不动</string>
     <string name="settings_quick_note">点一条 = 投进会话; 队列文件与语音那条链是同一个, 所以"没有会话就新建、20 分钟内接同一场"照旧</string>
+
+    <string name="settings_section_plugin">插件</string>
+    <string name="settings_section_plugin_summary">装上别人写的包, 给这台手机加能力</string>
+    <string name="settings_plugin_empty">一个插件都没有装。插件落在 %1$s —— 点下面的「装入插件包」收一份进来</string>
+    <string name="settings_plugin_install">装入插件包</string>
+    <string name="settings_plugin_install_summary">.lwp 文件, 或者一份解开的目录 (里面有 plugin.json); 装完还要勾能力才启得来</string>
+    <string name="settings_plugin_developer">开发者模式</string>
+    <string name="settings_plugin_developer_summary">允许装入没有发布者签名的本地包。装一个插件就是信任它, 平时不要开</string>
+    <string name="settings_plugin_note">装一个插件就是信任它: 它拿到的能力就是你在这一页勾给它的那些; 启用那一步会去绑伴侣应用的服务</string>
+    <string name="settings_plugin_state_broken">读不出来</string>
+    <string name="settings_plugin_state_enabled">在岗</string>
+    <string name="settings_plugin_state_stopped">停着</string>
+    <string name="settings_plugin_state_unlinked">启用着但宿主没接上: %1$s</string>
+    <string name="settings_plugin_trust_official">官方</string>
+    <string name="settings_plugin_trust_signed">已签名</string>
+    <string name="settings_plugin_trust_new">新发布者</string>
+    <string name="settings_plugin_trust_unsigned">未签名</string>
+    <string name="settings_plugin_summary_line">%1$s · %2$s · 授权 %3$d/%4$d 条能力</string>
+    <string name="settings_plugin_not_wired">这一版还没接通</string>
+    <string name="settings_plugin_enable">启用</string>
+    <string name="settings_plugin_disable">停用</string>
+    <string name="settings_plugin_open">打开它自带的界面</string>
+    <string name="settings_plugin_audit">最近的能力调用</string>
+    <string name="settings_plugin_audit_empty">它还没有调用过任何能力</string>
+    <string name="settings_plugin_uninstall">卸载并删掉它的数据</string>
+    <string name="settings_plugin_uninstall_keep">卸载但留着它的数据</string>
 
     <string name="screen_window_hide">隐藏虚拟屏小窗</string>
     <string name="screen_window_show">显示虚拟屏小窗</string>

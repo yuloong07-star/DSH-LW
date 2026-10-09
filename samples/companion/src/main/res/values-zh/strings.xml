@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">你好伴侣</string>
+    <string name="hello_body">这一页是伴侣自带的。LW 只给它一个入口, 界面怎么画是它自己的事</string>
+</resources>

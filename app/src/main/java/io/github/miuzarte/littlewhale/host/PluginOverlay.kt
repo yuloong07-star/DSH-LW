@@ -97,6 +97,21 @@ object PluginOverlay {
 
     private val VOICE_PROVIDER_CONFIG = listOf("defaultProvider: lw-native", "language: auto")
 
+    /**
+     * 官方 bundle 自带那个本地 provider 的行 id, 以及那一行的包名
+     *
+     * **它在安卓上起不来**: 那个 provider 靠 `sherpa-onnx-node` 的原生 addon, 而 npm 上没有
+     * android-arm64 那一份 —— 现象是插件页上多一张红卡 (`Local speech is unavailable for
+     * android-arm64`), 按「重试准备」也永远不会好, 而本机那份转写是 `littlewhale-channel` 注册的
+     * `lw-native`。所以官方 bundle 开着时把这一行**按 id 关掉**: 客户端与 api 那两行照旧, 只是不再
+     * 留一个注定失败的 provider (2026-10-09 真机上踩的: 主人打开官方 bundle 之后, 界面上并排两张
+     * 卡, 一张已就绪、一张永远失败)
+     */
+    private const val VOICE_LOCAL_ROW = "speech-to-text-sensevoice"
+
+    /** 上面那一行的包名: patch 的 `name` 校验用它, 认错了就只警告不关 (宁可不关, 也别关错一条) */
+    private const val VOICE_LOCAL_NAME = "@deepseek-ai/dsh-experimental-speech-to-text-sensevoice"
+
     private const val DIRECTORY = "lw"
     private const val FILE = "tool-plugin.yml"
 
@@ -148,6 +163,11 @@ object PluginOverlay {
                     appendLine("  name: '$VOICE_PROVIDER_NAME'")
                     appendLine("  config:")
                     VOICE_PROVIDER_CONFIG.forEach { appendLine("    $it") }
+                    // 再把 bundle 自带那一行关掉: 它在本机起不来, 而它的失败会一直挂在界面那一页上
+                    // 当成"这张卡是不是坏了"的一处误导 (见 [VOICE_LOCAL_ROW])
+                    appendLine("- id: $VOICE_LOCAL_ROW")
+                    appendLine("  name: '$VOICE_LOCAL_NAME'")
+                    appendLine("  disabled: true")
                 }
                 appendLine("- insert:")
                 present.forEach { (row, path) ->

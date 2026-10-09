@@ -19,6 +19,7 @@ import io.github.miuzarte.littlewhale.channel.LwModes
 import io.github.miuzarte.littlewhale.channel.PrivilegedBridge
 import io.github.miuzarte.littlewhale.channel.PrivilegedChannel
 import io.github.miuzarte.littlewhale.channel.VirtualScreen
+import io.github.miuzarte.littlewhale.plugin.PluginManager
 
 /**
  * Keeps the host process alive while the app is not in front
@@ -51,6 +52,9 @@ class DshHostService : Service() {
         // 自动指令: 六个监测器按"有没有启用的规则"起落, 而这一句只是把引擎挂上 (一条规则都没有时
         // 它什么都不注册, 只留一拍 60 秒的心跳)
         AutomationEngine.ensure(this)
+        // LW 插件: 启用着的伴侣重新接上 (协议第 7 节的"状态恢复")。绑 Service 是异步的, 所以它
+        // 在自己的线程上走, 与特权通道那一句同一个理由 —— 谁在等它, 谁就要多等几秒
+        restorePlugins()
         VirtualScreen.initialize(this)
         PrivilegedBridge.start()
         DshHost.start(this)
@@ -81,6 +85,23 @@ class DshHostService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         DshHost.start(this)
         return START_STICKY
+    }
+
+    /**
+     * 启用着的插件重新接上 (协议第 7 节的"状态恢复")
+     *
+     * 绑一个伴侣的 Service 是异步的, 而整个恢复过程要做完"绑上 → 对照 describe → attach → enable"
+     * 四步, 所以它只能在自己的线程上走: 放在 `onCreate` 里同步做, 主线程要等它几秒
+     */
+    private fun restorePlugins() {
+        val alone = applicationContext
+        Thread({
+            try {
+                PluginManager.restore(alone)
+            } catch (error: Throwable) {
+                Log.w(TAG, "restoring the enabled plugins failed", error)
+            }
+        }, "lw-plugin-restore").apply { isDaemon = true }.start()
     }
 
     override fun onDestroy() {

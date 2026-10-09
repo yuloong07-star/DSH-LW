@@ -44,14 +44,40 @@ class BallReturnTest {
     }
 
     @Test
-    fun `空会话不进请求`() {
+    fun `null 不进请求`() {
         BallReturn.ask("session-c")
         val before = BallReturn.request
+        // `null` 是"这个 intent 没带那个键" (比如从桌面图标冷启动那一档), 界面照旧只是被提到前面
         BallReturn.ask(null)
-        BallReturn.ask("")
-        BallReturn.ask("   ")
-        assertEquals("空白不该盖掉已经在办的那一次", before, BallReturn.request)
+        assertEquals("没带那个键不该盖掉已经在办的那一次", before, BallReturn.request)
         BallReturn.done(before?.seq ?: 0L)
+        assertNull(BallReturn.request)
+    }
+
+    /**
+     * **空会话是一个真的请求: "去新会话界面"** (2026-10-09 主人: "这里没有 (还没发过话) 就进入新会话
+     * 界面")
+     *
+     * 原来它被当成"没点名"直接丢掉 (`ask` 的第一句是 `if (wanted.isEmpty()) return`), 于是"两笔账都
+     * 空着"那一档在界面上什么都不发生 —— 而主人要的是新会话。现在记号就是空串 ([BallReturn.NEW_SESSION]),
+     * 两种"没有"因此分得开: `null` 是"没带那个键", 空串是"带的是新会话这个意图"
+     */
+    @Test
+    fun `空会话进请求就是去新会话界面`() {
+        assertEquals("", BallReturn.NEW_SESSION)
+        BallReturn.ask("session-d")
+        val before = BallReturn.request
+        BallReturn.ask(BallReturn.NEW_SESSION)
+        val asked = BallReturn.request
+        assertEquals("这一场的记号是空", "", asked?.session)
+        assertTrue(
+            "空会话也是一次新请求, 界面那一步要被叫到",
+            (asked?.seq ?: 0L) > (before?.seq ?: 0L),
+        )
+        // 空白也按同一个意思收 (从 intent 里读出来那一档的长度是 0~n 个空格)
+        BallReturn.ask("   ")
+        assertEquals("", BallReturn.request?.session)
+        BallReturn.done(BallReturn.request?.seq ?: 0L)
         assertNull(BallReturn.request)
     }
 }

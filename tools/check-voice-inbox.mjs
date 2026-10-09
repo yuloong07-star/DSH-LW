@@ -33,7 +33,7 @@ const api = new Function(
   'readFile', 'mkdir', 'stat', 'writeFile', 'join', 'dirname',
   `${body}\nreturn { voiceInboxPath, voiceReadNew, voiceCursorStore, voiceInboxState,` +
     ' voiceCurrentSession, voiceSessionBump, voiceSessionReset, voiceTargetSession,' +
-    ' voiceTargetId, voiceAfterFailure, withTimeout, VOICE_DELIVER_TRIES }',
+    ' voiceTargetId, voiceAfterFailure, withTimeout, VOICE_DELIVER_TRIES, pickInterruptTarget }',
 )(readFile, mkdir, stat, writeFile, join, dirname)
 
 const home = mkdtempSync(join(tmpdir(), 'lw-inbox-'))
@@ -270,6 +270,37 @@ check('试满就跳过', api.voiceAfterFailure(api.VOICE_DELIVER_TRIES), { retry
 const hung = api.withTimeout(new Promise(() => {}), 20)
 check('永不落定的那一步会被超时打断', await hung.then(() => 'resolved', () => 'timed out'), 'timed out')
 check('答上了就原样透过去', await api.withTimeout(Promise.resolve('ok'), 200), 'ok')
+
+// 15. 双击打断打哪一场 (2026-10-08): 与球上那三个字同源 —— "哪几场在跑"里最近开始的那一场。
+// 这是"双击暂停不跟随停止"那条毛病的根: 原来只打 `voiceCurrentSession` 记的浮标那一场, 于是任务跑在
+// 别的会话里时双击等于什么都没停, 而字却落了
+const runningOne = [{ sessionId: 's1', running: true, origin: 'user' }]
+check('没有在跑的轮就没有目标', api.pickInterruptTarget(runningOne, []), null)
+check('只有一场在跑: 就是它', api.pickInterruptTarget(runningOne, [{ id: 's1', startedAt: 5 }]), 's1')
+check(
+  '两场在跑: 取最近开始的那一场',
+  api.pickInterruptTarget(
+    [{ sessionId: 's1', running: true, origin: 'user' }, { sessionId: 's2', running: true, origin: 'user' }],
+    [{ id: 's1', startedAt: 5 }, { id: 's2', startedAt: 9 }],
+  ),
+  's2',
+)
+check(
+  '账上有而会话列表说没在跑: 跳过它 (不去 resolve 一场冷会话)',
+  api.pickInterruptTarget(
+    [{ sessionId: 's2', running: false, origin: 'user' }],
+    [{ id: 's2', startedAt: 9 }],
+  ),
+  null,
+)
+check(
+  '子代理的轮不算"正在想"',
+  api.pickInterruptTarget(
+    [{ sessionId: 's3', running: true, origin: 'subagent' }],
+    [{ id: 's3', startedAt: 9 }],
+  ),
+  null,
+)
 
 rmSync(home, { recursive: true, force: true })
 console.log(failures === 0 ? `\n投递队列的 ${checks} 条判据全过` : `\n${failures} / ${checks} 条判据不过`)

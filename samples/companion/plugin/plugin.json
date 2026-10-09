@@ -1,0 +1,39 @@
+{
+  "protocol": "lw-plugin/1",
+  "id": "io.github.miuzarte.littlewhale.sample.companion",
+  "name": "你好伴侣",
+  "version": "1.0.0",
+  "minLw": "2.5.0",
+  "api": "1",
+  "kind": "companion",
+  "toolPrefix": "hello",
+  "entry": {
+    "package": "io.github.miuzarte.littlewhale.sample.companion",
+    "service": "io.github.miuzarte.littlewhale.sample.companion.CompanionPluginService"
+  },
+  "capabilities": {
+    "requested": ["device.read", "notify.post"],
+    "dangerous": ["session.post"]
+  },
+  "tools": [
+    {
+      "name": "hello_ping",
+      "summary": "让伴侣说一句它现在挂在哪、拿到几条授权",
+      "params": {
+        "text": { "type": "string", "required": false, "description": "要它复述的那句话" }
+      }
+    },
+    {
+      "name": "hello_battery",
+      "summary": "借 LW 的 device.read 念一遍电量",
+      "params": {}
+    },
+    {
+      "name": "hello_ask",
+      "summary": "把一句话投进 LW 的会话 (要 session.post 这一条敏感能力)",
+      "params": {
+        "question": { "type": "string", "required": true, "description": "要投进会话的那句话" }
+      }
+    }
+  ]
+}

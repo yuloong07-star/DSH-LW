@@ -418,6 +418,25 @@ internal class BoxView(context: Context, private val listener: Listener) : Frame
     }
 
     /**
+     * 挂上窗口之后**再要一次**焦点与键盘 (2026-10-09 主人报的"输入框唤出有延迟")
+     *
+     * 光靠 [focusInput] 那一句 `requestFocus` 是不够的: 窗口刚 `addView` 那一刻还没有输入连接, 而
+     * `showSoftInput` 要等焦点真的落到这个 view 上、并且它已经接上窗口的输入通道才生效 —— 那一拍
+     * 落在下一次 `performTraversals` 之后, 观感就是"框已经出来了, 键盘迟一拍才冒出来"
+     *
+     * 所以这一条做两件事, 都排在遍历之后: 再 `requestFocus` 一次 (拿到窗口焦点那一下的补票), 以及
+     * 显式 `showSoftInput` 兜底 —— 有些输入法不认 `requestFocus` 顺手带起来的那一次, 而这一下是
+     * 直接对 IME 说话。**它是空的**: 窗还没接上时那次 `post` 会在挂上之后再跑, 于是这里不需要等
+     */
+    fun claimInputAfterLayout() {
+        post {
+            input.requestFocus()
+            val keyboard = context.getSystemService(InputMethodManager::class.java)
+            runCatching { keyboard?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT) }
+        }
+    }
+
+    /**
      * 把键盘与焦点收掉, **但窗留着**
      *
      * 开语音那一下要用它 (2026-10-06 主人: "有回复窗时也可以点击小球进行语音输入"): 框与语音是

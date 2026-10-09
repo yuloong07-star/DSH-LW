@@ -6,6 +6,9 @@
 // Kotlin 2.4.x, so this matters.
 plugins {
     alias(libs.plugins.android.application) apply false
+    // 插件接口那一份是 library 模块 (`:lwplugin-api`), 它出的是 AAR, 对外那个
+    // `lwplugin-api-1.jar` 就是里面的 classes.jar (见 docs/LW-软件插件协议.md 第 9 节)
+    alias(libs.plugins.android.library) apply false
     alias(libs.plugins.kotlin.compose) apply false
     alias(libs.plugins.kotlin.serialization) apply false
 }

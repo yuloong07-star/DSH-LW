@@ -165,7 +165,10 @@ internal object WakeWordDownload {
                     if (actual != item.sha256) {
                         throw IllegalStateException("sha256 是 $actual, 不是钉住的 ${item.sha256}")
                     }
-                    partial.delete()
+                    // 删的必须是**目标**那一条, 不是刚下好的 .part —— 2026-10-09 真机上踩过:
+                    // 这里原来写的是 partial.delete(), 源文件先没了, renameTo 于是必然回 false,
+                    // 两个镜像都下完、sha256 也对上, 界面却每次都说"下好了却放不到"
+                    target.delete()
                     if (!partial.renameTo(target)) {
                         throw IllegalStateException("下好了却放不到 ${target.absolutePath}")
                     }

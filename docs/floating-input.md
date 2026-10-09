@@ -144,9 +144,23 @@ B 不换地基：还是这个窗、这个服务，只是**加载带参数的地�
 ### 回应用那一跳（2026-10-06 主人点名）
 
 **入口 2026-10-07 挪到了回复框上双击**（主人："双击回复框相当于回应用，ball 菜单的「回应用」选项可以
-删掉"）：框里最新那条回复是哪一场发来的（`OverlayState.replySession`），双击就回到哪一场；还没记下
-是哪一场时落回浮标那一场（与原来菜单那一行同一个行为）。手势挂在**回复那一块**上，输入框那一半的
-双击仍是"选中一个词"。**菜单里那行「返回应用」是同一个动作的第二扇门**（2026-10-07 主人要的）。
+删掉"）：双击就回到**往这块框输入投给了哪一场**（`OverlayState.viewSession` → 优先 `inputSession`）；
+从没从框里发过话时退回"最新那条回复是哪一场发来的"（`replySession`）；两边都没有就**进新会话界面**
+（2026-10-09 主人："这里没有（还没发过话）就进入新会话界面"）。手势挂在**回复那一块**上，输入框那一半
+的双击仍是"选中一个词"。**菜单里那行「返回应用」是同一个动作的第二扇门**（2026-10-07 主人要的）。
+
+**"对应会话"= 我发出去的那一场，不是"最后推回复进来的那一场"**（2026-10-09 主人："当前是回到最近在
+ball 输入会话的那一场。改为谁发送了输入框，就回到那一场"）：一块框可以先后跟好几场说话 —— 第一次
+按浮标那本 20 分钟的账投给 `dsh-ball` 那一场，之后再打开别的会话、它的一轮结束也会把回复推进这块框，
+于是 `replySession` 变成了那一场。原来双击就按它走，主人要回去的是**自己那次输入投出去**的那一场。
+两笔账因此拆开：`inputSession` 由 `OverlayService.ask` 在写收件箱那一刻记下实际用的 `to`，
+`replySession` 只留"框里显示的是谁的话"（`replyTarget()` 仍按 `inputSession` 优先取投递目标，所以点球
+说的那一句也回到同一场）。优先级是纯函数 `BoxTarget.choose`，判据在 `BallTest`。
+
+**两笔账都空着 = 新会话界面，不再读浮标那本账**（2026-10-09 主人）：原来最后一档是"落回浮标账本"
+（`VoiceInbox.currentSession` → `voice/session.json`），那是"浮标上一轮说话的地方"；而"我还没从这块框
+发过话"要的是**一场新的会话**，不是浮标上一轮的落点。三个入口（双击回复框 / 菜单「返回应用」/ 点通知）
+都按同一条走。
 
 **两条入口都顺手把框收起来**（2026-10-07 追加）：主人报的是"在 dsh 应用里双击回复框没有任何反馈" ——
 界面本来就在那一场时，切会话那一步什么都不用做（JS 回 `already`），屏幕上于是没有一点动静。收掉这块
@@ -159,14 +173,14 @@ B 不换地基：还是这个窗、这个服务，只是**加载带参数的地�
 
 | 那一半 | 实现 |
 |---|---|
-| 哪一场 | 双击回复框时用它记着的那一场（`OverlayState.replySession`，没有就退回宿主写的账本：`VoiceInbox.currentSession` → `voice/session.json` 里那个 `id`） |
+| 哪一场 | 双击回复框时用 `OverlayState.viewSession`：优先"我发出去的那一场"（`inputSession`），没有就退回"最新那条回复是谁推来的"（`replySession`），再没有 = **新会话界面**（`BallReturn.NEW_SESSION`，空串那个记号） |
 | 交给谁 | **两条路一起走**（2026-10-07 补上第二条）：`OverlayService.openApp` 把请求直接写进同进程的 `BallReturn`（界面活着时立刻生效），同时 `startActivity` 带 `open-session` 把任务提到前台（intent 那一条由 `MainActivity.onCreate` / `onNewIntent` 收）—— 不把成败押在 `onNewIntent` 上 |
 | 请求长什么样 | `BallReturn.Request(session, seq)`：**seq 自增**，所以同一个会话连点两次也一定是一次新请求（Compose 的状态在值没变时不重组，那是"第二下静默什么都不发生"的根） |
-| 怎么切过去 | `HostScreen` 的 `LaunchedEffect(请求.seq)`：页面没落在 http 上就等 `onPageFinished`，然后跑一句 JS 改 `localStorage['dsh.sessions.current']` 再 `location.reload()`；**重载完读回那个键验证**，不对就重试一次，两次都不成才把请求放掉 |
+| 怎么切过去 | `HostScreen` 的 `LaunchedEffect(请求.seq)`：页面没落在 http 上就等 `onPageFinished`，然后跑一句 JS —— 带 id 就改 `localStorage['dsh.sessions.current']` 再 `location.reload()`，**重载完读回那个键验证**；空 id（新会话）就只删那个键再重载（`BALL_NEW_SESSION_JS`），dsh 自己会开一场新的（那一档没有 id 可对，做完就算成）。一次不成再试一次，两次都不成才把请求放掉 |
 | 怎么看见 | 手势、请求、JS 的 `already` / `reload` / `failed`、验证结果都进 `OverlayState.lastHint` 与 logcat（`adb logcat -s LwOverlay DshWebView`），`lw_overlay op=state` 的 `said` 读它；**设置页那一层收到请求先把返回栈 pop 回主页**；常驻通知那条 content intent 也带上这一场（点通知 = 完整的回应用，而且它是用户手势，不受后台启动限制） |
 
-代价与边界：**要重载一次页面**（那个键只在启动那一步读），GUI 里没发出去的草稿会没；读不出那一场（还没
-说过话 / 文件坏了）就只把界面放到前面，不猜一个 id
+代价与边界：**要重载一次页面**（那个键只在启动那一步读），GUI 里没发出去的草稿会没；两笔会话账都空着
+时不再猜一个 id，走的是"删键 + 重载、让 dsh 自己开一场新的"那一条
 
 ### 时长：一处来源，两笔账
 
@@ -180,9 +194,9 @@ B 不换地基：还是这个窗、这个服务，只是**加载带参数的地�
 | `BallMinutes.PEEK_IDLE_MS` | 5 s | 最后一次活动之后多久收边（主人："4s 改为 5s，其它不变"） |
 | `BallMinutes.EDGE_SNAP_MS` | 200 ms | 收边 / 滑回来那条动画 |
 | `BallMinutes.IME_SETTLE_MS` | 400 ms | 收起输入条之后等一拍再摆球 |
-| `BallMinutes.TAP_GUARD_MS` | 350 ms | 两次点球之间的防连击窗口（其余状态那一档） |
-| `BallMinutes.DOUBLE_TAP_MS` | 300 ms | "正在想"里算双击的窗口（那一档双击 = 打断，主人点名的 0.3 s） |
-| `BallMinutes.LISTEN_GUARD_MS` | 1 s | "正在听"那一档的防连击窗口（主人点名的 1 s） |
+| `BallMinutes.TAP_GUARD_MS` / `BALL_TAP_GUARD_MS` | 350 ms / 450 ms | 两次点球之间的防连击窗口（标准档 / 防误触档，2026-10-09 防误触档放宽） |
+| `BallMinutes.DOUBLE_TAP_MS` / `BALL_DOUBLE_TAP_MS` | 300 ms / 220 ms | "正在想"里算双击的窗口（那一档双击 = 打断；标准档是主人点名的 0.3 s，防误触档收窄） |
+| `BallMinutes.LISTEN_GUARD_MS` / `BALL_LISTEN_GUARD_MS` | 1 s / 1.5 s | "正在听"那一档的防连击窗口（标准档是主人点名的 1 s，防误触档放宽） |
 | `BallMinutes.BOX_IDLE_MS` | 20 s | 输入通道那块框没人碰多久就自己收（收掉之后球那一笔账从零起算） |
 | `WakeWordService.VOICE_IDLE_MS` | 10 s | 一句话的闲置自动关闭（在识别链那一侧；**视频模式那一档不受它管** —— 那个模式要的是留着） |
 
@@ -208,7 +222,7 @@ B 不换地基：还是这个窗、这个服务，只是**加载带参数的地�
 | 发送走同一条链 | `ask(text)` 写 `VoiceInbox`（`source: keyboard`），与球上说话**同一个入口** —— 宿主那侧是同一条投递；**host 没起来时说一句"先排着"**（`ball_ask_no_host`），因为"排上了"与"送出去了"对主人是两回事 |
 | 发出去了立刻关 | 服务那一侧 `boxListener.onSend`：`ask` 成功就 `closeChannel()`（不再等一个延时）；**写不进去就把框留着**，那一句还要在里面改 |
 | 回复也传此通道 | 宿主 `turn/end` → `overlay op=reply`（带 `session`，那一场发来的）→ `deliverReply`：**框没开着就先张出来**（`openChannel(focus = false)`，不抢焦点、不弹键盘）再画进 `BoxView.appendReply()`；回复区上限 `BallBox.REPLY_LINES = 5`（**2026-10-06 主人追加两行：3 → 5**），到顶之后里面自己滚，滚动会给 20 s 那一笔账续期 |
-| **回复框在屏上时输入投给谁**（2026-10-06 那条例外） | 框里最新那条回复是哪一场发来的，它就记在 `OverlayState.replySession`；框在屏上而且里面真有回复时，键盘（`ask`）与点球/唤醒词开的语音（`WakeWordService.openForOneSentence` 取一次 `OverlayState.replyTarget()`）都在队列行上带 `to: session-…`，宿主那侧把它**排在时间那笔账前面**。目标会话已经不在、或者不是根会话时，按"没点名"处理，落回原来那条 20 分钟规则 |
+| **回复框在屏上时输入投给谁**（2026-10-06 那条例外） | 框在屏上而且里面真有回复时，键盘（`ask`）与点球/唤醒词开的语音（`WakeWordService.openForOneSentence` 取一次 `OverlayState.replyTarget()`）都在队列行上带 `to: session-…`，宿主那侧把它**排在时间那笔账前面**。**目标优先取"这块框上一次投过的那一场"（`inputSession`，2026-10-09 加），没有才退回"最新那条回复是谁推来的"（`replySession`）**；`ask` 记下实际用的 `to` 当下一跳的根据。目标会话已经不在、或者不是根会话时，按"没点名"处理，落回原来那条 20 分钟规则 |
 | 框在屏上时点球一下直接开口 | 平常那一档是"先召出、再点一下才说话"（`BallMinutes.summonIsFresh`），框在屏上且有回复时那一下**当场开语音**（纯函数 `BallTouch.opensVoiceNow`，判据在 `BallTest`）；开的不是"常驻"，只是一句话的窗口 |
 | 开语音时框留着 | `OverlayService.speakNow()` → `parkChannel()`：窗留着（回复内容与"这一场是谁"都在它身上），只把输入框的焦点与键盘收掉，并给 20 s 那一笔账续期 |
 | 提示（不是回答） | 宿主 `overlay op=note` → `deliverNote` → `BoxView.appendNote()`（同一块只读区，前面一个 `⚠`）：目前唯一一条来源是**投不出去的那句话**，见下一节 |
@@ -223,11 +237,17 @@ B 不换地基：还是这个窗、这个服务，只是**加载带参数的地�
 自己那份无背景的标记，注释里写明是由 dsh 的 `favicon.svg` 生成的自适应图标前景；在球上是染白的
 同一份形状，不是另一张近似图）。图标与状态词互斥：有状态就说三个字，闲着才画它。
 
-| 状态词 | 什么时候 | 描边 |
+| 状态词 | 什么时候 | 描边与字色 |
 |---|---|---|
 | 正在听 | 识别链在跑（`VoiceState.capturing`；它盖住"命中/点球买来的那一句"与"视频模式常驻"两档） | 青绿 |
-| 正在想 | 宿主推来的 `phase=thinking`（`turn/start` → `turn/end`），且 host 在跑。**这一档双击球 = 打断**（见「手势与菜单」） | 琥珀 |
+| 正在想 | 宿主推来的 `phase=thinking`（`turn/start` → `turn/end`），且 host 在跑。**这一档双击球 = 打断**（见「手势与菜单」） | **按会话固定的那一色**（`BallPhaseFile` 的五色轮转：琥珀 / 珊瑚 / 天蓝 / 粉紫 / 黄绿） |
 | 正在念 | `VoiceState.speaking`（TTS 在念） | 淡紫 |
+
+**描边与那几个字用同一个色**（2026-10-09 主人："正在想的字体颜色换成对应的颜色"）：原来只有描边跟着
+会话换、字恒白，两个会话同时在想时要凑近看那一圈才分得出是哪一场。现在 `BallView.show(next, animate,
+ring)` 把那一个色同时喂给 `circle.setStroke` 与 `label.setTextColor`（`ring` 为 null 时退回这一档的
+自带色，空闲时那两个字不可见），而**"字没换、颜色换了"那一下也要真的重画** —— 会话轮换时 `next` 还是
+`BallWord.THINKING`，光比"字变没变"会把这次换色吃掉（`lastColor` 就是那第二个判据）。
 
 优先级 **念 > 想 > 听**：念的时候半双工那道闸把麦克风整个关掉了，所以"正在念"比"正在听"更贴近
 事实。"正在想"是**宿主推来的**（`host-plugin` 的 `startBallPhase`）：一轮在跑这件事只有宿主知道，

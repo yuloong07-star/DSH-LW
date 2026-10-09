@@ -16,6 +16,22 @@ object HostSettings {
     /** Key of the switch that serves the GUI to the local network */
     private const val LAN_ACCESS = "lan-access"
 
+    /** LW 插件的开发者模式 (批次 9): 开着才收未签名的本地包 */
+    private const val DEVELOPER_PLUGINS = "plugin-developer"
+
+    /**
+     * 未签名的插件包让不让进来
+     *
+     * 默认关: 装一个插件就是信任它, 而未签名的包连"这是谁发的"都答不上来。开着的时候界面上
+     * 常驻一句红字, 它只该在本地开发时开
+     */
+    fun developerPlugins(context: Context): Boolean =
+        preferences(context).getBoolean(DEVELOPER_PLUGINS, false)
+
+    fun setDeveloperPlugins(context: Context, enabled: Boolean) {
+        preferences(context).edit().putBoolean(DEVELOPER_PLUGINS, enabled).apply()
+    }
+
     /**
      * Whether the host binds every interface so another device can open the GUI
      * @param context context whose preferences are read.

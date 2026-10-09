@@ -7,6 +7,11 @@ local.properties
 .DS_Store
 /build
 /app/build
+# 新增的两个 Gradle 模块 (插件接口 :lwplugin-api 与样例伴侣 :sample-companion) 的构建产物:
+# 上面那两条是按路径锚定的, 盖不到它们 —— 样例那一份 build 里还躺着一个 6 MB 的 APK, 进了历史
+# 就没法干净地拿掉 (2026-10-09 收 2.6.0 时发现的)
+/lwplugin-api/build
+/samples/companion/build
 /captures
 .externalNativeBuild
 .cxx

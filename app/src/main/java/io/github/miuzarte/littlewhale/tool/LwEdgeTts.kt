@@ -6,6 +6,7 @@ import java.io.ByteArrayOutputStream
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -90,47 +91,13 @@ internal object LwEdgeTts {
         val audio = ByteArrayOutputStream()
         val finished = CountDownLatch(1)
         val failure = AtomicReference<Throwable?>(null)
-        val listener = object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                // 两条消息的顺序就是协议: 先说输出格式, 再说文本与音色
-                webSocket.send(LwEdgeSpeech.configMessage(System.currentTimeMillis()))
-                webSocket.send(
-                    LwEdgeSpeech.ssmlMessage(
-                        requestId,
-                        System.currentTimeMillis(),
-                        LwEdgeSpeech.ssml(text, voice, speed),
-                    ),
-                )
-            }
-
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                val chunk = LwEdgeSpeech.audioChunk(bytes.toByteArray()) ?: return
-                synchronized(audio) { audio.write(chunk) }
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                when {
-                    text.contains("Path:turn.end") -> {
-                        webSocket.close(1000, null)
-                        finished.countDown()
-                    }
-                    // 服务端的拒绝常常是一条 Path:error 的文本帧, 把它原样带出去比"连上了没声音"强
-                    text.contains("Path:error") -> {
-                        failure.set(IllegalStateException(text.take(MAX_ERROR_CHARS)))
-                        finished.countDown()
-                    }
-                }
-            }
-
-            override fun onFailure(webSocket: WebSocket, problem: Throwable, response: Response?) {
-                failure.compareAndSet(null, problem)
-                finished.countDown()
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                finished.countDown()
-            }
-        }
+        val listener = EdgeListener(
+            requestId = requestId,
+            ssml = LwEdgeSpeech.ssml(text, voice, speed),
+            audio = audio,
+            failure = failure,
+            finished = finished,
+        )
         val webSocket = client.newWebSocket(request, listener)
         socket = webSocket
         try {
@@ -160,7 +127,6 @@ internal object LwEdgeTts {
 
     private const val TAG = "LwEdgeTts"
     private const val SCRIBBLE = 12
-    private const val MAX_ERROR_CHARS = 300
     private const val TIMEOUT_MS = 60_000L
 
     /** 与 [LwEdgeSpeech.CHROMIUM_VERSION] 同一档的浏览器标识 */
@@ -175,4 +141,81 @@ internal object LwEdgeTts {
     /** 这一次念有没有被叫停 */
     @Volatile
     private var stopped = false
+}
+
+/** 服务端拒绝的原文最多带出去多少 (它有时候很长, 整段塞进回执没有意义) */
+private const val MAX_ERROR_CHARS = 300
+
+/**
+ * 一次连接的那几条回调: 收音频、认"念完了"、以及**对端主动关闭**
+ *
+ * 单独一类就是为了能测 (见 LwEdgeTtsTest): 这条链上最容易漏的恰恰是"服务端自己把关了"那一条, 而它
+ * 只走 `onClosing` —— OkHttp 只在**我们自己发起关闭**时才回调 `onClosed`。漏掉它就等于漏掉一条"有
+ * 结论"的路, 调用方只能等满那个 60 秒预算, 界面上什么也没有 (2026-10-09 真机上"点试听没声音"的根)
+ *
+ * [finished] 是"这一次有结论了"的闩: 音频收齐、报错、被关, 三条路都得收它
+ */
+internal class EdgeListener(
+    private val requestId: String,
+    private val ssml: String,
+    private val audio: ByteArrayOutputStream,
+    private val failure: AtomicReference<Throwable?>,
+    private val finished: CountDownLatch,
+) : WebSocketListener() {
+
+    /** 这一段念完了没有: 服务端拒一个音色时是"turn.start 之后直接关", 而我们自己念完也会主动关 */
+    private val ended = AtomicBoolean(false)
+
+    override fun onOpen(webSocket: WebSocket, response: Response) {
+        // 两条消息的顺序就是协议: 先说输出格式, 再说文本与音色
+        webSocket.send(LwEdgeSpeech.configMessage(System.currentTimeMillis()))
+        webSocket.send(LwEdgeSpeech.ssmlMessage(requestId, System.currentTimeMillis(), ssml))
+    }
+
+    override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+        val chunk = LwEdgeSpeech.audioChunk(bytes.toByteArray()) ?: return
+        synchronized(audio) { audio.write(chunk) }
+    }
+
+    override fun onMessage(webSocket: WebSocket, text: String) {
+        when {
+            text.contains("Path:turn.end") -> {
+                ended.set(true)
+                webSocket.close(1000, null)
+                finished.countDown()
+            }
+            // 服务端的拒绝常常是一条 Path:error 的文本帧, 把它原样带出去比"连上了没声音"强
+            text.contains("Path:error") -> {
+                failure.set(IllegalStateException(text.take(MAX_ERROR_CHARS)))
+                finished.countDown()
+            }
+        }
+    }
+
+    override fun onFailure(webSocket: WebSocket, problem: Throwable, response: Response?) {
+        failure.compareAndSet(null, problem)
+        finished.countDown()
+    }
+
+    /**
+     * 对端主动关闭: **这里必须立刻收闩**, 不能等 `onClosed`
+     *
+     * 对端关过来时只有这一条 (见 RealWebSocket 的 sendOnClosed), 所以它原来没人接 —— 服务端一句话
+     * 拒绝之后, 这条链要干等满 60 秒才报"没念完", 界面上看起来就是"点了试听什么都没有"
+     */
+    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+        closed(code, reason)
+        finished.countDown()
+    }
+
+    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+        closed(code, reason)
+        finished.countDown()
+    }
+
+    /** 关闭算不算失败由 [LwEdgeSpeech.closingFailure] 定: 没念完才算, 理由原样带出去 */
+    private fun closed(code: Int, reason: String) {
+        LwEdgeSpeech.closingFailure(code, reason, ended.get())
+            ?.let { failure.compareAndSet(null, IllegalStateException(it)) }
+    }
 }

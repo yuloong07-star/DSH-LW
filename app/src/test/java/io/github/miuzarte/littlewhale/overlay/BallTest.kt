@@ -21,16 +21,21 @@ class BallTest {
     private val ball = 144 // 48 dp @ 3x, vivo 那块屏的密度
     private val screen = 1260
 
-    /* ── 状态词: 在念 > 在想 > 在听 ─────────────────────────────────────────── */
+    /* ── 状态词: 在念 > 在听 > 失败 > 在想 (2026-10-08 主人定的那两档) ─────────── */
 
     @Test
     fun `什么都没在跑时球上画的是那个标`() {
-        assertNull(BallStatus.wordFor(speaking = false, thinking = false, listening = false))
+        assertNull(
+            BallStatus.wordFor(speaking = false, thinking = false, listening = false, failed = false),
+        )
     }
 
     @Test
     fun `常驻语音在跑时说的是正在听`() {
-        assertEquals(BallWord.LISTENING, BallStatus.wordFor(speaking = false, thinking = false, listening = true))
+        assertEquals(
+            BallWord.LISTENING,
+            BallStatus.wordFor(speaking = false, thinking = false, listening = true, failed = false),
+        )
     }
 
     /**
@@ -39,7 +44,10 @@ class BallTest {
      */
     @Test
     fun `宿主说一轮在跑时说的是正在想`() {
-        assertEquals(BallWord.THINKING, BallStatus.wordFor(speaking = false, thinking = true, listening = false))
+        assertEquals(
+            BallWord.THINKING,
+            BallStatus.wordFor(speaking = false, thinking = true, listening = false, failed = false),
+        )
     }
 
     /**
@@ -48,17 +56,115 @@ class BallTest {
      */
     @Test
     fun `念回答的时候正在念盖过正在听`() {
-        assertEquals(BallWord.SPEAKING, BallStatus.wordFor(speaking = true, thinking = false, listening = true))
+        assertEquals(
+            BallWord.SPEAKING,
+            BallStatus.wordFor(speaking = true, thinking = false, listening = true, failed = false),
+        )
     }
 
     @Test
     fun `念回答的时候正在念也盖过正在想`() {
-        assertEquals(BallWord.SPEAKING, BallStatus.wordFor(speaking = true, thinking = true, listening = true))
+        assertEquals(
+            BallWord.SPEAKING,
+            BallStatus.wordFor(speaking = true, thinking = true, listening = true, failed = false),
+        )
+    }
+
+    /**
+     * **"正在听"盖过"正在想"** (2026-10-08 主人: "点击一次进入语音输入, 但是状态也要变为正在听")
+     *
+     * 正在想时点一下球就是开语音输入 (那一下等过双击窗口才开, 见 [BallMinutes.THINKING_TAP_MS]), 而
+     * 开起来之后球上必须写着「正在听」—— 原来"在想"排前面, 于是麦克风开着而球还写着"正在想", 人只会
+     * 以为点没生效。那一轮还在跑这件事没丢: 语音窗口收掉之后球上立刻回到「正在想」
+     */
+    @Test
+    fun `正在听盖过正在想`() {
+        assertEquals(
+            BallWord.LISTENING,
+            BallStatus.wordFor(speaking = false, thinking = true, listening = true, failed = false),
+        )
+    }
+
+    /* ── 「失败」那一档: 压过"在想", 让位给语音那两档 (2026-10-08) ─────────────── */
+
+    /**
+     * **失败压过"在想"**: 上一轮没成这件事比"还有一轮在跑"更该让人看见 —— 而那个字要一直挂着,
+     * 直到主人点一下球 (`OverlayState.failedAckAt`)
+     */
+    @Test
+    fun `失败盖过正在想`() {
+        assertEquals(
+            BallWord.FAILED,
+            BallStatus.wordFor(speaking = false, thinking = true, listening = false, failed = true),
+        )
     }
 
     @Test
-    fun `正在想盖过正在听`() {
-        assertEquals(BallWord.THINKING, BallStatus.wordFor(speaking = false, thinking = true, listening = true))
+    fun `只有失败那一件事时说的是失败`() {
+        assertEquals(
+            BallWord.FAILED,
+            BallStatus.wordFor(speaking = false, thinking = false, listening = false, failed = true),
+        )
+    }
+
+    /**
+     * **让位给"正在听"**: 麦克风开着是此刻正在发生的事, 而失败说的是"刚刚" —— 那两个字段同时为真
+     * 是常态 (唤醒词开麦时失败还挂着)。让位**不等于认过**: 那两个字落下之后失败照样回来
+     */
+    @Test
+    fun `正在听盖过失败`() {
+        assertEquals(
+            BallWord.LISTENING,
+            BallStatus.wordFor(speaking = false, thinking = false, listening = true, failed = true),
+        )
+    }
+
+    @Test
+    fun `正在念也盖过失败`() {
+        assertEquals(
+            BallWord.SPEAKING,
+            BallStatus.wordFor(speaking = true, thinking = false, listening = false, failed = true),
+        )
+    }
+
+    /**
+     * 哪几种结束原因算失败: `error` / `max-tokens` / `blocked` 三种 (主人 2026-10-08 选的那一档)
+     *
+     * 另外几种都要落空: `completed` 是正常结束, `aborted` 是主人自己按的停, 而 `interrupted` /
+     * `forked` 根本不是实时事件 (它们是事后补进日志的收尾) —— 这条链永远收不到它们
+     */
+    @Test
+    fun `只有那三种结束原因算失败`() {
+        assertTrue(BallFailure.counts("error"))
+        assertTrue(BallFailure.counts("max-tokens"))
+        assertTrue(BallFailure.counts("blocked"))
+        assertTrue(!BallFailure.counts("completed"))
+        assertTrue(!BallFailure.counts("aborted"))
+        assertTrue(!BallFailure.counts("interrupted"))
+        assertTrue(!BallFailure.counts("forked"))
+        // 空与读不懂一律不算: 旧宿主 (没有 last) 与坏文件都走这一支
+        assertTrue(!BallFailure.counts(null))
+        assertTrue(!BallFailure.counts(""))
+    }
+
+    /**
+     * "认过没有"那一笔账: 主人点一下球就把文件里那个 `at` 记进水位线 —— 于是**同一条不再亮**,
+     * 而下一条 (时间更晚的) 照样亮
+     *
+     * 判据只用文件里的时间戳, 与本机时钟无关: 拿本机时间当水位线的话, 两侧时钟只要差一点, 下一条
+     * 真的失败就会被当成"早就认过了"吞掉
+     */
+    @Test
+    fun `认过的那一条不再点亮`() {
+        // 还没认过: 亮
+        assertTrue(BallFailure.shows("error", at = 2_000L, ackAt = 0L))
+        // 点过一下球了: 同一条不再亮
+        assertTrue(!BallFailure.shows("error", at = 2_000L, ackAt = 2_000L))
+        // 又来了一条 (时间更晚的): 照旧亮
+        assertTrue(BallFailure.shows("error", at = 2_001L, ackAt = 2_000L))
+        // 不算失败的原因, 认没认过都不亮
+        assertTrue(!BallFailure.shows("completed", at = 2_001L, ackAt = 0L))
+        assertTrue(!BallFailure.shows(null, at = 2_001L, ackAt = 0L))
     }
 
     /* ── 吸附: 取剩余距离最近的那条边 ───────────────────────────────────────── */
@@ -224,7 +330,54 @@ class BallTest {
 
     @Test
     fun `正听着的时候点一下是收回来`() {
-        assertEquals(BallAct.HUSH, BallTouch.act(BallPhase.VOICE, speaking = false, channelOpen = false))
+        assertEquals(
+            BallAct.HUSH,
+            BallTouch.act(BallPhase.VOICE, speaking = false, channelOpen = false, listening = true),
+        )
+    }
+
+    /**
+     * **「正在想」那一档点一下是开语音** (2026-10-08 主人: "正在想时可以点, 点击一次进入语音输入")
+     *
+     * 判据用的是 `listening` 而不是 `phase`: 正在想的时候 `phase` 也是 `VOICE` (那个档位管的是"不收
+     * 边"), 于是从前它掉进 `HUSH` 那一条 —— 而 `HUSH` 的实现是[切换], 结果一样是开麦, 只是理由写成
+     * 了"收回来"。现在两条路各说各的: 在听 → 收, 在想 → 开
+     */
+    @Test
+    fun `正在想的时候点一下是开语音`() {
+        assertEquals(
+            BallAct.LISTEN,
+            BallTouch.act(BallPhase.VOICE, speaking = false, channelOpen = false, listening = false),
+        )
+        assertEquals(
+            BallAct.HUSH,
+            BallTouch.act(BallPhase.VOICE, speaking = false, channelOpen = false, listening = true),
+        )
+    }
+
+    /**
+     * 「正在想」那一下开语音要**慢过双击窗口** (主人 2026-10-08: "进入语音输入要比第二次点击慢一点")
+     *
+     * 那一档上同时挂着"点一下开语音"与"点两下打断", 两者只能靠时间分开: 第二下必须在
+     * [BallMinutes.DOUBLE_TAP_MS] 之内到, 所以开语音要排在它后面 —— 而且也要晚过防连击窗口,
+     * 否则那一小档的补点会变成"又开一次"
+     *
+     * **2026-10-09**: 两个窗口都随 [BallFeel] 变了 (防误触档把防连击窗口放宽到 500 ms), 于是判据
+     * 从"常量 450 ms 够不够"换成"按这一档算出来的数够不够" —— 两个档都要量
+     */
+    @Test
+    fun `在想时开语音的等待比双击窗口长`() {
+        assertEquals(450L, BallMinutes.THINKING_TAP_MS)
+        for (feel in BallFeel.entries) {
+            val wait = feel.thinkingTapMs()
+            assertTrue("$feel: 要晚过双击窗口", wait > feel.doubleTapMs)
+            assertTrue("$feel: 也要晚过防连击窗口", wait > feel.tapGuardMs)
+        }
+        // 标准档那三个数还是主人点名的 300 / 350 / 1000
+        assertEquals(300L, BallFeel.STANDARD.doubleTapMs)
+        assertEquals(350L, BallFeel.STANDARD.tapGuardMs)
+        assertEquals(1_000L, BallFeel.STANDARD.listenGuardMs)
+        assertEquals(430L, BallFeel.STANDARD.thinkingTapMs())
     }
 
     /**
@@ -251,7 +404,10 @@ class BallTest {
     fun `通道开着时点球也认那几段`() {
         assertEquals(BallAct.SUMMON, BallTouch.act(BallPhase.RESTED, speaking = false, channelOpen = true))
         assertEquals(BallAct.LISTEN, BallTouch.act(BallPhase.SUMMONED, speaking = false, channelOpen = true))
-        assertEquals(BallAct.HUSH, BallTouch.act(BallPhase.VOICE, speaking = false, channelOpen = true))
+        assertEquals(
+            BallAct.HUSH,
+            BallTouch.act(BallPhase.VOICE, speaking = false, channelOpen = true, listening = true),
+        )
         assertEquals(BallAct.STOP, BallTouch.act(BallPhase.VOICE, speaking = true, channelOpen = true))
     }
 
@@ -488,21 +644,31 @@ class BallTest {
     /* ── 手势: 双击打断、三击开键盘、两档防连击 (2026-10-06 / 10-07 主人点名的几个数) ── */
 
     /**
-     * "正在想"里 300 ms 之内两下 = 双击打断 (主人点名的 0.3 s)
+     * "正在想"里两下贴着 = 双击打断 (主人点名的 0.3 s, 防误触档收窄到 0.25 s)
      *
-     * 差一点点 (301 ms) 的那一下**不算双击**, 而它会落到防连击那一档 (350 ms 之内) 变成"什么都不做"
-     * —— 这是故意的: 那种情形下既不该打断, 也不该把"收/开语音窗口"那一下做掉, 于是行为是确定的
+     * 差一点点 (301 ms) 的那一下**不算双击**, 而它会落到防连击那一档变成"什么都不做" —— 这是故意
+     * 的: 那种情形下既不该打断, 也不该把"收/开语音窗口"那一下做掉, 于是行为是确定的
+     *
+     * **标准档这条一个字没改** (2026-10-09): 主人要的是"只收紧防误触档", 所以下面这组断言显式带上
+     * [BallFeel.STANDARD]
      */
     @Test
     fun `正在想里的双击窗口是 0_3 秒`() {
         assertEquals(300L, BallMinutes.DOUBLE_TAP_MS)
         val t = 1_000_000L
-        assertEquals(BallTap.SINGLE, BallTaps.kind(BallWord.THINKING, t, 0L))
-        assertEquals(BallTap.DOUBLE, BallTaps.kind(BallWord.THINKING, t + 150, t, 1))
-        assertEquals(BallTap.DOUBLE, BallTaps.kind(BallWord.THINKING, t + BallMinutes.DOUBLE_TAP_MS, t, 1))
-        assertEquals(BallTap.TOO_SOON, BallTaps.kind(BallWord.THINKING, t + BallMinutes.DOUBLE_TAP_MS + 1, t))
-        assertEquals(BallTap.SINGLE, BallTaps.kind(BallWord.THINKING, t + 400, t))
-        assertEquals(BallTap.SINGLE, BallTaps.kind(BallWord.THINKING, t + 5_000, t))
+        val feel = BallFeel.STANDARD
+        assertEquals(BallTap.SINGLE, BallTaps.kind(BallWord.THINKING, t, 0L, feel = feel))
+        assertEquals(BallTap.DOUBLE, BallTaps.kind(BallWord.THINKING, t + 150, t, 1, feel = feel))
+        assertEquals(
+            BallTap.DOUBLE,
+            BallTaps.kind(BallWord.THINKING, t + BallMinutes.DOUBLE_TAP_MS, t, 1, feel = feel),
+        )
+        assertEquals(
+            BallTap.TOO_SOON,
+            BallTaps.kind(BallWord.THINKING, t + BallMinutes.DOUBLE_TAP_MS + 1, t, feel = feel),
+        )
+        assertEquals(BallTap.SINGLE, BallTaps.kind(BallWord.THINKING, t + 400, t, feel = feel))
+        assertEquals(BallTap.SINGLE, BallTaps.kind(BallWord.THINKING, t + 5_000, t, feel = feel))
     }
 
     /**
@@ -536,8 +702,16 @@ class BallTest {
         assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 450, t + 300, 2, chainFrom = t))
         // 整串 451 ms: 停在双击那一档, 不打开输入框
         assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 451, t + 300, 2, chainFrom = t))
-        // 三下慢慢戳 (每一下都贴着上一记, 但整串 900 ms): 一样停在双击
-        assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 900, t + 600, 2, chainFrom = t))
+        // 三下慢慢戳 (每一下都在双击窗口之外、防连击窗口之内: 320 ms 一戳): **太近的那些不计数**,
+        // 于是最后一戳只是普通一击 —— 既不打开输入框, 也不落到双击 (那条链早断了)
+        assertEquals(BallTap.TOO_SOON, BallTaps.kind(null, t + 320, t, 1, chainFrom = t))
+        assertEquals(BallTap.TOO_SOON, BallTaps.kind(null, t + 640, t + 320, 2, chainFrom = t))
+        // 每一下都贴着上一记 (150 / 150), 一整串 300 ms —— 这是正常速度的三击
+        assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 150, t, 1, chainFrom = t))
+        assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 300, t + 150, 2, chainFrom = t))
+        // 每一下贴着上一记 (150 / 150), 但整串 450 ms **正好压在上沿**: 摸到窗口边也算
+        assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 300, t + 150, 1, chainFrom = t))
+        assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 450, t + 300, 2, chainFrom = t))
         // 不知道头一下什么时候 (chainFrom = 0): 按老口径放行 (只看相邻两下)
         assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 300, t + 150, 2, chainFrom = 0L))
     }
@@ -590,30 +764,100 @@ class BallTest {
         val t = 1_000_000L
         assertEquals(BallTap.DOUBLE, BallTaps.kind(BallWord.LISTENING, t + 150, t, 1))
         assertEquals(BallTap.DOUBLE, BallTaps.kind(BallWord.SPEAKING, t + 150, t, 1))
+        // 「失败」那一档也没有双击动作: 打断要打的是"正在跑的那一轮", 而那一轮已经结束了
+        assertEquals(BallTap.DOUBLE, BallTaps.kind(BallWord.FAILED, t + 150, t, 1))
         assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 150, t, 1))
     }
 
     /**
-     * "正在听"那一档的防连击窗口是主人点名的 1 s, 其余状态还是 350 ms
+     * "正在听"那一档的防连击窗口是主人点名的 1 s, 其余状态还是 350 ms (**标准档那两个数**)
      *
      * 那一档的点击是"把语音输入收回来", 而开语音那一下也是点球 —— 手抖出第二下就会"刚开就关"
      */
     @Test
     fun `正在听那一档的防连击窗口是 1 秒`() {
         assertEquals(1_000L, BallMinutes.LISTEN_GUARD_MS)
-        assertEquals(BallMinutes.LISTEN_GUARD_MS, BallTaps.guard(BallWord.LISTENING))
-        assertEquals(BallMinutes.TAP_GUARD_MS, BallTaps.guard(BallWord.THINKING))
-        assertEquals(BallMinutes.TAP_GUARD_MS, BallTaps.guard(null))
+        val feel = BallFeel.STANDARD
+        assertEquals(BallMinutes.LISTEN_GUARD_MS, BallTaps.guard(BallWord.LISTENING, feel))
+        assertEquals(BallMinutes.TAP_GUARD_MS, BallTaps.guard(BallWord.THINKING, feel))
+        // 「失败」用缺省那一档: 点它是"开语音", 不像"正在听"那样点一下就把麦克风收回去
+        assertEquals(BallMinutes.TAP_GUARD_MS, BallTaps.guard(BallWord.FAILED, feel))
+        assertEquals(BallMinutes.TAP_GUARD_MS, BallTaps.guard(null, feel))
         val t = 1_000_000L
-        assertEquals(BallTap.TOO_SOON, BallTaps.kind(BallWord.LISTENING, t + 999, t))
-        assertEquals(BallTap.SINGLE, BallTaps.kind(BallWord.LISTENING, t + BallMinutes.LISTEN_GUARD_MS, t))
+        assertEquals(BallTap.TOO_SOON, BallTaps.kind(BallWord.LISTENING, t + 999, t, feel = feel))
+        assertEquals(
+            BallTap.SINGLE,
+            BallTaps.kind(BallWord.LISTENING, t + BallMinutes.LISTEN_GUARD_MS, t, feel = feel),
+        )
         // 连击窗口之外、防连击窗口之内的那一下既不计数也不动作 —— 三击那条链在这里断掉 (下面那一下
         // 是新的一次单击)
-        assertEquals(BallTap.TOO_SOON, BallTaps.kind(null, t + 320, t, 1))
-        assertEquals(BallTap.SINGLE, BallTaps.kind(null, t + 400, t, 1))
+        assertEquals(BallTap.TOO_SOON, BallTaps.kind(null, t + 320, t, 1, feel = feel))
+        assertEquals(BallTap.SINGLE, BallTaps.kind(null, t + 400, t, 1, feel = feel))
+    }
+
+    /**
+     * **防误触档把开语音与开键盘输入那两条入口都收紧** (2026-10-09 主人: "ball 的键盘输入和语音输入
+     * 经常会误触" + "只收紧防误触档")
+     *
+     * 三个数各管一件事, 而它们都只往"更难触发"那一头走: 双击窗口收窄 (打断是唯一"点错就真的停一场"
+     * 的动作), 两个"太近不算"的窗口放宽 (手抖出来的第二下被算成同一击)。**标准档一个字不改** —— 那
+     * 半边的判据在上面两条测试里
+     */
+    @Test
+    fun `防误触档比标准档更严`() {
+        assertEquals(220L, BallFeel.GUARD.doubleTapMs)
+        assertEquals(450L, BallFeel.GUARD.tapGuardMs)
+        assertEquals(1_500L, BallFeel.GUARD.listenGuardMs)
+        assertTrue("双击窗口要更窄", BallFeel.GUARD.doubleTapMs < BallFeel.STANDARD.doubleTapMs)
+        assertTrue("点球防连击要更宽", BallFeel.GUARD.tapGuardMs > BallFeel.STANDARD.tapGuardMs)
+        assertTrue("正在听那一档也要更宽", BallFeel.GUARD.listenGuardMs > BallFeel.STANDARD.listenGuardMs)
+
+        // 实际判据也照这一档走: 标准档 400 ms 算新的一下, 防误触档还压在"太近不算"里
+        val t = 1_000_000L
+        assertEquals(BallTap.SINGLE, BallTaps.kind(null, t + 400, t, feel = BallFeel.STANDARD))
+        assertEquals(BallTap.TOO_SOON, BallTaps.kind(null, t + 400, t, feel = BallFeel.GUARD))
+
+        // 三击那条正常速度仍要认得出来 (防误触只收宽"太近不算", 不该把手快的正常操作吃掉)
+        assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 300, t + 150, 2, chainFrom = t, feel = BallFeel.GUARD))
     }
 
     /* ── 空闲那一笔账: 状态结束只重置一次 (2026-10-06 那条病根) ───────────── */
+
+    /**
+     * 球上那几个字与描边**用同一个颜色** (2026-10-09 主人: "正在想的字体颜色换成对应的颜色")
+     *
+     * 画的判据在 `BallView.show` 里那一句 `val color = ring ?: next?.ring()`: 描边与字都吃这一个数,
+     * 而 [BallWord.ring] 是每一档的自带色 —— 正在想那一档的缺省色还要与 `BallPhaseFile` 那个调色板
+     * 第一位对齐 (会话分到的色就是从那一位开始轮的, 对不上会在第一场就看着不像那个色)
+     */
+    @Test
+    fun `每一档状态都有自己那个颜色`() {
+        val colors = BallWord.entries.map { it.ring() }
+        assertEquals("四档各一个色", 4, colors.toSet().size)
+        assertEquals(0xFFFFC24D.toInt(), BallWord.THINKING.ring())
+        assertEquals(0xFF6EF3B0.toInt(), BallWord.LISTENING.ring())
+        assertEquals(0xFFB388FF.toInt(), BallWord.SPEAKING.ring())
+        assertEquals(0xFFFF5252.toInt(), BallWord.FAILED.ring())
+    }
+
+    /**
+     * 回复框记着哪一场, 该按哪一场走 (2026-10-09 主人: "改为谁发送了输入框, 就回到那一场")
+     *
+     * 两笔账的优先级: `input` (我从框里发出去的话投给了谁) **压过** `reply` (框里最新那条回复是谁
+     * 推来的)。反过来的话就是这次要修的那条病 —— 框里进了别的问题的回复, 双击却回到那边去
+     */
+    @Test
+    fun `回应用按输入投给的那一场走`() {
+        // 我从框里发给 A, 之后 B 也往框里推过回复: 回去看的是 A
+        assertEquals("session-a", BoxTarget.choose("session-a", "session-b"))
+        // 还没从框里发过话 (三击刚开的框): 退回"最新那条回复是谁推来的"
+        assertEquals("session-b", BoxTarget.choose(null, "session-b"))
+        assertEquals("session-b", BoxTarget.choose("", "session-b"))
+        assertEquals("session-b", BoxTarget.choose("   ", "session-b"))
+        // 两边都没有: 交回调用方那条浮标账本兜底
+        assertNull(BoxTarget.choose(null, null))
+        assertNull(BoxTarget.choose("", ""))
+    }
 
     /**
      * **这一条就是"半隐藏又失效"的钉子**
@@ -925,10 +1169,13 @@ class BallTest {
     @Test
     fun `标准档的三击不看总时长`() {
         val t = 1_000_000L
-        assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 900, t + 600, 2, chainFrom = t))
+        // 三下贴着上一记 (150 / 150), 但整串 450 ms 之后那一戳落在**总时长闸之外**: 缺省 (防误触档)
+        // 停在双击, 不打开输入框
+        assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 600, t + 450, 2, chainFrom = t))
+        // 标准档**不看整串的总时长**, 同一串 (那一隔 150 ms 仍贴着) 算三击 —— 两档的差别就是这一条
         assertEquals(
             BallTap.TRIPLE,
-            BallTaps.kind(null, t + 900, t + 600, 2, chainFrom = t, feel = BallFeel.STANDARD),
+            BallTaps.kind(null, t + 600, t + 450, 2, chainFrom = t, feel = BallFeel.STANDARD),
         )
     }
 

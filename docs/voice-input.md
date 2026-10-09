@@ -87,7 +87,7 @@ patch 层把 `speech-to-text` 那条的 `defaultProvider` 覆盖成 `lw-native`�
 
 SenseVoice 是 234 M 的那一档，认不准的时候（口音、安静说话、长句）没有别的办法，所以又接了
 智谱的 **GLM-ASR-Nano-2512**（1.5 B，MIT）。它比 SenseVoice 强得多，代价是慢一个数量级 ——
-**两档并存，谁快谁准由调用方选**。
+**两档并存，谁快谁准由调用方选**（缺省是 SenseVoice：GUI 按钮、浮标与唤醒链都用它，GLM 要点名）。
 
 | | SenseVoice | GLM-ASR-Nano |
 |---|---|---|
@@ -162,10 +162,16 @@ lw_speech op=transcribe engine=glm wav=/path/to/16k-mono.wav
 lw_speech op=release engine=glm              # 把那 1.8 GB 还回去
 ```
 
-- **GUI 的录音按钮默认走 GLM**（`host-plugin/index.mjs` 里的 `SPEECH_ENGINE_DEFAULT`）：按那个
-  按钮是一个明确的动作，等几秒换准确率是划算的。GLM 的模型不在时它退回 SenseVoice，而不是把
-  按钮做成死的。
-- **常驻语音链仍走 SenseVoice**（唤醒词命中之后那一路），因为它要的是"说完就出字"。
+- **GUI 的录音按钮走 SenseVoice**（`host-plugin/index.mjs` 里的 `SPEECH_ENGINE_DEFAULT`）——
+  2026-10-09 主人定的口径：输入框与球同一套模型，按一次按钮要等的时间与要下的体积都按小的那一
+  档算。原来这一档走 GLM，代价是别人为了按一次按钮得多下 1.6 GB。
+- **GLM 只在点名时走**（`engine=glm`）：它仍是"要准确率时才值得"的那一套，但没有哪条路会替人
+  把 1.6 GB 下下来。
+- **常驻语音链也走 SenseVoice**（唤醒词命中之后那一路），因为它要的是"说完就出字"。
+- **官方 bundle 开着时，它自带那张卡会被按 id 关掉**（`PluginOverlay` 的 `VOICE_LOCAL_ROW`，
+  2026-10-09）：那张 `SenseVoiceSmall (INT8)` 在安卓上永远失败——`Local speech is unavailable for
+  android-arm64`（`sherpa-onnx-node` 没有 android-arm64 的 addon），所以 overlay 给
+  `speech-to-text-sensevoice` 那一行写 `disabled: true`，界面上就只剩本机这一张卡。
 - 引擎名不认识的（比如打错的）一律落回 SenseVoice。
 
 ### 这一档还没做的

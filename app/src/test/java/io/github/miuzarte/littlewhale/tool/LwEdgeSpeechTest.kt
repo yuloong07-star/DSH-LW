@@ -1,6 +1,7 @@
 package io.github.miuzarte.littlewhale.tool
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -83,5 +84,31 @@ class LwEdgeSpeechTest {
         assertNull(LwEdgeSpeech.audioChunk(metadata))
         assertNull(LwEdgeSpeech.audioChunk(byteArrayOf(1)))
         assertNull(LwEdgeSpeech.audioChunk(byteArrayOf(0, 200.toByte(), 1, 2)))
+    }
+
+    /* ── 对端主动关闭: 没念完就要算失败, 而且理由要带出来 ───────────────── */
+
+    @Test
+    fun `还没念完就对端关闭 报错里带上 code 与理由`() {
+        val failure = LwEdgeSpeech.closingFailure(
+            1007,
+            "Unsupported voice zh-CN-XiaochenNeural.",
+            turnEnded = false,
+        )
+        assertNotNull(failure)
+        assertTrue(failure!!, failure.contains("1007"))
+        assertTrue(failure, failure.contains("Unsupported voice zh-CN-XiaochenNeural."))
+    }
+
+    @Test
+    fun `念完之后对端关闭不算失败`() {
+        assertNull(LwEdgeSpeech.closingFailure(1000, "bye", turnEnded = true))
+    }
+
+    @Test
+    fun `关闭理由空着时也要有一句人话`() {
+        val failure = LwEdgeSpeech.closingFailure(1006, "  ", turnEnded = false)
+        assertTrue("$failure", failure!!.contains("1006"))
+        assertTrue("$failure", failure.isNotBlank())
     }
 }

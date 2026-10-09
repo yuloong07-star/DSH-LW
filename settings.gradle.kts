@@ -26,3 +26,9 @@ dependencyResolutionManagement {
 
 rootProject.name = "LittleWhale"
 include(":app")
+// LW 插件的接口那一份 (手写 Binder 的两个接口 + 常量): app 与伴侣样例都靠它,
+// 对外发出去的 lwplugin-api-1.jar 就是它的 classes.jar (见 docs/LW-软件插件协议.md 第 9 节)
+include(":lwplugin-api")
+// 伴侣插件那一份样例 (批次 9 的 P1): 它不在 app 的打包路径上, 出包时单独 build
+include(":sample-companion")
+project(":sample-companion").projectDir = file("samples/companion")

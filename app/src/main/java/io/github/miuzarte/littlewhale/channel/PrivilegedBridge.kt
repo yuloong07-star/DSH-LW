@@ -16,6 +16,7 @@ import io.github.miuzarte.littlewhale.tool.LwNotifications
 import io.github.miuzarte.littlewhale.tool.LwNotify
 import io.github.miuzarte.littlewhale.tool.LwOverlay
 import io.github.miuzarte.littlewhale.tool.LwPhoto
+import io.github.miuzarte.littlewhale.tool.LwPlugin
 import io.github.miuzarte.littlewhale.tool.LwPower
 import io.github.miuzarte.littlewhale.tool.LwQuick
 import io.github.miuzarte.littlewhale.tool.LwSpeech
@@ -963,7 +964,11 @@ object PrivilegedBridge {
         "calendar" -> appContext { LwCalendar.dispatch(it, request) }
                 "quick" -> appContext { LwQuick.dispatch(it, request) }
                 // 自动指令 (2.5.0 批次 8): 规则 / 设置 / 历史 / 现在能不能用, 都在这一条上
-                "automation" -> appContext { LwAutomation.dispatch(it, request) }
+        "automation" -> appContext { LwAutomation.dispatch(it, request) }
+
+        // LW 插件 (批次 9): 装 / 启用 / 停用 / 卸 / 授权 / 审计, 以及宿主每几秒拉一次的那份快照
+        // (它按 revision 决定要不要重注册工具)。与别的工具同一个形状: 应用这一侧写答案
+        "plugin" -> appContext { LwPlugin.dispatch(it, request) }
         // 1.0.3 批次 6: 事件订阅 —— 让模型"等到一件事发生", 而不是反复读屏
         "eventsSubscribe" -> LwEvents.subscribe(request)
         "eventsWait" -> LwEvents.wait(request)

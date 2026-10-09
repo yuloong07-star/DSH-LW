@@ -57,7 +57,15 @@ if (guardOnly) {
   process.exit(0)
 }
 
-const tool = registered.find((candidate) => candidate.name === name)
+/**
+ * 找那一条工具: 静态那批 (TOOLS) 立刻就在, 而插件工具是宿主按快照**动态登记**的 (批次 9),
+ * 所以这里等它几拍 —— 最多 5 秒。等不到才是"没有这条工具"
+ */
+let tool = registered.find((candidate) => candidate.name === name)
+for (let waited = 0; tool === undefined && waited < 5000; waited += 250) {
+  await new Promise((done) => setTimeout(done, 250))
+  tool = registered.find((candidate) => candidate.name === name)
+}
 if (!tool) {
   console.error(`no tool called ${name}`)
   process.exit(2)

@@ -6,8 +6,11 @@
 #      `waiting` 互相接替那副样子 (那正是"每一拍重置一次"的指纹)
 #   2. **回复框也跟着空闲自己收**: 宿主推一条回答 → 框自己张出来、球在框开着时不收边 → 20 s 没人碰框
 #      自己收 → 再 5 s 球收边
-#   3. **"正在想"双击打断**: 双击之后队列里出现那句命令、`phase` 落回 idle、`interrupts` 加一;
-#      对照组: 只点一下**不**打断
+#   3. **"正在想"只写文件就亮 / 双击打断 / 单击不打断** (2026-10-08 起状态来自 `$DSH_HOME/lw/ball-phase.json`,
+#      这一条脚本自己写那份文件, 于是同时验了应用那边的 inotify 那条路); 双击之后队列里出现那句命令、
+#      **字要留着** (那一轮还没被写成结束), 把文件写成空表之后字才落下; 对照组: 只点一下不打断
+#      还有那一档**「失败」**: 文件里的 `last` 是 `error` / `max-tokens` 就写那两个字, `completed`
+#      不写; 而它**不随时间落下** —— 点一下球 (顺路把语音开了) 才算认过, `failedAckAt` 跟着记下来
 #   4. **文本框 7 行**: 一行的高度与塞满之后的高度之比要落在 7 行那一档 (5 行 ≈3.3 倍, 7 行 ≈4.4 倍),
 #      而且再多打一段高度不再涨
 #
@@ -51,7 +54,34 @@ function Call($json) { (node tools\lw-channel-call.mjs overlay $json | Out-Strin
 
 function State { Call '{"op":"state"}' }
 
+# 「正在想」那份文件 (2026-10-08 起状态从 `overlay op=phase` 改成了这份文件: 宿主写, 应用用
+# inotify 读). 这一条脚本**自己写它** —— 于是"只写文件就能让球在想"这件事本身就是被验的东西,
+# 而那也是应用与宿主之间那条约定唯一没有设备也能量到的接口
+$phaseFile = "/data/user/0/$package/files/dsh-home/lw/ball-phase.json"
+
+function WritePhase($turns, $last = $null) {
+    # $turns: 形如 @( @{ id = 'session-a'; startedAt = 1234 } ) 的数组; 空数组 = 没有在跑的轮
+    # $last (2026-10-08 加): 最近结束的那一轮, 形如 @{ id = 'session-a'; at = 1234; kind = 'error' }
+    # —— 不给就是"没有失败"那一档 (旧宿主、宿主刚重启写出来的都是这一份)
+    $payload = @{ v = 1; at = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); turns = @($turns) }
+    if ($null -ne $last) { $payload['last'] = $last }
+    $json = $payload | ConvertTo-Json -Compress -Depth 5
+    # **JSON 不进 shell 命令行**: 一过 adb shell, 那些引号就被远端 shell 吃掉了 (实测写出来的是一份
+    # 没有引号的"JSON", 应用那边报 "不是 JSON" —— 那条排障读数就是这么发现的)。所以先落在本地文件,
+    # 推进 /data/local/tmp, 再 `run-as` 拷进去 (那个路径每个脚本都在用, run-as 读得到)
+    $local = 'D:\apk\.lwtmp\lw-ball-phase.json'
+    New-Item -ItemType Directory -Force -Path (Split-Path $local) | Out-Null
+    [IO.File]::WriteAllText($local, $json, (New-Object System.Text.UTF8Encoding($false)))
+    & $adb -s $Serial push $local /data/local/tmp/lw-ball-phase.json | Out-Null
+    $directory = Split-Path $phaseFile
+    Sh "run-as $package sh -c 'mkdir -p $directory && cp /data/local/tmp/lw-ball-phase.json $phaseFile.tmp && mv $phaseFile.tmp $phaseFile'" | Out-Null
+    Start-Sleep -Milliseconds 700
+}
+
 # 从 `op=state` 的 JSON 里取一个数 / 一个字符串 (拿不到就是 null, 不猜)
+#
+# **数一律按 [long] 收**: `failedAt` / `failedAckAt` 是 epoch 毫秒 (1.7e12 那个量级), 用 [int] 接
+# 会当场溢出 ("Value was either too large or too small for an Int32")
 function Field($state, $name) {
     $m = [regex]::Match($state, '"' + $name + '"\s*:\s*(-?\d+|true|false|"[^"]*")')
     if (-not $m.Success) { return $null }
@@ -59,7 +89,7 @@ function Field($state, $name) {
     if ($value -eq 'true') { return $true }
     if ($value -eq 'false') { return $false }
     if ($value.StartsWith('"')) { return $value.Trim('"') }
-    return [int]$value
+    return [long]$value
 }
 
 # 球那一块窗 (NOT_FOCUSABLE 把它与菜单 / 通道那两块可获焦的窗分开)
@@ -243,19 +273,39 @@ if (-not $NoBox) {
     Write-Output '-- 2. 跳过 (只读那一档: -NoBox)'
 }
 
-# ── 3. "正在想"双击打断 (对照组: 只点一下不打断) ─────────────────────────────
+# ── 3. "正在想": 文件说了算 + 双击打断 + 单击不打断 ───────────────────────────
 if (-not $NoTap) {
     Write-Output ''
-    Write-Output '-- 3. 正在想: 双击打断 (状态与那一轮), 单点不打断'
-    Call '{"op":"phase","phase":"thinking"}' | Out-Null
-    Start-Sleep -Milliseconds 1200
+    Write-Output '-- 3. 正在想: 只写文件就该亮 (inotify), 双击打断, 单击不打断'
+    # 这一条现在**只写那份文件**, 一个通道调用都不发 —— 于是它同时验了"应用自己在读文件"这条路
+    WritePhase @(@{ id = 'session-lw-check-1'; startedAt = 1000 })
     $state = State
     $word = Field $state 'word'
     # 那个字是**本地化过的** (`BallWord.label` 读的是应用自己的字符串), 所以英文环境上是 "Thinking":
     # 把中文写死会让这条判据在英文设备上假失败 (2026-10-08 模拟器上就是这个样子)
-    Judge '球上写着正在想 (先决条件)' ($word -eq '正在想' -or $word -eq 'Thinking') "word=$word"
-    $before = Field $state 'interrupts'
+    Judge '只写文件就让球写着正在想' ($word -eq '正在想' -or $word -eq 'Thinking') "word=$word"
+    Judge '那一场被记下来了' ((Field $state 'session') -eq 'session-lw-check-1') `
+        "session=$((Field $state 'session'))"
+    $color1 = Field $state 'ringColor'
+    Judge '它有一个环色' ($null -ne $color1 -and $color1 -ne 0) "ringColor=$color1"
 
+    # 第二场开始得更晚: 球要跟着换成它 (取最近开始的那一场)
+    WritePhase @(
+        @{ id = 'session-lw-check-1'; startedAt = 1000 },
+        @{ id = 'session-lw-check-2'; startedAt = 2000 }
+    )
+    $state = State
+    Judge '两场在跑时取最近开始的那一场' ((Field $state 'session') -eq 'session-lw-check-2') `
+        "session=$((Field $state 'session'))"
+
+    # 回到第一场: 颜色要是**同一个** (按会话固定, 不是每次重发)
+    WritePhase @(@{ id = 'session-lw-check-1'; startedAt = 1000 })
+    $state = State
+    Judge '同一个会话拿回同一个颜色' ((Field $state 'ringColor') -eq $color1) `
+        "ringColor=$((Field $state 'ringColor')) 期望=$color1"
+
+    # 双击: 打断那一句要进队列, 而**字要留着** —— 那一轮是文件说在跑的, 打断没成之前不该落
+    $before = Field $state 'interrupts'
     TapBallTwice 150 | Out-Null
     Start-Sleep -Milliseconds 2500
     $state = State
@@ -263,23 +313,68 @@ if (-not $NoTap) {
     $inbox = InboxTail 3
     Write-Output "   state: $state"
     Judge '双击那一句进了收件箱' ($inbox -match '打断当前回答') '队列尾部看得到 打断当前回答'
-    Judge '状态落回 idle' ((Field $state 'phase') -eq 'idle') "phase=$((Field $state 'phase'))"
-    Judge '球上那三个字落下了' ([string]::IsNullOrEmpty([string](Field $state 'word'))) "word=$((Field $state 'word'))"
     Judge '打断记了一笔' ($after -eq ($before + 1)) "interrupts $before -> $after"
+    Judge '字还在 (那一轮还没被文件写成结束)' (-not [string]::IsNullOrEmpty([string](Field $state 'word'))) `
+        "word=$((Field $state 'word'))"
 
-    # 对照组: 只点一下 —— 它要等过 0.3 s 那双击窗口才做原来那一支, 而**绝不**写打断那一句
-    Call '{"op":"phase","phase":"thinking"}' | Out-Null
-    Start-Sleep -Milliseconds 1000
+    # 文件说"没有在跑的轮": 字落下 (这是"实时"那一条的判据: 只动文件, 不动通道)
+    WritePhase @()
+    $state = State
+    Judge '文件写成空表之后字落下' ([string]::IsNullOrEmpty([string](Field $state 'word'))) `
+        "word=$((Field $state 'word'))"
+
+    # 对照组: 只点一下 —— 那一下等过 [THINKING_TAP_MS] 才做原来的动作 (开语音), 而**绝不**写打断那一句
+    WritePhase @(@{ id = 'session-lw-check-3'; startedAt = 3000 })
+    $before = Field (State) 'interrupts'
     TapBallOnce | Out-Null
     Start-Sleep -Milliseconds 3000
     $state = State
-    $single = Field $state 'interrupts'
-    Judge '只点一下不打断' ($single -eq $after) "interrupts 仍然 $single"
-    # 单点那一支落到了"收/开语音窗口"上 (正在想这一档): 把它收回去, 免得脚本走完还开着麦克风
-    Start-Sleep -Milliseconds 1200
+    Judge '只点一下不打断' ((Field $state 'interrupts') -eq $before) `
+        "interrupts 仍然 $((Field $state 'interrupts'))"
+    # 那一下确实做了事 (开语音: 这台设备没下模型时会回一句拒绝), 只是比双击窗口慢
+    Judge '那一下确实做了事 (不是被吞掉)' (-not [string]::IsNullOrEmpty([string](Field $state 'said'))) `
+        "said=$((Field $state 'said'))"
+    # 收尾: 这一下是切换, 再点一下把语音窗口收回去 (免得脚本走完还开着麦克风); 然后清掉文件
     TapBallOnce | Out-Null
-    Start-Sleep -Milliseconds 800
-    Write-Output "   收尾: $(State)"
+    Start-Sleep -Milliseconds 1500
+    WritePhase @()
+    $state = State
+    Judge '收尾: 字落下' ([string]::IsNullOrEmpty([string](Field $state 'word'))) "word=$((Field $state 'word'))"
+
+    # ── 「失败」那一档 (2026-10-08): 宿主把 `turn/end` 的原因写进 `last`, 球上写两个字 ——
+    #    而且**它不随时间落下**: 只有点一下球才算认过 ─────────────────────────────────
+    $failAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    WritePhase @() @{ id = 'session-lw-check-1'; at = $failAt; kind = 'error'; why = 'lw-ball-tap-check' }
+    $state = State
+    $word = Field $state 'word'
+    Judge '文件里有一条失败就该写着失败' ($word -eq '失败' -or $word -eq 'Failed') "word=$word"
+    Judge '失败的原因读得到' ((Field $state 'failedKind') -eq 'error') `
+        "failedKind=$((Field $state 'failedKind'))"
+    Judge '理由只进读数不上球' ((Field $state 'failedWhy') -eq 'lw-ball-tap-check') `
+        "failedWhy=$((Field $state 'failedWhy'))"
+
+    # 一条"不算失败"的原因 (正常结束): 那两个字不许亮
+    WritePhase @() @{ id = 'session-lw-check-1'; at = $failAt + 1; kind = 'completed' }
+    Judge '正常结束不算失败' ([string]::IsNullOrEmpty([string](Field (State) 'word'))) `
+        "word=$((Field (State) 'word'))"
+
+    # 被截断那一档也算失败; 然后**点一下球** —— 认过那一笔账要落在 failedAckAt 上
+    WritePhase @() @{ id = 'session-lw-check-1'; at = $failAt + 2; kind = 'max-tokens' }
+    $word = Field (State) 'word'
+    Judge '被截断也算失败' ($word -eq '失败' -or $word -eq 'Failed') "word=$word"
+    TapBallOnce | Out-Null
+    Start-Sleep -Milliseconds 1200
+    $state = State
+    $word = Field $state 'word'
+    # 落下之后未必是空的: 那一下顺路把语音开了 ("失败"让位给"正在听", 见 BallStatus.wordFor),
+    # 所以判据是"那两个字不在了", 不是"球上什么都没有"
+    Judge '点一下球就算认过 (那两个字落下)' ($word -ne '失败' -and $word -ne 'Failed') "word=$word"
+    Judge '那一笔账记在 failedAckAt 上' ((Field $state 'failedAckAt') -eq ($failAt + 2)) `
+        "failedAckAt=$((Field $state 'failedAckAt')) 期望=$($failAt + 2)"
+    # 收尾: 那一下把语音开起来了, 再点一下收回去, 然后把文件清回空表
+    TapBallOnce | Out-Null
+    Start-Sleep -Milliseconds 1500
+    WritePhase @()
 } else {
     Write-Output ''
     Write-Output '-- 3. 跳过 (只读那一档: -NoTap)'

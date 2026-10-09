@@ -81,19 +81,48 @@ internal object OverlayState {
     /**
      * 回复框里**最新那条回复是哪一场发来的** (宿主 `overlay op=reply` 带过来的 `session`)
      *
-     * 它是那条例外的根据: 框里发出去的键盘与语音都投回这一场 (见 [replyTarget])。一条条回复落进来,
-     * 后一条顶掉前一条 —— 旧回复还画着, 而"这一场是谁"以最新的为准 (主人 2026-10-06 选的那一档)
+     * 一条条回复落进来, 后一条顶掉前一条 —— 旧回复还画着, 而"这一条是谁说的"以最新的为准
+     * (主人 2026-10-06 选的那一档)。它只回答"框里显示的是谁的话", **不再当投递目标** (那个由
+     * [inputSession] 记)
      */
     @Volatile
     var replySession: String? = null
+
+    /**
+     * 这块框**真正把话投给了哪一场** (2026-10-09 主人: "谁发送了输入框, 就回到那一场")
+     *
+     * 它与 [replySession] 是**两笔账, 不是一笔**: 一块框可以先后跟好几场说话 (第一次是浮标那一场,
+     * 之后回复里带进来另一场), 而主人要的"对应会话"是**他自己那次输入投出去的那一场** —— 回来的
+     * 那一跳因此按这一条走 (见 [viewSession]), 不再跟着"最后推回复进来的是谁"漂
+     *
+     * 只有从框里发出去过话才会有值 ([OverlayService.ask] 写收件箱那一刻记下实际用的 `to`); 一次都
+     * 没发过时是 null, 调用方退回 [replySession] 与浮标账本
+     */
+    @Volatile
+    var inputSession: String? = null
 
     /**
      * 框现在该把话投给谁: **只有框在屏上、而且里面真有回复时**才点名
      *
      * 两个条件缺一不可: 框收掉之后那条例外就不成立了 (回老规矩按时间那一笔账), 而框由球上**三击**
      * 开出来时里面可能一条回复都没有 —— 那时它只是个输入框, 不该替宿主挑会话
+     *
+     * **优先还给上一次投过的那一场** ([inputSession]): 接着跟同一场说话是最常见的那一档, 而光靠
+     * [replySession] 会在"框里同时进过两场的回复"时把后一场当成目标 —— 那正是这次要修的那条
      */
-    fun replyTarget(): String? = if (channel && replies > 0) replySession else null
+    fun replyTarget(): String? {
+        if (!channel || replies <= 0) return null
+        return BoxTarget.choose(inputSession, replySession)
+    }
+
+    /**
+     * 「回应用」该落到哪一场: **框记着的那一场优先, 没有就退回最新回复那一场**
+     *
+     * 与 [replyTarget] 分开是故意的: 那个还带"盒子在屏上而且有回复"这两道闸 (它管的是一条投递
+     * 目标), 而回应用的入口 (双击回复框 / 菜单「返回应用」/ 点通知) 只想问"这一场是谁" —— 各处的
+     * 兜底 (读 `voice/session.json` 那本账) 由调用方接在它后面
+     */
+    fun viewSession(): String? = BoxTarget.choose(inputSession, replySession)
 
     /** 框"没人碰"那一笔账的起点 (epoch ms; 0 = 框不在屏上, 见 [boxIdleMs]) */
     @Volatile
@@ -137,9 +166,52 @@ internal object OverlayState {
      * 宿主说的一轮在跑没有 (`PHASE_THINKING` / `PHASE_IDLE`)
      *
      * 与球自己那一档 ([ballPhase]) 是两件事: 这一条说的是轮次, 那一条说的是球收着还是全露着
+     *
+     * **2026-10-08 起它不是宿主推来的, 是从 [BallPhaseFile] 那份文件读来的**: 宿主在"哪几场在跑"
+     * 真的变化时写 `$DSH_HOME/lw/ball-phase.json`, 应用用 inotify 盯着那个目录, 一改就重读 (见那个
+     * 文件的头: 推送会丢, 而文件不会)
      */
     @Volatile
     var phase: String = PHASE_IDLE
+
+    /** 现在这一轮在跑的是哪一场会话 (空 = 没有); 与 [phase] 一样来自那份文件 */
+    @Volatile
+    var session: String = ""
+
+    /** 那一场该用的环色 (按会话固定, 见 `BallPhaseFile.colorFor`); 0 = 没在用 */
+    @Volatile
+    var ringColor: Int = 0
+
+    /** 上一次读那份文件的那一句人话 (读不到 / 读不懂; 空 = 正常), 排障读数用 */
+    @Volatile
+    var phaseNote: String = ""
+
+    /**
+     * 刚结束的那一轮是怎么收的 (见 [BallPhaseFile.Ended])
+     *
+     * 三条都是那份文件里的 `last` 原样搬过来的 —— 球上只认 [BallFailure.counts] 那三种 (写成
+     * 「失败」), 而 [failedWhy] 不上球: 它只进 `overlay op=state`, 给"球为什么说失败"一个读数
+     */
+    @Volatile
+    var failedAt: Long = 0
+
+    @Volatile
+    var failedKind: String = ""
+
+    @Volatile
+    var failedWhy: String = ""
+
+    /**
+     * 主人认过哪一条了: **点一下球**就把 [failedAt] 记在这儿 (见 `ballListener.onTap`)
+     *
+     * **记的是文件里那个 `at`, 不是本机时钟** —— 两侧时钟只要不一样, 拿本机时间当"认过"的水位线
+     * 就会把下一条真的失败吞掉。判据于是是"文件里的 `at` 比这个数大", 与时钟无关
+     */
+    @Volatile
+    var failedAckAt: Long = 0
+
+    /** 这一拍该不该写「失败」: 文件里那一条算失败, 而且主人还没点过 */
+    fun failedNow(): Boolean = BallFailure.shows(failedKind, failedAt, failedAckAt)
 
     /**
      * 宿主推来、而通道还没开着的那一句回答
@@ -397,9 +469,25 @@ class OverlayService : Service() {
     private val tick = object : Runnable {
         override fun run() {
             runCatching { refresh() }
+            // **宿主翻成"在跑"时重读一次那份文件**: 它重启后会自己写一遍空表, 而 inotify 那一条只在
+            // 文件真的变过时才叫醒我们 (宿主没重启、文件也没变, 就什么都不用做)
+            val up = DshHost.status is HostStatus.Running
+            if (up != lastHostUp) {
+                lastHostUp = up
+                runCatching { readBallPhase() }
+            }
             handler.postDelayed(this, TICK_MS)
         }
     }
+
+    /** 那份"哪几场在跑"的文件: inotify 盯着它 (见 [BallPhaseFile]) */
+    private var phaseWatch: BallPhaseFile.Watch? = null
+
+    /** 上一拍画的那个环色: 会话换了而字没换时也得重画一次 (见 [refresh]) */
+    private var lastRing: Int? = null
+
+    /** 上一拍宿主在不在跑 */
+    private var lastHostUp = false
 
     private var snap: ValueAnimator? = null
 
@@ -497,6 +585,49 @@ class OverlayService : Service() {
         OverlayState.running = true
         createChannel()
         fend()
+        // 先按现有那一份对一次账, 再盯住它 —— 三处读取之一 (另两处: inotify 事件、宿主翻成在跑)
+        runCatching { readBallPhase() }
+        startPhaseWatch()
+    }
+
+    /**
+     * 读一次"哪几场在跑"那份文件, 落进 [OverlayState] 并当场重画
+     *
+     * 球上只显示**最近开始的那一场** ([BallPhaseFile.latest]), 它的颜色按会话固定 —— 于是多个会话
+     * 同时在想时那个环色会跟着换, 主人一眼看得出"现在这个正在想是不是我先前那一场"
+     *
+     * **同一个 snapshot 顺手把 `last` 也带回来** (2026-10-08): 球上「失败」那两个字与「正在想」
+     * 出自同一份文件, 分两次读就会拿到两个时刻的真相
+     */
+    private fun readBallPhase() {
+        val snapshot = BallPhaseFile.snapshot(this)
+        val turn = snapshot.latest
+        OverlayState.phase = if (turn == null) OverlayState.PHASE_IDLE else OverlayState.PHASE_THINKING
+        OverlayState.session = turn?.id.orEmpty()
+        OverlayState.ringColor = turn?.let { BallPhaseFile.colorFor(this, it.id) } ?: 0
+        OverlayState.phaseNote = snapshot.note
+        // **每次都覆盖**: 文件即真相, 而宿主那边 `turn/start` 不清 `last` —— 所以"认过没有"这件事
+        // 只能由 [OverlayState.failedAckAt] 说了算, 覆盖不会把那一笔冲掉
+        OverlayState.failedAt = snapshot.last?.at ?: 0
+        OverlayState.failedKind = snapshot.last?.kind.orEmpty()
+        OverlayState.failedWhy = snapshot.last?.why.orEmpty()
+        refresh(force = true)
+    }
+
+    /**
+     * 盯住那份文件所在的目录 (inotify): 宿主一写就叫醒, 当场重读
+     *
+     * 回调在 [android.os.FileObserver] 自己那条线程上, 而界面这些东西都属于主线程 —— 所以整件事
+     * 只是往 `handler` 上投一个 `readBallPhase`, 一秒都不用等
+     */
+    private fun startPhaseWatch() {
+        if (phaseWatch != null) return
+        val watch = BallPhaseFile.Watch {
+            handler.post { runCatching { readBallPhase() } }
+        }
+        runCatching { watch.start(this) }
+            .onFailure { problem -> OverlayState.phaseNote = "盯不住 ball-phase.json: ${problem.message}" }
+        phaseWatch = watch
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -553,6 +684,9 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        // 服务走了, 那个目录就没人盯了: inotify 的描述符也要跟着放掉 (下次 onCreate 再盯回去)
+        phaseWatch?.stop()
+        phaseWatch = null
         snap?.cancel()
         snap = null
         closeMenu()
@@ -787,7 +921,23 @@ class OverlayService : Service() {
                 note("a tap ${now - lastDropAt}ms after a drop: not counting it as a click")
                 return
             }
-            when (BallTaps.kind(lastWord, now, lastTapAt, tapChain, chainFrom, feel)) {
+            val gesture = BallTaps.kind(lastWord, now, lastTapAt, tapChain, chainFrom, feel)
+            // **"点一下球"就是认过那一轮失败** (2026-10-08 主人定的口径): 球上正亮着那两个字时,
+            // 被认成手势的那一下 (单击 / 双击 / 三击) 把水位线推到**文件里那个 `at`**。三个限制
+            // 都是刻意的:
+            //
+            // - **字亮着才算** (`lastWord == FAILED`): 失败让位给"正在听/正在念"的那几秒里点球是
+            //   在关麦克风或掐播报, 那一下不该顺手把一条主人还没看见的失败吞掉 —— 那两个字回来之后
+            //   再点一下才算认过
+            // - **太近的那一下不算**: 它不算手势, 于是也不算"点了一下球"
+            // - **纯按下、拖动、长按不算**: 那几条路根本不走这里 (在 onPressStart / onDragTo 上)
+            //
+            // **它不影响这一下自己的动作**: 抹字与"开语音"是两件事, 各做各的 —— 主人点的就是一次
+            // 普通的点击
+            if (gesture != BallTap.TOO_SOON && lastWord == BallWord.FAILED) {
+                OverlayState.failedAckAt = OverlayState.failedAt
+            }
+            when (gesture) {
                 // **防连击** (主人 2026-10-06): 手指一抖点出两下时, 第一下已经把球召出来了, 紧接着的
                 // 第二下就会顺路进语音输入 —— 而那看着像"点一次直接开了语音"。所以两次点击之间要隔
                 // [BallTaps.guard] 那个窗口才算两下 (正在听那一档是主人点名的 1 s), 隔不够只记一次账
@@ -830,15 +980,28 @@ class OverlayService : Service() {
                     chainFrom = now
                     // 那本"框外双击"的账在 onPressStart 已经清过了 (按下必到那一条), 这里不必再清
                     if (lastWord == BallWord.THINKING) {
-                        // "正在想"里的**单点要等过双击窗口**: 不等的话双击的第一下会先把这个动作做掉
-                        // (那一档是收/开语音窗口), 于是"想打断"变成了"开了麦克风"。见 [pendingTap]
-                        note("a tap while thinking: holding it for ${BallMinutes.DOUBLE_TAP_MS}ms in case a second one comes")
+                        // "正在想"里的**单点要等过双击窗口**再开语音 (2026-10-08 主人: "进入语音输入
+                        // 要比第二次点击慢一点"): 不等的话双击的第一下会先把这个动作做掉, 于是"想打断"
+                        // 变成了"开了麦克风"。见 [BallMinutes.THINKING_TAP_MS] 与 [pendingTap]
+                        //
+                        // **先把上一次那个待办取消掉**: 上一拍可以也是"在想"下的一下单点 (隔得没过那个
+                        // 等待窗口的那种), 两个待办都在的话, 先开的那个会被后一个当场关掉 —— 看着像闪了一下
+                        //
+                        // **等的那个数由这一档算出来** ([BallFeel.thinkingTapMs]): 防误触档把防连击窗口
+                        // 放宽到 450 ms 之后 (标准档是 350 ms), 原来那个常量 450 ms 恰好排到它前面, 于是
+                        // 双击的第二下被当成了单点 (开着语音而没打断)。见 [BallMinutes.BALL_TAP_GUARD_MS]
+                        val wait = feel.thinkingTapMs()
+                        pendingTap?.let { handler.removeCallbacks(it) }
+                        note(
+                            "a tap while thinking: holding it for ${wait}ms" +
+                                " in case a second one comes",
+                        )
                         val run = Runnable {
                             pendingTap = null
                             tapAction(System.currentTimeMillis())
                         }
                         pendingTap = run
-                        handler.postDelayed(run, BallMinutes.DOUBLE_TAP_MS)
+                        handler.postDelayed(run, wait)
                     } else {
                         tapAction(now)
                     }
@@ -876,6 +1039,13 @@ class OverlayService : Service() {
     }
 
     /**
+     * 这一档该用哪个环色: 只有「正在想」有自己那个 (按会话固定, 见 [BallPhaseFile]); 别的交给
+     * `BallWord.ring()` 那一套固定色
+     */
+    private fun ringOf(word: BallWord?): Int? =
+        if (word == BallWord.THINKING) OverlayState.ringColor.takeIf { it != 0 } else null
+
+    /**
      * 一次**算数的**单击该做什么 (那四段)
      *
      * 从 `onTap` 里抽出来是因为它现在有两个调用方, 而两者的区别只在"什么时候跑": 别的时候当场跑,
@@ -889,6 +1059,7 @@ class OverlayService : Service() {
                 phase = phase,
                 speaking = LwSpeak.speakingNow || VoiceState.speaking,
                 channelOpen = boxView != null,
+                listening = VoiceState.capturing,
             )
         ) {
             BallAct.NOTHING -> Unit
@@ -906,8 +1077,16 @@ class OverlayService : Service() {
             // **回复框在屏上且有回复时是例外** (2026-10-06 主人: "有回复窗时也可以点击小球进行语音
             // 输入"): 那时人已经在那块框上说话了, 再要他点两下是多余的 —— 这一下当场开口
             // (判据是纯函数 [BallTouch.opensVoiceNow], 见 BallTest)
+            //
+            // **「正在想」与「失败」那两档也当场开口** (2026-10-08 主人: "正在想时可以点, 点一次
+            // 进入语音输入" —— 那一下本来就已经等过了双击窗口, 见 `onTap`): 球已经全露在外面,
+            // "先召出再说话"那套在这儿没有意义, 再点一下只会让人以为点没生效。
+            //
+            // 「失败」那一档同理: 球上有字就一直是全露着的, 而人点它就是想说句话
             BallAct.LISTEN ->
                 if (
+                    lastWord == BallWord.THINKING ||
+                    lastWord == BallWord.FAILED ||
                     BallTouch.opensVoiceNow(
                         BallMinutes.summonIsFresh(now, summonedAt),
                         OverlayState.replyTarget() != null,
@@ -962,8 +1141,11 @@ class OverlayService : Service() {
      * [VoiceInbox] 的文件头), 而命令句那一套本来就认得"说给手机听的一句话" —— 这一句与"打开识屏模式"
      * 是同一种东西, 只是它落在打断那一支上
      *
-     * **状态由本机先落下、命令真排上了才落**: 收件箱写不进去时不能装作打断成功 (那一轮还在跑, 而球上
-     * 那三个字是主人唯一看得见的状态), 所以失败走 [hint] 说出来, `phase` 一个字节都不动
+     * **状态不在这里改** (2026-10-08 主人定的口径): 那一轮真的停了, 宿主才写 `ball-phase.json`, 球上
+     * 那三个字才落 —— 应用**不再抢先清字**。原来那一下是"先落下、宿主再纠正", 而真相是宿主说了算:
+     * 打断没成 (那一场根本不在跑) 时, 字挂着才是对的
+     *
+     * 收件箱写不进去时不能装作打断成功, 所以失败走 [hint] 说出来, `phase` 一个字节都不动
      */
     private fun interruptBall() {
         noteActivity()
@@ -972,9 +1154,8 @@ class OverlayService : Service() {
             hint(getString(R.string.ball_interrupt_failed))
             return
         }
-        OverlayState.phase = OverlayState.PHASE_IDLE
         OverlayState.interrupts += 1
-        note("interrupt queued as #$seq: the ball conversation's running turn was asked to stop")
+        note("interrupt queued as #$seq: the turn that is running was asked to stop")
         refresh(force = true)
     }
 
@@ -1582,13 +1763,14 @@ class OverlayService : Service() {
     /**
      * 菜单里那行「返回应用」: **与双击回复框同一个去向**
      *
-     * 回复框在屏上时落到"发出那条回复的会话" ([OverlayState.replyTarget]), 否则落回浮标账本 ——
-     * 两件事都在 [openApp] 里; 这里只多做一件: **把框收起来**。主人 2026-10-07 的口径是
+     * 回复框记着那一场时落到"**往这块框输入投给了哪一场**" ([OverlayState.viewSession], 2026-10-09
+     * 起的口径: "谁发送了输入框, 就回到那一场"), 否则落回浮标账本 —— 两件事都在 [openApp] 里;
+     * 这里只多做一件: **把框收起来**。主人 2026-10-07 的口径是
      * "回应用 = 让出界面看会话", 而这块框正是挡在会话上面的那扇窗
      */
     private fun returnToApp() {
-        val from = OverlayState.replyTarget()
-        note("back to the app from the menu" + (from?.let { " (the reply box asked for $it)" } ?: ""))
+        val from = OverlayState.viewSession()
+        note("back to the app from the menu" + (from?.let { " (the box asked for $it)" } ?: ""))
         runCatching { closeChannel() }
         openApp(from)
     }
@@ -1616,23 +1798,24 @@ class OverlayService : Service() {
         closeStrip()
         val metrics = resources.displayMetrics
         val width = BallBox.WIDTH_PX
-        // **判据是"那块窗还在不在窗口管理器上", 不是"view 实例还在不在"** (2026-10-06 主人报的
-        // 第 3 条): 关通道时只把窗摘下来、实例留着复用, 于是第二次开通道时 `boxView != null` 成立、
-        // 那条复用分支直接跳过 `addView` —— 拿一个已经离开窗口的 view 去摆位置, 屏幕上什么都没有。
-        // 表现就是"点空白关掉之后再也打不开键盘输入"
-        val live = boxRoot?.isAttachedToWindow == true
-        var view = if (live) boxView else null
-        if (!live) {
-            boxView = null
-            boxRoot = null
-            boxParams = null
-        }
+        // **判据是"我们手上还拿着那块窗的根", 不是"它这一帧挂上没有"** (2026-10-09 主人报的
+        // "两次三击会出现两个输入框而且会重叠"): `isAttachedToWindow` 要等下一帧的
+        // `performTraversals` 才为真, 而 `addView` 返回那一刻它还是假的 —— 两次三击落进这一段窗口里,
+        // 第二次就会走"旧框已经不在窗口上"那一支: 旧框被摘下来, 又建一块新的。手上那一份引用随后被
+        // 新框顶掉, 而**旧框已经从窗口管理器上摘了、屏幕上却还画着最后一帧**, 于是看着是两块叠在一起,
+        // 而其中一块按不动 (它已经不在窗口树里了) —— 那就是"重叠后第一个窗口无法复原"
+        //
+        // 摘窗时我们会把 [boxRoot] 置空 ([closeChannel]), 所以"根还在"与"框真在窗口上"是同一件事,
+        // 而且这一条是**同步**的: 同一个消息队列上再进来一次三击也只会走到下面那条复用分支
+        var view = boxView
         if (view == null) {
             val box = BoxView(this, boxListener)
             // **新的一块框**: 上一块的回复与"这一场是谁"跟着它一起没了 (窗摘下来之后再开就是新实例),
-            // 读数要跟着清 —— 留着旧的那两个数会让 [OverlayState.replyTarget] 指着一块空框点名
+            // 读数要跟着清 —— 留着旧的那几个数会让 [OverlayState.replyTarget] 与 [OverlayState.replySession]
+            // 指着一块空框点名
             OverlayState.replies = 0
             OverlayState.replySession = null
+            OverlayState.inputSession = null
             // 套一层收 ACTION_OUTSIDE 的壳 (见 ChannelRoot): 框外那一下双击要靠它收
             val root = ChannelRoot(this).apply { addView(box) }
             root.onOutside = { runCatching { noteBlankTap() } }
@@ -1662,6 +1845,14 @@ class OverlayService : Service() {
                 }
                 insets
             }
+            // **挂上之后马上把焦点与键盘要到手** (2026-10-09): 原来这里只在下面那句 [focusInput] 里
+            // 要一次, 而新窗那一刻还没有输入连接 —— 要等一拍 `performTraversals` 才真的把 IME 拉起来,
+            // 观感就是"框出来了而键盘迟一拍"。挂窗之后再补一次, 键盘那一拍于是落在同一个帧序列里
+            if (focus) view.claimInputAfterLayout()
+        } else {
+            // **框已经开着**: 这一下只是"再要一次这块框" (三击那条第 4 下以上 / 开着时又三击一遍),
+            // 于是只摆一次位置、把焦点还给输入框 —— **不再建第二块**, 也不清掉里面已经有的回复
+            note("the text channel was already open: bringing it back instead of opening a second one")
         }
         OverlayState.channel = true
         lastBlankTapAt = 0L
@@ -1688,10 +1879,19 @@ class OverlayService : Service() {
         refresh(force = true)
     }
 
-    /** 关掉通道: 从那块窗上摘下来, 实例留着 (再开一次不必重建) */
+    /**
+     * 关掉通道: 从那块窗上摘下来, 实例留着 (再开一次不必重建)
+     *
+     * **幂等** (2026-10-09): 没有框在手上时也要把那一堆读数清干净再返回 —— 原来第一句是
+     * `val root = boxRoot ?: return`, 而"窗摘下来之后实例还留着"那一条路会把读数 (channel /
+     * attached / 高度 / 焦点 / 键盘) 停在"开着"上, 下一次判断就可能拿着一块不在窗口上的框当它在
+     * (2026-10-06 报的"点空白关掉之后再也打不开键盘输入"就是那一支)。清理与摘窗分开写, 两条路都干净
+     */
     private fun closeChannel() {
-        val root = boxRoot ?: return
-        runCatching { window?.removeView(root) }
+        boxRoot?.let { root -> runCatching { window?.removeView(root) } }
+        boxView = null
+        boxRoot = null
+        boxParams = null
         // 键盘那一档跟着这一块框走: 它一离开窗口, "人正在打字"就不成立了 (见 [refresh])
         boxFocused = false
         imeBottom = 0
@@ -1701,6 +1901,11 @@ class OverlayService : Service() {
         // 框不在屏上就没有"闲置多久"这回事: 那一笔账跟着窗一起清 (见 [refresh] 的 boxIdle 那一段)
         OverlayState.boxActiveAt = 0L
         OverlayState.boxIdleMs = 0
+        // **框没了, 那两笔"哪一场"的账跟着一起落** (2026-10-09): 留着它们的话, 下一块框还没说过话
+        // 就已经指着一个上一块框的会话
+        OverlayState.replies = 0
+        OverlayState.replySession = null
+        OverlayState.inputSession = null
         lastBlankTapAt = 0L
         noteActivity()
         refresh(force = true)
@@ -1806,8 +2011,10 @@ class OverlayService : Service() {
         override fun onReplyDoubleTap() {
             OverlayState.noteBoxActivity()
             noteActivity()
-            // 先把那一场抄下来: 收框之后 [OverlayState.replyTarget] 就不成立了
-            val from = OverlayState.replySession
+            // 先把那一场抄下来: 收框之后 [OverlayState.replyTarget] 就不成立了。
+            // **取的是"往这块框输入投给了哪一场"** ([OverlayState.viewSession], 优先 inputSession),
+            // 不是"最后一条回复是谁推来的" (2026-10-09 主人: "谁发送了输入框, 就回到那一场")
+            val from = OverlayState.viewSession()
             note("a double tap on the reply: back to ${from ?: "the ball conversation"}, closing the channel")
             runCatching { closeChannel() }
             openApp(from)
@@ -1848,11 +2055,20 @@ class OverlayService : Service() {
         if (DshHost.status !is HostStatus.Running) hint(getString(R.string.ball_ask_no_host))
         // **回复框在屏上就点名投它那一场** (2026-10-06 那条例外): 宿主那侧把 `to` 排在时间那笔账
         // 前面; 没有回复框时它是 null, 行为与从前一个字不差
-        val seq = VoiceInbox.append(this, text, VoiceInbox.SOURCE_KEYBOARD, to = OverlayState.replyTarget())
+        val to = OverlayState.replyTarget()
+        val seq = VoiceInbox.append(this, text, VoiceInbox.SOURCE_KEYBOARD, to = to)
         if (seq == null) {
             // 这一条**要说**: "发出去了"与"没发出去"对主人是两回事, 而屏幕上本来没有任何别的迹象
             hint(getString(R.string.ball_channel_failed))
             return false
+        }
+        // **这一句话投给了谁, 这块框就记下谁** (2026-10-09 主人: "谁发送了输入框, 就回到那一场"):
+        // 「回应用」那一跳按这一条走 (见 [OverlayState.viewSession]), 所以"我发给了哪一场"与
+        // "框把我带回哪一场"是同一件事。`to` 为 null 时不写 —— 那是"按浮标那本 20 分钟的账投的",
+        // 目标由宿主那侧定, 我们这里不知道, 留着上一次记的反而更准
+        to?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            OverlayState.inputSession = it
+            note("the box will return to $it, the conversation this line went to")
         }
         note("channel line queued as #$seq: $text")
         return true
@@ -1897,8 +2113,10 @@ class OverlayService : Service() {
         view.appendReply(text)
         OverlayState.pendingReply = null
         OverlayState.pendingReplySession = null
-        // **这一场是谁**: 回复一条条落进来, 后一条顶掉前一条 (见 [OverlayState.replyTarget])。没带
-        // `session` 的推送 (老宿主、别的来源) 不动它 —— 抹掉一个已经点好的名比留着更糟
+        // **这一条是谁说的**: 回复一条条落进来, 后一条顶掉前一条 (见 [OverlayState.replySession])。
+        // 它只管"框里显示的是谁的话"与"下一刻该把话投给谁"那条兜底, **不动开框目标**
+        // ([OverlayState.inputSession], 那是"我发给了谁"那笔账, 见 [ask])。没带 `session` 的推送
+        // (老宿主、别的来源) 不动它 —— 抹掉一个已经点好的名比留着更糟
         session?.trim()?.takeIf { it.isNotEmpty() }?.let { OverlayState.replySession = it }
         OverlayState.replies = view.replyCount()
         // 新的一句回答落进框里 = 有人该看它一眼, 那一笔"没人碰"的账从这里重新起算
@@ -1947,11 +2165,14 @@ class OverlayService : Service() {
     /* ── 状态 ─────────────────────────────────────────────────────────────── */
 
     /**
-     * 400 ms 一次: 球上那三个字、输入条标题与通知栏都照它改
+     * 400 ms 一次: 球上那几个字、输入条标题与通知栏都照它改
      *
-     * **三个字有两个来源**: "正在念"与"正在听"在应用这一侧 (`VoiceState`), "正在想"是宿主推来的
-     * (`OverlayState.phase`, 见 host-plugin 的 turn/start 与 turn/end) —— 而宿主没在跑的时候那条
-     * phase 一律不采纳, 否则宿主崩了球会永远停在"正在想"
+     * **那几个字有三个来源**: "正在念"与"正在听"在应用这一侧 (`VoiceState`); "正在想"与"失败"
+     * 都出自宿主写的那份 `ball-phase.json` (见 [readBallPhase]) —— 而宿主没在跑的时候那条 phase
+     * 一律不采纳, 否则宿主崩了球会永远停在"正在想"
+     *
+     * 「失败」的寿命**不由时间决定**: 文件里那一条被下一轮改写、或者主人点一下球之前, 它一直亮着
+     * ([OverlayState.failedAckAt]); 它的优先级与"让位给语音那两档"写在 [BallStatus.wordFor] 上面
      */
     private fun refresh(force: Boolean = false) {
         val metrics = resources.displayMetrics
@@ -1965,12 +2186,18 @@ class OverlayService : Service() {
             // "正在听"说的就是这一句话的窗口开着 ([VoiceState.capturing]): 唤醒词一直守着, 而守着这件事
             // 不该在球上写成"正在听" —— 那是常态, 一直挂着只会让人以为麦克风在被吃
             listening = VoiceState.capturing,
+            // 「失败」: 上一轮是 error / blocked / max-tokens 收的, 而且主人还没点过球 (那一笔账在
+            // [OverlayState.failedNow] 里 —— 它比时间窗口诚实, 时间窗口一到就自己落字反而看不见)
+            failed = OverlayState.failedNow(),
         )
         val changed = word != lastWord
-        if (force || changed) {
-            ballView?.show(word)
+        // **环色也得算进"变了没有"**: 两个会话轮流在想时那个字一直是「正在想」, 而颜色要跟着换
+        val ring = ringOf(word)
+        if (force || changed || ring != lastRing) {
+            ballView?.show(word, ring = ring)
             OverlayState.word = word?.label(this)
             stripTitle?.text = title(word)
+            lastRing = ring
         }
         // 有状态就滑出来说话, 闲着就收边 (参考那套的 `floating_ball_idle_to_edge`)
         //
@@ -2192,20 +2419,22 @@ class OverlayService : Service() {
      *    SYSTEM_ALERT_WINDOW 正是官方豁免之一 —— 这台手机这条权限已经给了。它起不来的那几种情形
      *    必须说出来, 别让主人以为"点了没反应"
      *
-     * 那一场对话的 id 由调用方给 (回复框记着的那一场, 见 [OverlayState.replySession]), 没有就落回
-     * 宿主写下的账本 ([VoiceInbox.currentSession]: `voice/session.json`) —— 读不出来就只把界面放到
-     * 前面, 不猜一个 id
+     * 那一场对话的 id 由调用方给 (回复框记着的那一场, 见 [OverlayState.viewSession] 与它的两个入口
+     * [BoxView.Listener.onReplyDoubleTap] / [returnToApp])。**没有就是"进新会话界面"** (2026-10-09
+     * 主人: "没有 (还没发过话) 就进入新会话界面"): 那一档不再落回浮标那本 20 分钟的账
+     * (`voice/session.json`) —— 那是"浮标上一轮说话的地方", 与"这块框该带到哪儿"是两件事, 主人要的
+     * 是新的会话界面。记号是 [BallReturn.NEW_SESSION], 由会话界面清掉当前会话再重载
      */
     private fun openApp(session: String? = null) {
         val asked = session?.trim()?.takeIf { it.isNotEmpty() }
-        val ball = asked ?: runCatching { VoiceInbox.currentSession(this) }.getOrNull()
+        // **没点名就是新会话** (不是"没有就不动"): 空串是那个记号, [BallReturn.ask] 认它
+        val target = asked ?: BallReturn.NEW_SESSION
         // **先写状态, 再拉界面**: 界面那一侧是拿这个对象当钥匙的, 与 intent 谁先到没有关系
-        if (ball != null) BallReturn.ask(ball)
+        BallReturn.ask(target)
         note(
             when {
-                ball == null -> "back to the app (no conversation recorded yet)"
-                ball == asked -> "back to the app: the reply box asked for $ball"
-                else -> "back to the app, on the ball conversation $ball"
+                asked == null -> "back to the app: no conversation was recorded, so a new one it is"
+                else -> "back to the app: the reply box asked for $asked"
             },
         )
         val intent = Intent(this, MainActivity::class.java)
@@ -2214,7 +2443,7 @@ class OverlayService : Service() {
                     or Intent.FLAG_ACTIVITY_CLEAR_TOP
                     or Intent.FLAG_ACTIVITY_SINGLE_TOP,
             )
-            .putExtra(EXTRA_OPEN_SESSION, ball)
+            .putExtra(EXTRA_OPEN_SESSION, target)
         runCatching { startActivity(intent) }.onFailure { error ->
             // **这一步失败不许静默**: 起不来就是"点了没反应", 而主人要的是"回到应用"
             hint(getString(R.string.ball_back_failed, error.message ?: error.toString()))
@@ -2356,12 +2585,12 @@ class OverlayService : Service() {
      * 「回应用」)。这一条同时是"直接拉 Activity 被系统拦住"那一档的兜底: 点通知是用户手势, 不受
      * 后台启动的限制
      *
-     * 会话 id 取回复框在屏上时点名的那一场 ([OverlayState.replyTarget]), 没有就现读一次宿主写的账本
-     * ([VoiceInbox.currentSession]) —— 那是一份几十字节的小文件, 而这条通知一天也重建不了几次
+     * 会话 id 取这块框记着的那一场 ([OverlayState.viewSession]: 优先"输入投给了谁", 没有就退回"最新
+     * 那条回复是谁推来的")。**两笔账都空着就是"进新会话界面"** (2026-10-09 主人) —— 与双击回复框、
+     * 菜单那行「返回应用」同一个取法, 不再去读浮标那本 20 分钟的账 ([VoiceInbox.currentSession])
      */
     private fun notification(text: String): Notification {
-        val ball = OverlayState.replyTarget()
-            ?: runCatching { VoiceInbox.currentSession(this) }.getOrNull()
+        val requested = OverlayState.viewSession()
         val open = PendingIntent.getActivity(
             this,
             0,
@@ -2371,7 +2600,8 @@ class OverlayService : Service() {
                         or Intent.FLAG_ACTIVITY_CLEAR_TOP
                         or Intent.FLAG_ACTIVITY_SINGLE_TOP,
                 )
-                if (ball != null) putExtra(EXTRA_OPEN_SESSION, ball)
+                // **空串也要带上**: 它说的是"去新会话界面", 而不是"这个 intent 没带会话"
+                putExtra(EXTRA_OPEN_SESSION, requested ?: BallReturn.NEW_SESSION)
             },
             // UPDATE_CURRENT: 会话变了之后那一次重建要真的换掉旧的附加数据
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -2458,7 +2688,8 @@ class OverlayService : Service() {
         /**
          * 那条回答是**哪一场会话**发来的 (宿主 `overlay op=reply` 的 `session`)
          *
-         * 回复框记住它: 之后从框里发出去的键盘与语音点名投回这一场 (见 [OverlayState.replyTarget])。
+         * 回复框记进 [OverlayState.replySession]: "框里显示的是谁的话"以它为准, 而**没从框里发过话
+         * 时**投递与「回应用」也拿它当兜底 (从框里发过话之后一切按 [OverlayState.inputSession])。
          * 老宿主不带这个键, 读出来是 null, 行为与从前一样
          */
         const val EXTRA_SESSION = "session"

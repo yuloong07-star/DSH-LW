@@ -105,12 +105,19 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **设置页是两层分组 + 逐段可折叠** (2026-10-08): 一级是 `GroupTitle` (常用 / 能力), 二级是 `SectionTitle` (段名 + 一句摘要, 那一行整行可点 = 收起/展开, 折角是 `MiuixIcons.ChevronForward` 转 90 度 —— `ExpandLess` / `ExpandMore` 那两颗在模拟器上量出来是"两个断开的角", 认不出是一颗箭头); 每一段由 `LazyListScope.settingsSection(...)` 生成, **收起来的段存在页面那一层的 `collapsed` 集合里** (`rememberSaveable` + `listSaver`, 转屏不丢), 缺省全展开。**省电那一段排在第一个** (它原来是「唤醒词」里的三行): 省电模式 / 省电时段 / 省电时停自动指令都属于"现在别听我说话"这一笔账, 与"许可不允许唤醒"分开
 - **捐赠那一页是随包的** (`ui/DonateScreen` + `app/src/main/assets/donate.html`): ⋮ 与「关于」里那一行都走 `navigator.push(Screen.Donate)`, 在应用内用 WebView 渲染 (`file:///android_asset/`), **不联网也不跳浏览器**; 那一页零 `<script>`, 所以那个 WebView **不开 JS**; 仓库里原来那份 `docs/donate.html` 2026-10-08 已删 (提交 `4f21025`), 页面内容只此一份。**捐赠地址没有任何"可填"的入口** (主人 2026-10-08: "不要让别人填地址, 这是我自己的捐赠项目") —— 要改那一页就换 `assets/donate.html` 并重新出包
 - **系统返回键由 `AppNav` 那个 `BackHandler` 自己弹一层** (2026-10-08 修): `BackHandler` 是**后登记的先赢** (LIFO), 而它写在 `NavDisplay` 后面, 于是库里"还有上一页就 pop"那一个永远轮不到 —— 现象是**设置页与捐赠页上按返回什么都不发生**。现在那一行是 `if (backStack.size > 1) navigator.pop() else onBack()`, 主页上仍走「再按一次退出」(把任务放到后台, 不是退出)
-- **一轮在跑时那颗球必须全露着, 而且写着「正在想」** (2026-10-08 主人点名"确保"): 判据是两处代码合起来的 —— 宿主的 `startBallPhase` 在账上有人时每 20 s 重推一次 `overlay op=phase thinking` (应用重启、那一次推送丢了都靠它补), 而应用侧 `OverlayService.refresh` 只要状态词不是空就 `unpeek()` 并把 `BallPhase` 置成 `VOICE` (**那三个字不在收边那六道闸里, 但它让球先滑出来**: 有词就不许半隐)。实测: 球收着 (`ballWindowX=1017`) 时推一次 thinking, 2 s 内回到 `954` 并保持; 这时**双击球**就是把那一轮打断 (`OverlayService.interruptBall` 往 `voice/inbox.jsonl` 写一条 `{"text":"打断当前回答","source":"ball"}`, 宿主那条 `runVoiceInterrupt` 再去 `agent.cancel`)
+- **「正在想」是一份文件说了算, 不是推送** (2026-10-08 主人定的口径): `$DSH_HOME/lw/ball-phase.json` (`{"v":1,"at":…,"turns":[{"id":…,"startedAt":…}]}`, 宿主**原子写** —— `.tmp` + rename, 只在 `turn/start` / `turn/end` 真的改了那本账时写, 另外起来先写一次空表) 由 `app/src/main/java/…/overlay/BallPhaseFile.kt` 读: **`FileObserver` 盯那个目录 (inotify), 一改就重读并当场重画**, 另有"服务起来读一次"与"宿主翻成在跑读一次"两处。两侧都是事件驱动、**零轮询**, 也没有"推送丢了没人补"这回事 —— 那个 20 秒的看门狗 (它对不住主人的体感延迟) 连同 `overlay op=phase` 一起删了。球上取 `startedAt` **最大**的那一场, 它的**环色按会话固定**: 5 个色 (`BallPhaseFile.palette`) 轮转发给见过的会话并记在偏好里, 于是多个会话同时在想时一眼看得出"这是不是我先前那一场"
+- **在想时点一下球就是开语音, 但排在双击窗口之后** (2026-10-08 主人: "点击一次进入语音输入…进入语音输入要比第二次点击慢一点"): 那一下要等 `BallMinutes.THINKING_TAP_MS` (**450 ms**, 比双击的 300 ms 与防连击的 350 ms 都晚) 才开麦, 而**双击打断会把那个待办当场取消** (同一档上两个手势靠时间分开, 见 `OverlayService.onTap`)。开起来之后球上写**「正在听」** —— 状态词优先级是**在念 > 在听 > 在想** (`BallStatus.wordFor`, 主人点名改的: 原来"在想"压着"在听", 于是麦克风开着而球还写着正在想, 人以为点没生效); 语音窗口收掉之后立刻回到「正在想」
+- **双击打断打的是"正在想"指的那一场** (主人 2026-10-08: "双击暂停不会跟随停止"): `pickInterruptTarget` (纯函数, 在 `tools/check-voice-inbox.mjs` 抽的那一段里) 在"根会话且 `running === true`"里挑 `startedAt` 最大的那场, 没有就什么都不取消; 而**字由文件说了算 —— 应用不再乐观清字** (`interruptBall` 只写队列+记账, `phase` 一个字节都不动), 那一轮真停了之后 `turn/end` 写一次文件, 字才落
 - **设置页没有「工作区」与「网络」两段** (2026-10-06 撤掉, 见 `docs/ui-record.md` 第七轮): 工作区落在哪是 host 启动时按 `Workspace.resolve` 那三档自己挑的, 网络那个开关 (局域网) 改完也要重启 host —— 两者都是"平时不用动"的。**能力一个都没删**: `Workspace` 三档解析 / `Workspace.requestAllFilesAccess` / `HostSettings.lanAccess` 与 ⋮ 里那条重启照旧, 只是不再有这两个设置入口 (要开所有文件访问就 `tools/lw-install.ps1`, 要开局域网就写偏好 + 重启 host)
 - **「截图」那段是两条预算, 都是滑块** (见 `channel/ScreenshotBudget.kt`): **像素**三档 (低 262144 = dsh 的 `imagePixelBudget: low`、默认 640000 = dsh 的缺省、高 1690000 = DeepSeek 那头的处理预算), **字节** 256 KiB~1 MiB 连续可滑 (吸附点 256/512/768/1024, 打字给到 4096)。两条给的都是 **app 这一半** (截图产生时缩到多少), 路由那一半 (`imagePixelBudget` / `imageMaxBytes`) 在 dsh 自己的 `settings.yaml` 里, **app 读不到也写不到** —— app 这一半超过路由那一半没用, 只会把注定要被重编码的图交出去 (超了要在 host 那边重编码, 多一次往返也多一次质量损失), 所以滑块上端就停在路由缺省那个数。滑块是搬来的 SFA `ArrowSlider` (`scaffolds/`, 点标题那一行可打字给精确值)
 - **`AndroidView` 里的 WebView 必须显式设 `layoutParams`** (MATCH_PARENT / MATCH_PARENT), 否则它处在 `WRAP_CONTENT` 状态, **所有 viewport unit 都解析成 0** —— dsh 用 `100vh` / `100dvh` 量弹窗、菜单、设置页与目录选择器, 一塌就是空面板
 - **`strings.xml` 里带参数的字符串不能有裸 `%`** (2026-10-06 崩过一次, 见 `docs/ui-record.md` 第七轮): `Resources.getString` 把整条当 `Formatter` 格式串解析, 而它与 `String.format` 不同 —— **`%%` 才是转义**, 裸 `%` 会连着后面那个字一起去当一个转换符, 抛 `UnknownFormatConversionException: Conversion = '是'` 把主线程打死。**崩的位置还特别会骗人**: LazyColumn 预取会在那一行还没进视野时就组合它, 于是现象是"往下拉设置页就重启"。规矩: 只要是进 `stringResource(...)` 的百分号, 一律写 `%%`; `tools/check-bare-percent.py` 扫一遍 (它认 `%1$d` 这类说明符, 跳过合法的 `%%`)
 - **虚拟屏预览放不进网页端**: 预览是合成器直接写进原生 `SurfaceView` 的, 浏览器拿不到那个 surface; dsh 的插件 (`ctx.slots` / `ctx.sidebarRightTabs`) 跑在浏览器 JS 里, **拿不到 Shizuku / root 通道**
+- **球上那几个字与描边同色** (2026-10-09 主人: "正在想的字体颜色换成对应的颜色"): `BallView.show(next, animate, ring)` 把那一色同时喂给 `circle.setStroke` 与 `label.setTextColor` —— 原来只有描边跟着会话换、字恒白, 两个会话同时在想时要凑近看那一圈才分得出是哪一场。**"字没换、颜色换了"那一下也要真的重画** (`lastColor` 是第二个判据), 否则会话轮换 (字还是「正在想」) 时这次换色会被"字没变"那句早退吃掉
+- **回应用回到"我从框里发出去的那一场"** (2026-10-09 主人: "当前是回到最近在 ball 输入会话的那一场。改为谁发送了输入框, 就回到那一场"): 回复框原来只记一笔 `OverlayState.replySession` = "最新那条回复是哪一场推来的", 而一块框可以先后跟好几场说话 (第一次按浮标那本 20 分钟的账投给 `dsh-ball`, 之后别的会话的一轮结束也会把回复推进这块框), 于是双击回到了后者。现在拆成两笔: `inputSession` 由 `OverlayService.ask` 在写收件箱那一刻记下实际用的 `to` (**双击回复框 / 菜单「返回应用」/ 点通知**都按它走, 见纯函数 `BoxTarget.choose`), `replySession` 只留"框里显示的是谁的话"并当没投过话时的兜底; 投递目标 (`replyTarget()`) 也按 `inputSession` 优先, 于是"点球说的那一句"与"回去看那一场"是同一个场。**两笔账都空着就进新会话界面** (主人那一天追加的: "这里没有 (还没发过话) 就进入新会话界面") —— 不再读浮标那本 20 分钟的账 (`VoiceInbox.currentSession`), 那个记号是 `BallReturn.NEW_SESSION` (空串), 由 `HostScreen` 的 `BALL_NEW_SESSION_JS` 删掉 `dsh.sessions.current` 再重载、让 dsh 自己开一场新的
+- **「正在想」那一下开语音的等待由手势灵敏度档算出来** (2026-10-09): 原来是常量 `BallMinutes.THINKING_TAP_MS` (450 ms), 而两个手势窗口因防误触档收窄/放宽之后那个常量会排到防连击窗口前面, 双击打断就被单点动作吃掉。现在用 `BallFeel.thinkingTapMs()` = 取双击窗口与防连击窗口里更晚的那个再加 80 ms 余量 (标准档 430 ms, 防误触档 530 ms), 判据在 `BallTest`
+- **输入通道那块框是幂等的** (2026-10-09 主人报的"输入框唤出有延迟, 两次三击会出现两个输入框而且会重叠, 发生重叠后第一个窗口无法复原"): 判"框还在不在"从 `boxRoot?.isAttachedToWindow == true` 换成 `boxRoot != null` —— `isAttachedToWindow` 要等下一帧 `performTraversals` 才为真, 两次三击落进那段窗口里就会把第一块摘掉、又建一块新的 (`closeChannel` 原来还拿 `boxRoot ?: return` 早退, 于是旧框的读数停在"开着"上)。现在 `openChannel` 已经开着时只摆位 + 还焦点, `closeChannel` 幂等收尾, 挂窗之后再用 `BoxView.claimInputAfterLayout()` 补要一次焦点与键盘
+- **球上手势的"多严"现在有七个门槛** (2026-10-09 主人: "ball 的键盘输入和语音输入经常会误触" + "只收紧防误触档"): 原来 [BallFeel] 只管长按 / 拖动门槛 / 三击总时长 / 刚拖完那一下四个数, 双击窗口与两档防连击窗口是两档共用的常量。现在后三个也归档: **标准档一个字没改** (双击 300 ms / 防连击 350 ms / 正在听 1 s), **防误触档收紧** (双击 220 ms / 防连击 450 ms / 正在听 1.5 s) —— 双击收窄是让"打断"那种点错就真停一场的动作更难凑出来, 两个防连击放宽是让手抖出来的第二下算同一击。`BallTaps.guard(word, feel)` 与 `BallTaps.kind(..., feel)` 都吃这一档
 - 远期点子: `ActivityOptions#setLaunchDisplayId()` 能把自己的 Activity 启到虚拟屏上, 让模型直接操作 dsh GUI
 
 ### 别做的事
@@ -214,7 +221,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 ## 语音 (两档引擎)
 
-「说话 → 出字」这条路有**两档, 由 `engine=` 选, 各有各的缺省**: SenseVoice (sherpa-onnx, 234 M, 在 app 进程里) **快**, 一句话不到 1 秒, 常驻语音链 (唤醒词命中之后那一路) 走它; **GLM-ASR-Nano** (智谱, 1.5 B, MIT) **准**, 中英与粤语/方言、小音量的表现明显更好, 代价是一句话几秒到几十秒, GUI 的录音按钮走它 (`host-plugin/index.mjs` 里的 `SPEECH_ENGINE_DEFAULT`, 模型不在时退回 SenseVoice 而不是把按钮做成死的)
+「说话 → 出字」这条路有**两档, 由 `engine=` 选**: SenseVoice (sherpa-onnx, 234 M, 在 app 进程里) **快**, 一句话不到 1 秒, 它是**处处缺省的那一档** —— 常驻语音链 (唤醒词命中之后那一路)、浮标对话与 GUI 那个录音按钮都走它; **GLM-ASR-Nano** (智谱, 1.5 B, MIT) **准**, 中英与粤语/方言、小音量的表现明显更好, 代价是一句话几秒到几十秒, **只有点名 `engine=glm` 才会走到它** (2026-10-09 主人定的口径: 输入框与球用同一套模型, 于是这台设备只下 240 MB, 不再为了那个按钮拉 1.6 GB)
 
 要记住的:
 
@@ -224,8 +231,10 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - 实测 (天玑 9300, 4 秒窗口): 在 `/data/local/tmp` 里跑那一份是 1.5 秒的话 3.7 秒、7.8 秒的话 10.6 秒、19 秒的话 22 秒; **装进 app 之后是 5.2 / 22.6 / 27.0 秒** (整机内存见底 + 热降频, cgroup 是 `top-app`, 八核全给); 七条合成样本里六条与原文逐字一致, 唯一那条数字串两种窗口都错 (TTS 念的数字本身难)。常驻 **2.76 GB RSS**, `lw_speech op=release engine=glm` 是还回去那条路
 - **它必须是 `-O3`**: AGP 给 externalNativeBuild 的 Debug 变体传的是 `CMAKE_BUILD_TYPE=Debug`, 也就是一个 `-O` 都没有, 而 llama.cpp 在 `-O0` 下慢四十倍 (实测 137 秒 vs 3.7 秒, app 里那条路 225 秒 vs 5.2 秒)。补法在 `app/src/main/native/CMakeLists.txt` 的 `CMAKE_*_FLAGS_DEBUG` 那一段, **别删**: 这份二进制是黑盒, 慢起来 app 里没有一处会喊
 - 细节与判据在 `docs/voice-input.md` 的第八点五节, 代码在 `tool/GlmAsr.kt` (进程与协议)、`tool/LwSpeech.kt` (两档的路由)、`host-plugin/index.mjs` (下载与 provider)
+- **官方 bundle 开着时, 它自带那个 provider 会被按 id 关掉** (`PluginOverlay` 的 `VOICE_LOCAL_ROW`, 2026-10-09): 那个 provider 靠 `sherpa-onnx-node` 的原生 addon, 而 npm 上没有 android-arm64 那一份 —— 它一挂出来就是插件页上一张写着 `Local speech is unavailable for android-arm64` 的红卡 (那个句子出自 `speech-to-text-sensevoice/src/runtime.ts`), 按「重试准备」永远不会好, 组件那一行还会报 `1 异常`。所以 bundle 开着时 overlay 除了把 `defaultProvider` 指到 `lw-native`, 还给 `speech-to-text-sensevoice` 一行 `disabled: true` (真机上就是这么看到的: 并排两张卡, 一张已就绪、一张永远失败)
+- **我们的 provider 报给界面的是 dsh 的 `SpeechPreparationState`**: `downloading` 认 `resource` / `completedBytes` / `totalBytes`, `failed` 认 `message` (外加可选的 `download` 诊断 —— `speechFailureOf` 把 Node 的错误码翻成 `dns` / `timeout` / `http` / `integrity` / `storage` / `network` 那一套, 界面据此给处置建议), `checking` 认 `startedAt`。**名字写错不会有任何报错**: 界面只会把进度显示成 NaN、把失败原因吞掉 (原来写的是 `detail` / `bytes` / `total`)
 
-**这块还没做完的**: 设置页没有引擎开关 (现在只有插件常量与 `engine=` 参数); 1.6 GB 的下载不能续传, 而且**没从零下过一次** (测试那次是两个 GGUF 直接从 adb push 进 `speech-models/glm-asr/` 的, 手机侧的通路另验过: 同一个 URL 4 MB/1.5 s、16 MB/1.9 s); GUI 那个录音按钮的整链还要人按一次才算验过
+**这块还没做完的**: 设置页没有引擎开关 (现在只有插件常量与 `engine=` 参数); 1.6 GB 的下载不能续传, 而且**没从零下过一次** (测试那次是两个 GGUF 直接从 adb push 进 `speech-models/glm-asr/` 的, 手机侧的通路另验过: 同一个 URL 4 MB/1.5 s、16 MB/1.9 s); GUI 那个录音按钮的整链还要人按一次才算验过 —— **2026-10-09 那个按钮改成 SenseVoice 之后这一条要在真机上重验** (下 240 MB 那一份, 然后按一次按钮出字)
 
 **另外**: `:app:packHostTree` 在 2026-10-06 升级到 dsh 0.2.1-alpha.1 时坏过一次, 报 `[@deepseek-ai/dsh-root] Cannot find entry: ["lib/types/{index,startup}.js"]` —— **真因不在根包**: 0.2.1 删掉了 `packages/experimental/schedule-bundle` 与 `packages/runtime-diagnostics/invariants` 两个包, 而升级只删文件、留下带 `node_modules` 的空目录; tsdown 的工作区 glob (`packages/*/*` / `vendor/*`) 会把**没有 `package.json` 的目录**当成成员, 读不到 manifest 就向上读到**仓库根**的 manifest, 于是拿根包的名字与根包的入口去解析, 才找不到。两条修法都已落地: 删掉那两个空壳目录 (里面只有被忽略的 `node_modules`), 以及 `tools/pack-host.mjs` 现在会在官方构建之前 `dropOrphanPackages()` 把这类没有 manifest 的包目录清掉。**只换插件、不重打树的绕法** (把 `host-plugin/index.mjs` 直接换进 `app/build/host-tree/node_modules/littlewhale-channel/`, 再用 `-x packHostTree` 出包) 只够插件改动: **升 dsh 本体必须让 `packHostTree` 真的跑通**, 否则 APK 里带的还是上一次打出来的旧树
 
@@ -554,6 +563,79 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
   `OWN_PLUGINS` 是并列的两张表 —— 官方语音 bundle 关着走前者, 开着走后者。`imagegen` 只加进前者时,
   在这台**开着 bundle 的手机**上它根本不挂 (`lw_image` 在、`edit_image` 不在), 而模拟器上 bundle 关着,
   一点异常都看不见。`tools/check-image-edit.mjs` 现在数那一行在两处各出现一次
+
+## LW 插件 (2026-10-08, 批次 9 的 P0 / P1 → 2.5.1)
+
+让第三方 (包括只做美术的人) **不重编 LittleWhale** 就给这台手机加能力那一层。协议正文在
+`D:\apk\docs\LW-软件插件协议.md` (冻结版; 决策记录是同一目录的 `-讨论稿`), 施工单在
+`D:\apk\docs\DSH-LW-2.5.0-批次9-开发计划.md`
+
+**三层的分工要一直清楚**: 技能只给提示词, dsh 插件只能碰 host 那一侧, 而这一层是**设备侧能力** ——
+新工具、新监测器、新的浮标外观、新的面板、新的桌面组件
+
+| 落在哪 | 是什么 |
+| :-- | :-- |
+| `$DSH_HOME/plugins/<id>/<version>/` | 一个版本一份包 (`plugin.json` + 它带的文件) |
+| `$DSH_HOME/plugins/<id>/current` | 内容为版本号的**文本文件** (不是 symlink) |
+| `$DSH_HOME/plugins/<id>/.data/` | 插件自己那块可写的 (设置与 `store`) |
+| `$DSH_HOME/plugins/.state.json` | 启用状态 + 逐能力授权 + `revision` |
+| `$DSH_HOME/plugins/.publishers.json` | 见过的发布者公钥 (第一次见到界面单独提示) |
+| `$DSH_HOME/plugins/.audit/<id>.log` | 能力调用与被拒的账 (512 KiB 滚, 留尾部 500 行) |
+
+要记住的:
+
+- **`kind` 这一版只收 `companion`** (另一个 APK 被我们绑它的 Service)。`dex` / `script` / `theme`
+  三种在装的时候就点名拒绝, 它们分别是 P2 / P3
+- **两侧都是手写 Binder, 不是 AIDL** (协议第 0 节第 11 条): app 模块里出现 `.aidl` 就会生成 Java,
+  而 Java 编译会把 AGP 那条坏掉的资源管线拉回构建 —— 同一个理由让 `LwPrivilegedService` 也手写。
+  接口只有一处定义 (`:lwplugin-api` 的 `ILwPlugin` / `ILwPluginContext`, 描述符与 transaction code
+  都写在那里), app 与伴侣引的是**同一个模块**; 对外那个 `lwplugin-api-1.jar` 就是它 AAR 里的
+  `classes.jar`
+- **能力表 22 条, 这一版真接通 7 条**: `device.read` / `sensor.read` / `notify.post` /
+  `speech.speak` / `clipboard` / `files.own` / `session.post`。其余可声明可勾, 调用时回一句点名的
+  "这一版还没接通", 不假装成功。**检查只有一处** (`LwPluginContextBinder.call`): 逐次对照声明与授权、
+  核调用方 uid、每一次都进审计 (被拒的也进)
+- **`session.post` 就是投一句话** (走 `voice/inbox.jsonl`, `source` 记 `plugin:<id>`), 它是敏感档,
+  默认不勾
+- **工具名 = `<toolPrefix>_<动作>`**, 与 `lw_*` 同形; 前缀全局唯一, `lw` / `dsh` / `agent` 保留。
+  宿主每 3 秒拉一次 `plugin {op:"snapshot"}`, **revision 变了才**注销旧的、登记新的 —— 于是"装上 →
+  模型下一轮就看得见"这条链不靠重启 host
+- **签名载荷的两份实现必须逐字节相同** (Node 的 `tools/lw-plugin-sign.mjs` 与 Kotlin 的
+  `PluginSignature`): 键递归排序 / 紧凑分隔符 / **数字只许是整数** (浮点在装包时就拒) / 最后一段是
+  按路径排序的逐文件哈希清单。`files` 还得覆盖包里除 `plugin.json` 之外的**每一个**文件 ——
+  覆盖不到的文件等于没被签
+- **`describe()` 与包必须是一对**: 启用时拿 id / 版本 / api / 工具名 / 能力五项对照, 不一致就不启用
+  (伴侣 APK 与那份包是分开发的两样东西, 只有这一步能把它们绑在一起)
+- **未签名的包只走开发者模式** (设置页那一段里的开关, 默认关), 界面上常驻红字; 发布者指纹是公钥
+  SPKI-DER 的 sha256
+- 样例在 `samples/companion/` (模块 `:sample-companion` 与 `plugin/` 那一份包), 插件的工具数与
+  `lw_plugin` 一起把 `check-host-plugin.mjs` 的 `FLOOR` 抬到 61; 这一批的静态校验是
+  `tools/check-plugins.mjs` (41 条, 含"仓库里不许有 .aidl"那一条与"详情对话框封了滚动上限"那一条)
+- **插件详情对话框的正文自己封了高度并挂了 `verticalScroll`** (屏高六成, 见 `SettingsScreen.PluginDialog`):
+  声明的能力多起来 (最多 22 条) 内容会长过一屏, 而 Miuix 的 `OverlayDialog` **自己不滚也没有 `maxHeight`**
+  (参数只有 `maxWidth`) —— 不封顶时超出一屏的那一截被窗裁掉, 那两个「卸载」按钮就点不到 (2026-10-08 在
+  模拟器上量到的)。**设置页的入口是 app 自己右上角那颗「菜单」按钮** (`contentDescription="菜单"`), 不是
+  overlay 那颗球 —— 球的菜单只有「回应用 / 关掉球」两行
+- **这一批随 2.6.0 一起发了** (2026-10-09): `versionCode 8 / versionName "2.6.0"`, 干净构建
+  (`:app:clean` 之后全量 `assembleDebug`) 225,980,634 字节 (215.5 MiB), sha256
+  `659902c6052d7e273c1c1ed353c13f3255466f598c9151cf0ad56a80938117be`; `tools/apk-bytes.py` 量出最大
+  无归属区间 4,098 字节 (同一份源码增量构建是 308.2 MB, 差出来的 90 MB 全是没人认领的字节); 发在
+  `yuloong07-star/DSH-LW` 的 `v2.6.0` (Release 正文在工作区 `docs\DSH-LW-2.6.0-release-notes.md`)。
+  同一批里还有: **「正在想」那份文件说了算** (`lw/ball-phase.json` + inotify)、**球上手势的防误触档**、
+  **输入框幂等** (三击两次不再叠两块)、**双击回复回到"你发话的那一场"**、**语音输入缺省统一到 SenseVoice**
+  (GUI 那个录音按钮不再替人下 1.6 GB 的 GLM, 官方 bundle 那个在安卓上永远失败的 provider 被按 id 关掉)、
+  以及**朗读那两条修正** (对端主动关闭要当场把 code 与理由带出来, 内置 Edge 音色表去掉已下线的晓辰)。
+  这一份原来是按 "2.5.1" 计划的, 收口时主人定名叫 2.6.0
+- **装机冒烟 (2026-10-09, emulator-5554, 这一版那份干净构建的包)**: 无障碍 listed+running+healthy,
+  通知使用权 listed+running+granted+banners, 悬浮窗已允许, GUI `rootChildren: 1` (htmlLength 930,168),
+  系统 TTS 一条 14 字念完 (`spoken: true` "the engine finished") —— 而**这一版最要紧的一条是插件整链**:
+  宿主起来时自己报 `plugin tools now hello_ping, hello_battery, hello_ask`, `lw_plugin op=list` 回
+  "你好伴侣 1.0.0 [io.github.miuzarte.littlewhale.sample.companion] —— 在岗, 前缀 hello_, 授权 1/3",
+  调 `hello_ping` 由**伴侣 APK 自己回话** ("我住在 …plugins/io.github.miuzarte.littlewhale.sample.companion/1.0.0,
+  对面的 LW 是 2.6.0, 拿到的授权有 device.read") —— 也就是 host 插件 → 通道 → binder → 伴侣这一条全通。
+  **这一轮没验的**: 特权通道在模拟器上没起来 (Shizuku 13.6 装了但没跑, 模拟器没有 root, 而它的 starter
+  要在界面里点一次), 所以 OCR / 虚拟屏 / 输入那几条这一轮没跑; 真机 `OJZD5D6TMNSKFYHM` 这一轮掉线了,
+  它上面装的是 10-09 13:14 那一份 (同一份代码, 只是版本号还写着 2.5.0)
 
 ## 工作区与存储
 

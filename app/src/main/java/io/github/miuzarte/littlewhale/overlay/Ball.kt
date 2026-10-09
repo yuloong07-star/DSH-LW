@@ -18,16 +18,21 @@ import io.github.miuzarte.littlewhale.R
 import kotlin.math.abs
 
 /**
- * 球上那三个字的三种可能
+ * 球上那几个字的四种可能
  *
- * 三个词都是「正在 X」三个字 (主人 2026-10-05 点过名: 状态词就写「正在听」这一档), 12 sp 下正好画得
+ * 前三个都是「正在 X」三个字 (主人 2026-10-05 点过名: 状态词就写「正在听」这一档), 12 sp 下正好画得
  * 进 48 dp 的球 —— 这是"状态提示"落在最小面积上的办法 (颜色只是它的第二种说法, 不是唯一的那种:
  * 颜色认不出来的人也要读得懂)
+ *
+ * [FAILED] 是 2026-10-08 加的那一档, 只有**两个字**: 它说的不是"正在做什么", 而是"刚才那一轮没成"
+ * (判据与寿命见 [BallPhaseFile] 与 `OverlayState.failedAckAt`)。所以它挪出「正在 X」那一套句式 ——
+ * 硬凑成四个字反而看不清
  */
 internal enum class BallWord {
     SPEAKING,
     THINKING,
     LISTENING,
+    FAILED,
 }
 
 /** 那三个字怎么说: 与设置页、菜单、通知栏说的是同一份文案 */
@@ -35,6 +40,7 @@ internal fun BallWord.label(context: Context): String = when (this) {
     BallWord.SPEAKING -> context.getString(R.string.ball_state_speaking)
     BallWord.THINKING -> context.getString(R.string.ball_state_thinking)
     BallWord.LISTENING -> context.getString(R.string.ball_state_listening)
+    BallWord.FAILED -> context.getString(R.string.ball_state_failed)
 }
 
 /** 每种状态描边的颜色: 只用来描一圈边, 认字那一半永远在 */
@@ -42,27 +48,76 @@ internal fun BallWord.ring(): Int = when (this) {
     BallWord.SPEAKING -> RING_SPEAKING
     BallWord.THINKING -> RING_THINKING
     BallWord.LISTENING -> RING_LISTENING
+    BallWord.FAILED -> RING_FAILED
 }
 
 private val RING_SPEAKING = 0xFFB388FF.toInt()
 private val RING_THINKING = 0xFFFFC24D.toInt()
 private val RING_LISTENING = 0xFF6EF3B0.toInt()
+private val RING_FAILED = 0xFFFF5252.toInt()
 
 /**
  * 球现在该说哪两个字
  *
- * 优先级是**在念 > 在想 > 在听**: 喇叭正在说话时那条链整个哑着 (半双工那一道闸), 所以"在念"比
- * "在听"更贴近事实; "在想"是宿主那一侧的事 (一条轮次在跑), 而它比"在听"要紧 —— 主人在等的是回答
+ * 优先级是**在念 > 在听 > 在想** (2026-10-08 主人改的口径): 喇叭正在说话时那条链整个哑着 (半双工
+ * 那一道闸), 所以"在念"比"在听"更贴近事实; 而**"在听"要压过"在想"** —— 正在想的时候点一下球就是
+ * 开语音输入, 那一下开起来之后球上必须写着「正在听」(原来"在想"排前面, 于是麦克风开着而球还写着
+ * "正在想", 人以为点没生效)
+ *
+ * **「失败」插在"在听"与"在想"中间** (2026-10-08 主人定的那一档, 见 [BallWord.FAILED]): 它压过
+ * "在想" —— 一轮没成这件事比"还有一轮在跑"更该让人看见; 它让位给上面那两个字 —— 麦克风开着、
+ * 或者它正在念答案时, 那两件是**此刻正在发生**的事, 而失败说的是"刚刚"。让位**不等于认过**:
+ * 那两个字落下之后失败照样回来, 真正抹掉它的只有主人点一下球 (`OverlayState.failedAckAt`)
+ *
+ * 那一轮还在跑这一点没有丢: 语音窗口收掉之后 ([BallWord.LISTENING] 不再成立), 球上立刻回到
+ * 「正在想」
  *
  * 纯函数, 没有设备也能量 (见 BallStatusTest)
  */
 internal object BallStatus {
-    fun wordFor(speaking: Boolean, thinking: Boolean, listening: Boolean): BallWord? = when {
+    fun wordFor(
+        speaking: Boolean,
+        thinking: Boolean,
+        listening: Boolean,
+        failed: Boolean,
+    ): BallWord? = when {
         speaking -> BallWord.SPEAKING
-        thinking -> BallWord.THINKING
         listening -> BallWord.LISTENING
+        failed -> BallWord.FAILED
+        thinking -> BallWord.THINKING
         else -> null
     }
+}
+
+/**
+ * 哪几种结束原因在球上写成「失败」 (2026-10-08 主人定的口径: 三种都算)
+ *
+ * dsh 那张表 (`TurnEndReasonMap`) 一共 7 种, 挑得出这三种是有话说的:
+ *
+ * - `error` —— 真的失败了 (模型 / 网络 / 工具), 带一份结构化理由 (`Ended.why`)
+ * - `max-tokens` —— 回答撞上输出上限被截断, 主人拿到的是半句话
+ * - `blocked` —— 这一轮被闸住, 一步都没跑起来 (`agent/pre-step` 被拒)
+ *
+ * 剩下那几种都**不该**报成失败: `completed` 是正常结束; `aborted` 是主人自己按的停;
+ * `interrupted` / `forked` 根本不是实时事件 (它们是事后补进日志的收尾, 见 dsh 的 `session/repair`),
+ * 这条链永远收不到 —— 所以这里也不该给它们留位置
+ *
+ * 纯函数, 没有设备也能量 (见 BallTest)
+ */
+internal object BallFailure {
+    val KINDS = setOf("error", "blocked", "max-tokens")
+
+    /** 这条结束原因要不要点亮球上那两个字 */
+    fun counts(kind: String?): Boolean = kind != null && kind in KINDS
+
+    /**
+     * 这一拍该不该写「失败」
+     *
+     * `at` 与 `ackAt` **都是文件或那一笔账里的时间戳, 不是本机时钟**: 主人点一下球就把认过的那一条
+     * 的时间记进 `ackAt`, 于是判据是"文件里那条比认过的这条新"。拿本机时间当水位线的话, 两侧时钟
+     * 只要差一点, 下一条真的失败就会被当成"早就认过了"吞掉
+     */
+    fun shows(kind: String?, at: Long, ackAt: Long): Boolean = counts(kind) && at > ackAt
 }
 
 /**
@@ -319,6 +374,14 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
     var word: BallWord? = null
         private set
 
+    /**
+     * 上一拍落在描边与那几个字上的颜色
+     *
+     * 会话轮换时字还是「正在想」而环色换了, 光比 [word] 会把这三十多个字色变化全吃掉 —— 它是 [show]
+     * 里那两句"要不要重画"的第二个判据
+     */
+    private var lastColor: Int = NEUTRAL
+
     init {
         // 那 3 dp 的余量是留给拖动放大的 (见 [core])
         addView(
@@ -347,30 +410,48 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
      *
      * 同一个值时什么都不做 (心跳 400 ms 一次, 不必每次都重画), 而换字那一下是淡入淡出:
      * 先淡到 0 再换字再淡回来, 总共 [FADE_MS] —— 比"啪一下换个字"稳
+     *
+     * [ring] 是**这一档指定的环色** (现在只有"正在想"用得上: 颜色按会话固定, 见 `BallPhaseFile`),
+     * 传 null 就用这个字自己的颜色 —— 两个会话轮流在想时那个色要跟着换, 所以它得从外面进来。
+     *
+     * **环色与那几个字的颜色是同一个色** (主人 2026-10-09: "正在想的字体颜色换成对应的颜色"): 原来
+     * 只有描边跟着会话换, 字恒白 —— 两个会话同时在想时要凑近看那一圈才分得出是哪一场。所以 [ring]
+     * 进来之后两边一起上色, 而**换色但字没换那一下也要重画** (会话轮换时 `next` 是同一个 THINKING,
+     * 光看"字变没变"会把这次换色吃掉)
      */
-    fun show(next: BallWord?, animate: Boolean = true) {
+    fun show(next: BallWord?, animate: Boolean = true, ring: Int? = null) {
         val changed = next != word
+        val color = ring ?: next?.ring() ?: NEUTRAL
+        val recolored = color != lastColor
         word = next
-        circle.setStroke(dp(STROKE_DP), next?.ring() ?: NEUTRAL)
+        lastColor = color
+        circle.setStroke(dp(STROKE_DP), color)
         val text = next?.label(context).orEmpty()
         val size = if (next == null) LABEL_SP else WORD_SP
-        if (!changed && label.text.isNotEmpty()) return
-        if (!animate) {
-            apply(next, text, size)
+        if (!changed && !recolored && label.text.isNotEmpty()) return
+        // 字换了才值得闪一下; 只换色 (会话轮换) 直接落色, 不该看着像闪了一下
+        if (!changed || !animate) {
+            label.animate().cancel()
+            apply(next, text, size, color)
             return
         }
         label.animate().cancel()
         label.animate().alpha(0f).setDuration(FADE_MS / 2).withEndAction {
-            apply(next, text, size)
+            apply(next, text, size, color)
             label.animate().alpha(1f).setDuration(FADE_MS / 2).start()
         }.start()
     }
 
-    /** 那两个字与应用标互斥: 有状态就把标收起来, 闲着就把标放回来 */
-    private fun apply(next: BallWord?, text: String, size: Float) {
+    /**
+     * 那两个字与应用标互斥: 有状态就把标收起来, 闲着就把标放回来
+     *
+     * [color] 与描边那一个环色同源 (见 [show]) —— 空闲时它是那颗标的白 (文字不可见, 这个色用不上)
+     */
+    private fun apply(next: BallWord?, text: String, size: Float, color: Int) {
         glyph.visibility = if (next == null) VISIBLE else GONE
         label.visibility = if (next == null) GONE else VISIBLE
         label.text = text
+        label.setTextColor(color)
         label.setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
         label.alpha = 1f
     }

@@ -1,6 +1,8 @@
 <resources>
     <string name="app_name">DSH-LW</string>
     <string name="a11y_description">Lets DSH read the text on a screen and exactly where it is, which means fewer on-device OCR calls</string>
+    <string name="permission_plugin_label">Connect to a DSH-LW plugin</string>
+    <string name="permission_plugin_description">Lets a companion app act as a DSH-LW plugin: LittleWhale binds its service and hands it the capabilities you allowed</string>
 
     <string name="button_cancel">Cancel</string>
     <string name="button_confirm">OK</string>
@@ -201,7 +203,7 @@
     <string name="settings_ball_on">Keep the ball on screen</string>
     <string name="settings_ball_on_summary">On: a small ball stays over other apps - tap it to speak, hold it for a menu, drag it to an edge to tuck it away. It needs the display-over-other-apps permission, and a missing one is named instead of failing quietly</string>
     <string name="settings_ball_feel">Gesture sensitivity</string>
-    <string name="settings_ball_feel_summary">How long a press counts, how far a finger may drift, how quick a triple tap must be; now: %1$s</string>
+    <string name="settings_ball_feel_summary">How long a press counts, how far a finger may drift, how quick a triple tap must be, how close two taps must be to count as a double tap, and how long two taps must be kept apart; now: %1$s</string>
     <string name="settings_ball_feel_standard">Standard</string>
     <string name="settings_ball_feel_guard">Guard</string>
     <string name="settings_ball_state_up">The ball is up, docked %1$s</string>
@@ -227,6 +229,7 @@
     <string name="ball_state_listening">Listening</string>
     <string name="ball_state_thinking">Thinking</string>
     <string name="ball_state_speaking">Speaking</string>
+    <string name="ball_state_failed">Failed</string>
     <string name="ball_menu_title">Ball · %1$s</string>
     <string name="ball_menu_return">Back to the app</string>
     <string name="ball_menu_release_camera">Release video mode</string>
@@ -302,6 +305,7 @@
     <string name="settings_speak_preview">Listen</string>
     <string name="settings_speak_previewing">Speaking...</string>
     <string name="settings_speak_preview_summary">Says one line with the voice and rate above, so the choice can be judged by ear</string>
+    <string name="settings_speak_preview_failed">Nothing came out: %1$s</string>
     <string name="settings_speak_sample">This is how a reply will be spoken.</string>
 
     <string name="settings_section_lock">Lock screen</string>
@@ -411,6 +415,32 @@
     <string name="settings_quick_deleted">Deleted "%1$s"</string>
     <string name="settings_quick_delete_failed">"%1$s" was not deleted: the file is gone or could not be removed</string>
     <string name="settings_quick_note">A tap hands the command to the conversation; the queue is the voice one, so "no conversation means a new one, and twenty minutes stays in the same one" still holds</string>
+
+    <string name="settings_section_plugin">Plugins</string>
+    <string name="settings_section_plugin_summary">Packages other people wrote, adding abilities to this phone</string>
+    <string name="settings_plugin_empty">No plugin is installed. Plugins live in %1$s - tap \"Load a plugin package\" below to put one there</string>
+    <string name="settings_plugin_install">Load a plugin package</string>
+    <string name="settings_plugin_install_summary">A .lwp file or an unzipped directory holding plugin.json. Loading one does not enable it</string>
+    <string name="settings_plugin_developer">Developer mode</string>
+    <string name="settings_plugin_developer_summary">Accept local packages with no publisher signature. Installing a plugin is trusting it - leave this off</string>
+    <string name="settings_plugin_note">Installing a plugin is trusting it: it gets exactly the capabilities you switch on here, and enabling one binds that companion app\'s service</string>
+    <string name="settings_plugin_state_broken">unreadable</string>
+    <string name="settings_plugin_state_enabled">working</string>
+    <string name="settings_plugin_state_stopped">stopped</string>
+    <string name="settings_plugin_state_unlinked">enabled, but its host did not answer: %1$s</string>
+    <string name="settings_plugin_trust_official">official</string>
+    <string name="settings_plugin_trust_signed">signed</string>
+    <string name="settings_plugin_trust_new">new publisher</string>
+    <string name="settings_plugin_trust_unsigned">unsigned</string>
+    <string name="settings_plugin_summary_line">%1$s · %2$s · %3$d of %4$d capabilities allowed</string>
+    <string name="settings_plugin_not_wired">this build does not implement it yet</string>
+    <string name="settings_plugin_enable">Enable it</string>
+    <string name="settings_plugin_disable">Stop it</string>
+    <string name="settings_plugin_open">Open the screen it ships</string>
+    <string name="settings_plugin_audit">Recent capability calls</string>
+    <string name="settings_plugin_audit_empty">It has not called a capability yet</string>
+    <string name="settings_plugin_uninstall">Uninstall and delete its data</string>
+    <string name="settings_plugin_uninstall_keep">Uninstall but keep its data</string>
 
     <string name="screen_window_hide">Hide the screen window</string>
     <string name="screen_window_show">Show the screen window</string>

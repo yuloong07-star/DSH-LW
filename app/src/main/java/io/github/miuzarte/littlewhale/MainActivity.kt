@@ -80,6 +80,8 @@ class MainActivity : ComponentActivity() {
         // The host deliberately outlives this activity, so the service owns its lifetime
         DshHostService.start(this)
         // 冷启动那一档: 「回应用」把界面拉起来时带的就是"要落到哪一场对话"那个 id (见 onNewIntent)
+        // **带了空串就是"去新会话界面"** ([BallReturn.NEW_SESSION], 2026-10-09): 与"这个 intent 没带
+        // 那个键"分得开 —— 没带 (`null`) 时 [BallReturn.ask] 什么都不做, 界面照旧只是被提到前面
         val ball = intent?.getStringExtra(OverlayService.EXTRA_OPEN_SESSION)
         Log.i(TAG, "created with open-session=$ball")
         BallReturn.ask(ball)

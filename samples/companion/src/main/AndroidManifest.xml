@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 伴侣就是"新权限"唯一的合法来源: 它自己要什么就在这里声明什么, LW 一件也代不了 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true">
+
+        <!-- 伴侣自带的界面: LW 只给一个"打开"入口 (见协议 10.3), 这一页怎么画是伴侣自己的事 -->
+        <activity
+            android:name=".HelloScreen"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 被 LW 绑的那一个: 用 LW 声明的那条自定义权限护住, 于是别的应用绑不上。
+             描述符与 transaction code 都在 :lwplugin-api 里, 这一份是手写 Binder 而不是 AIDL stub -->
+        <service
+            android:name=".CompanionPluginService"
+            android:exported="true"
+            android:permission="io.github.miuzarte.littlewhale.permission.PLUGIN">
+            <intent-filter>
+                <action android:name="io.github.miuzarte.littlewhale.plugin.BIND" />
+            </intent-filter>
+        </service>
+    </application>
+
+</manifest>

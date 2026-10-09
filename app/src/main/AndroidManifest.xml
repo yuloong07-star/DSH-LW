@@ -123,6 +123,16 @@
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
 
+    <!-- LW 插件那条路 (批次 9): 伴侣 APK 的 Service 用它护住, 于是只有我们绑得上。
+         signature|dangerous 的语义是"满足任一即授予" —— 同签名的伴侣自动拿到, 第三方伴侣要人
+         在系统弹窗里点一次同意。我们自己也要 uses-permission 这一条, 否则绑不上护住了的 Service -->
+    <permission
+        android:name="io.github.miuzarte.littlewhale.permission.PLUGIN"
+        android:label="@string/permission_plugin_label"
+        android:description="@string/permission_plugin_description"
+        android:protectionLevel="signature|dangerous" />
+    <uses-permission android:name="io.github.miuzarte.littlewhale.permission.PLUGIN" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

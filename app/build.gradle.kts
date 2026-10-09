@@ -201,11 +201,12 @@ android {
         // decision: the accessibility tree path needs API 30, and nothing here has been run below 33.
         minSdk = 33
         targetSdk = 37
-        // 2.5.0: 2.0.0 的正文 (虚拟屏保活面 / 语音输入输出 / 浮窗 / 唤醒词) 加上 2.5.0 那九批 ——
-        // 浮标几何与模式硬闸、锁屏与唤醒、两个模式、指代不明自动截图、快捷指令、自动指令、
-        // 以及 p 图 (随包的生图插件 + photo-edit 技能 + lw_image)
-        versionCode = 7
-        versionName = "2.5.0"
+        // 2.6.0: 2.5.0 的正文 (浮标几何与模式硬闸 / 锁屏与唤醒 / 两个模式 / 指代不明自动截图 /
+        // 快捷指令 / 自动指令 / p 图) 加上 2.6.0 这一批 —— LW 插件 (伴侣 APK 那一层)、
+        // 「正在想」由一份文件说了算、球上手势的防误触档、输入框幂等、回复回到"我发话的那一场"、
+        // 语音输入缺省统一到 SenseVoice, 以及朗读那两条 (服务端主动关闭要当场说, 内置音色表去掉下线的晓辰)
+        versionCode = 8
+        versionName = "2.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -334,6 +335,9 @@ dependencies {
     implementation(libs.miuix.squircle)
 
     implementation(libs.kotlinx.serialization.json)
+    // LW 插件的接口那一份 (手写 Binder 的两个接口 + 常量, 批次 9): 伴侣样例与这里引的是同一个模块,
+    // 于是"两侧同一份接口"不是一句口号 —— 描述符与 transaction code 只有一处定义
+    implementation(project(":lwplugin-api"))
     // 「Edge 在线」那条朗读引擎: 那条接口是 WebSocket, 用它比手写握手可靠
     implementation(libs.okhttp)
 

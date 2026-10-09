@@ -161,6 +161,16 @@ internal object LwSpeak {
     internal fun preview(context: Context): JsonObject =
         speak(context, buildJsonObject { put("op", "speak"); put("text", context.getString(R.string.settings_speak_sample)) })
 
+    /**
+     * 试听那一条的**人话**: 念成了回 null, 没念成回一句原因
+     *
+     * 设置页要的不是字段而是"要不要说一句、说什么", 所以这一步收在这里 —— 页面原来把整份回执丢掉,
+     * 于是在线那两条念不出来时界面上一片安静 (2026-10-09 真机上"点试听没声音"就是这一处: 服务端因为
+     * 它不认的那个音色当场关了 WebSocket, 而唯一写着原因的地方就是这里的 detail)
+     */
+    internal fun spokenProblem(answer: JsonObject): String? =
+        if (answer.bool("spoken", false)) null else answer.stringOrNull("detail") ?: "it did not say anything"
+
     /** 念一段: 太长就按句切, 只等最后一片念完 */
     private fun speak(context: Context, request: JsonObject): JsonObject {
         val text = request.string("text").trim()

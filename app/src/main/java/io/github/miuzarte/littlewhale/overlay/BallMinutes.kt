@@ -59,6 +59,20 @@ internal object BallMinutes {
     const val TAP_GUARD_MS = 350L
 
     /**
+     * 「正在想」时点一下球: **等这么久再开语音输入** (2026-10-08 主人: "进入语音输入要比第二次点击
+     * 慢一点")
+     *
+     * 那一档上挂着两个手势: 点一下 = 开语音, 点两下 = 打断正在跑的那一轮。两下里的第二下必须在
+     * [DOUBLE_TAP_MS] (300 ms) 之内到, 所以那一下开语音**至少**要排在它后面 —— 取 450 ms 是把它放到
+     * 双击窗口与 [TAP_GUARD_MS] (350 ms) 两条线**都**过去之后, 于是"想打断"的那第二种意图永远先被
+     * 认出来 (打断时那一拍会把这里的待办取消掉, 见 `OverlayService.onTap`)
+     *
+     * 慢了这 450 ms 的代价很小: 它只影响"在想的时候自己开口说一句"这一条路, 而语音窗口开起来之后球
+     * 上立刻是「正在听」(见 `BallStatus.wordFor`)
+     */
+    const val THINKING_TAP_MS = 450L
+
+    /**
      * 双击的窗口: 主人 2026-10-06 点名的**0.3 s**
      *
      * 它只在"正在想"那一档有用 (见 [BallTap] / [BallTaps]): 两下之间的间隔不超过它才算一次双击,
@@ -75,6 +89,34 @@ internal object BallMinutes {
      * 还是 [TAP_GUARD_MS]
      */
     const val LISTEN_GUARD_MS = 1_000L
+
+    /* ── 防误触档那几个数 (2026-10-09 主人: "ball 的键盘输入和语音输入经常会误触" ──────
+     *
+     * 只有 [BallFeel.GUARD] 用它们, 标准档照旧用上面那几个 —— 于是"标准"那半边的三个数 (300 / 350 /
+     * 1000) 一个字都不用改, 而防误触档把**开语音与开键盘输入这两条入口**收紧:
+     *
+     * - 双击窗口收窄: 打断那一支是唯一"点错就真的停了一场"的动作
+     * - 两个"太近不算"的窗口放宽: 手抖出来的第二下被算成同一击, 于是不会进语音输入
+     *
+     * 三击那一串的总时长已经在 [TRIPLE_SPAN_MS] 里管着了, 这里不重复收
+     */
+
+    /** 防误触档的双击窗口: **220 ms** (标准档是 300 ms) */
+    const val BALL_DOUBLE_TAP_MS = 220L
+
+    /** 防误触档的点球防连击窗口: **450 ms** (标准档是 350 ms) */
+    const val BALL_TAP_GUARD_MS = 450L
+
+    /** 防误触档的"正在听"防连击窗口: **1500 ms** (标准档是 1000 ms) */
+    const val BALL_LISTEN_GUARD_MS = 1_500L
+
+    /**
+     * [BallFeel.thinkingTapMs] 那一条比两条线还要晚的余量: **80 ms**
+     *
+     * 它只保证"晚一点"这件事本身有个可量的间距, 而不是压着窗口边界 —— 压线的话两边的判据会随主线程
+     * 那一拍的抖动互相越界
+     */
+    const val THINKING_TAP_MARGIN_MS = 80L
 
     /**
      * 输入通道那块框没人碰多久就自己收掉: **20 s**
@@ -191,20 +233,21 @@ internal object BallMinutes {
  *
  * **取值的方向是 0 = 这一档不启用这条闸**, 于是"关掉"与"用平台的"不需要第二份判断:
  *
- * | 档 | 长按 | 拖动门槛 | 三击总时长 | 刚拖完那一下 |
- * | :-- | :-- | :-- | :-- | :-- |
- * | [STANDARD] 标准 | 平台的 `longPressTimeout` (400~500 ms) | 平台的 `scaledTouchSlop` (8 dp 上下) | 不看总时长 | 不挡 |
- * | [GUARD] 防误触 (缺省) | 650 ms | 12 dp | 450 ms | 250 ms |
+ * | 档 | 长按 | 拖动门槛 | 三击总时长 | 刚拖完那一下 | 双击窗口 | 点球防连击 | 正在听防连击 |
+ * | :-- | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
+ * | [STANDARD] 标准 | 平台的 `longPressTimeout` (400~500 ms) | 平台的 `scaledTouchSlop` (8 dp 上下) | 不看总时长 | 不挡 | 300 ms | 350 ms | 1 s |
+ * | [GUARD] 防误触 (缺省) | 650 ms | 12 dp | 450 ms | 250 ms | 220 ms | 450 ms | 1.5 s |
  *
- * 双击窗口 ([BallMinutes.DOUBLE_TAP_MS]) 与那两档防连击窗口 ([BallTaps.guard]) **两档共用**: 前者是
- * 主人 2026-10-06 点名的 300 ms, 后者是"第一下已经把事做掉了, 第二下不该再算一次"那条账 —— 它们与
- * 灵敏度不是一件事, 收紧它们会把手快的正常操作也吃掉
+ * **后三列 2026-10-09 加的** (主人: "ball 的键盘输入和语音输入经常会误触" + "只收紧防误触档"):
+ * 双击窗口、以及那两档"太近不算"的防连击窗口原来两档共用, 现在也各归各的档 —— 标准档那三个数
+ * (300 / 350 / 1000) 一个字没改, 收的只有防误触档。收紧的方向两边都指向"更难误开语音与键盘":
+ * 双击窗口收窄 (打断那一下最不该被手抖凑出来), 两个防连击窗口放宽 (抖出来的第二下算同一击)
  */
 internal enum class BallFeel {
     /** 标准: 手感优先, 三个门槛都交给平台那一档 */
     STANDARD,
 
-    /** 防误触: 缺省, 三个门槛都按 2026-10-08 那四个数收紧 */
+    /** 防误触: 缺省, 上面那张表里右侧那七个门槛都往"更难误触发"那一头 */
     GUARD;
 
     /** 长按门槛, 0 = 用平台的 `ViewConfiguration.getLongPressTimeout()` */
@@ -218,6 +261,32 @@ internal enum class BallFeel {
 
     /** 刚拖完那一下的挡窗, 0 = 不挡 */
     val dropGuardMs: Long get() = if (this == GUARD) BallMinutes.BALL_DROP_GUARD_MS else 0L
+
+    /**
+     * 双击窗口 ("正在想"那一档里两下算不算一次打断)
+     *
+     * **标准档还是主人点名的 0.3 s**; 防误触档收窄一档 —— 打断是这三档里唯一"点错就真的停了一场"
+     * 的动作, 越窄越不容易被手抖凑出来 (2026-10-09 主人: "键盘输入和语音输入经常会误触")
+     */
+    val doubleTapMs: Long get() = if (this == GUARD) BallMinutes.BALL_DOUBLE_TAP_MS else BallMinutes.DOUBLE_TAP_MS
+
+    /** 两次点球之间"太近, 不算一次"的窗口 (见 [BallTaps.guard]) */
+    val tapGuardMs: Long get() = if (this == GUARD) BallMinutes.BALL_TAP_GUARD_MS else BallMinutes.TAP_GUARD_MS
+
+    /** "正在听"那一档的防连击窗口 (那一档的点击是"把语音收回来", 手一抖就是刚开就关) */
+    val listenGuardMs: Long get() =
+        if (this == GUARD) BallMinutes.BALL_LISTEN_GUARD_MS else BallMinutes.LISTEN_GUARD_MS
+
+    /**
+     * 「正在想」里那一次单点该等多久才开语音
+     *
+     * **它必须晚于防连击窗口与双击窗口** —— 这是 `OverlayService.pendingTap` 那套的硬前提: 不等的话
+     * 双击的第一下会先走单点动作 (开麦克风), 于是"想打断"变成了"开了语音"。原来它是一个常量
+     * (450 ms), 而防误触档把两个窗口都放宽之后那个常量就排到它们前面去了, 所以改成**由当前这一档
+     * 算出来**: 取两条线里更晚的那个, 再加上一档余量
+     */
+    fun thinkingTapMs(): Long =
+        maxOf(tapGuardMs, doubleTapMs) + BallMinutes.THINKING_TAP_MARGIN_MS
 
     companion object {
         /** 存盘用的名字, 与设置页那两项一一对应 */
@@ -244,6 +313,11 @@ internal enum class BallFeel {
  * 语音", 有概率 = 那块框还在的时候)。框有自己的位置、自己的焦点, 球不该替它挡住语音这一个入口;
  * 点球那一下照旧会把"框外双击"那本账清掉 (见 `OverlayService.ballListener` 的 onTap), 所以
  * 框该不该收还是由那本账说了算
+ *
+ * **「正在想」那一档点一下开语音, 但要等过双击窗口** (2026-10-08 主人定的口径): 一下 = 开语音输入,
+ * 两下 = 打断正在跑的那一轮 —— 两者靠**时间**分开: 那一下开语音排在 [THINKING_TAP_MS] (450 ms, 比
+ * 双击窗口 300 ms 与防连击窗口 350 ms 都晚) 之后, 于是第二下永远先被认成打断, 而**打断了就把那个
+ * 待办取消掉** (见 `OverlayService.onTap`)。开起来之后球上写「正在听」(优先级见 `BallStatus.wordFor`)
  *
  * **"正在念"排在"正听着"前面**: 半双工那道闸在念的时候把麦克风整个关掉了, 所以那时人真正想按的是
  * "别念了" —— 而"正在念"这几个字就写在球上, 按下去掐断它是最直的那个理解
@@ -281,11 +355,24 @@ internal enum class BallAct {
 }
 
 internal object BallTouch {
-    fun act(phase: BallPhase, speaking: Boolean, channelOpen: Boolean): BallAct = when {
+    /**
+     * @param listening 那一条语音链此刻是不是开着 ([VoiceState.capturing]) —— 判它而不是判 [phase]:
+     *   `phase` 现在同时被"正在听"与"正在想"占用 (两者都不收边), 靠它分不出该"收回"还是该"开"
+     */
+    fun act(
+        phase: BallPhase,
+        speaking: Boolean,
+        channelOpen: Boolean,
+        listening: Boolean = false,
+    ): BallAct = when {
         // 念回答的时候那一下是"别念了" (主人 2026-10-05 追加的一条)
         speaking -> BallAct.STOP
-        phase == BallPhase.VOICE -> BallAct.HUSH
+        // 半隐收着的球: 那一下永远只是"召出来"
         phase == BallPhase.RESTED -> BallAct.SUMMON
+        // 麦克风开着: 点一下收回来 (原来判的是 `phase == VOICE`, 而那个档位现在也会因为"正在想"而成立)
+        listening -> BallAct.HUSH
+        // 剩下两档都是"点一下开语音": 空闲时那是"点两次才说话"的第一下 (见 [opensVoiceNow]),
+        // 而**正在想时那一下等过双击窗口就当场开** (见 [THINKING_TAP_MS] 与 OverlayService.tapAction)
         else -> BallAct.LISTEN
     }
 
@@ -297,6 +384,26 @@ internal object BallTouch {
      * 点击小球进行语音输入")。判据是纯函数 (见 BallTest), 调用方只按它的答案走
      */
     fun opensVoiceNow(summonFresh: Boolean, replyBox: Boolean): Boolean = replyBox || summonFresh
+}
+
+/**
+ * 输入通道那块框记着的两笔"哪一场"账, 该按哪一场走
+ *
+ * 两笔账都来自宿主, 但答的不是同一件事 (2026-10-09 主人: "谁发送了输入框, 就回到那一场"):
+ *
+ * - `input` (`OverlayState.inputSession`): **我从这块框发出去的那句话投给了谁** —— 主人要的"对应的
+ *   会话"就是它, 所以它在前面
+ * - `reply` (`OverlayState.replySession`): **框里最新那条回复是哪一场推来的** —— 一次都还没发过话
+ *   (框是三击刚开出来的) 时退回它, 那样"框里正显示着谁的回答"与"回去看谁"仍然对得上
+ *
+ * 两条都没有 (既没发过话, 也没收过带会话的回复) 就回 null, 由调用方接浮标账本那条兜底。抽成纯函数
+ * 是为了没有设备也能量 (见 BallTest): 优先级反了正是这次要修的那条病 (回到"最近推过回复的那一场"
+ * 而不是"我发给了哪一场")
+ */
+internal object BoxTarget {
+
+    fun choose(input: String?, reply: String?): String? =
+        input?.takeIf { it.isNotBlank() } ?: reply?.takeIf { it.isNotBlank() }
 }
 
 /**
@@ -344,9 +451,14 @@ internal enum class BallTap {
  */
 internal object BallTaps {
 
-    /** 这一档的防连击窗口: 正在听 1 s, 其余 350 ms */
-    fun guard(word: BallWord?): Long =
-        if (word == BallWord.LISTENING) BallMinutes.LISTEN_GUARD_MS else BallMinutes.TAP_GUARD_MS
+    /**
+     * 这一档的防连击窗口: 正在听那一档比其余那档宽一截
+     *
+     * **两个数都随 [BallFeel] 走** (2026-10-09): 防误触档把它们一起放宽, 于是手抖出来的第二下被算成
+     * 同一击, 不会顺路进语音输入。标准档读到的仍是主人点名的 1 s / 350 ms
+     */
+    fun guard(word: BallWord?, feel: BallFeel = BallFeel.GUARD): Long =
+        if (word == BallWord.LISTENING) feel.listenGuardMs else feel.tapGuardMs
 
     /**
      * 这一下算哪一种
@@ -378,12 +490,12 @@ internal object BallTaps {
         if (lastTapAt == 0L) return BallTap.SINGLE
         val gap = now - lastTapAt
         return when {
-            gap <= BallMinutes.DOUBLE_TAP_MS -> {
+            gap <= feel.doubleTapMs -> {
                 if (chain + 1 < 3) BallTap.DOUBLE
                 else if (inTripleSpan(now, chainFrom, feel.tripleSpanMs)) BallTap.TRIPLE
                 else BallTap.DOUBLE
             }
-            gap < guard(word) -> BallTap.TOO_SOON
+            gap < guard(word, feel) -> BallTap.TOO_SOON
             else -> BallTap.SINGLE
         }
     }

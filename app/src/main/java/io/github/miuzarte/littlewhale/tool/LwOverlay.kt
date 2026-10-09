@@ -37,15 +37,13 @@ internal object LwOverlay {
         "collapse" -> collapse(context)
         "hide" -> hide(context)
         "state" -> state(context)
-        // 宿主推来的「在想」: 一轮在跑 / 跑完了, 只改一个记号, 球那边 400 ms 读一次
-        "phase" -> phase(request)
         // 输入通道 (那块自己画的文字框): 开它, 或者把一句回答推进去
         "channel" -> channel(context)
         "reply" -> reply(context, request)
         // 同一条推送, 但这一条不是回答: 比如"这句话没能送进会话" (画出来带一个 ⚠)
         "note" -> note(context, request)
         else -> throw IllegalArgumentException(
-            "op has to be show, expand, collapse, hide, state, phase, channel, reply or note, not \"$op\"",
+            "op has to be show, expand, collapse, hide, state, channel, reply or note, not \"$op\"",
         )
     }
 
@@ -151,18 +149,6 @@ internal object LwOverlay {
             OverlayState.hideFailed != null -> "the ball did not come off: ${OverlayState.hideFailed}"
             stopped -> "the ball was stopped"
             else -> HIDDEN_DETAIL
-        }
-    }
-
-    /** 宿主说的一轮在跑没有: 只记记号, 不画任何东西 (没球的时候它就是个没人看的字段) */
-    private fun phase(request: JsonObject): JsonObject {
-        val asked = request.string("phase").lowercase()
-        val phase =
-            if (asked == OverlayState.PHASE_THINKING) OverlayState.PHASE_THINKING else OverlayState.PHASE_IDLE
-        OverlayState.phase = phase
-        return buildJsonObject {
-            put("phase", phase)
-            put("ball", OverlayState.showing)
         }
     }
 
@@ -273,6 +259,11 @@ internal object LwOverlay {
             put("expanded", OverlayState.expanded)
             put("channel", OverlayState.channel)
             put("replies", OverlayState.replies)
+            // **那块框记着的两笔"哪一场"账** (2026-10-09): `boxInput` 是"我从框里发出去的话投给了
+            // 谁" (「回应用」按它走), `boxReply` 是"框里最新那条回复是谁推来的" (它只管显示)。
+            // 双击回复框回到哪一场全靠前者 —— 排障时一眼能看出它是不是空的 (空了才会退回后者)
+            put("boxInput", OverlayState.inputSession ?: "")
+            put("boxReply", OverlayState.replySession ?: "")
             // 这两条是排查"状态说开着、屏幕上看不见"用的: 逻辑开着 != 那块窗真的挂上了
             put("attached", OverlayState.channelAttached)
             put("channelHeight", OverlayState.channelHeight)
@@ -308,6 +299,18 @@ internal object LwOverlay {
             put("y", OverlayState.y)
             put("word", OverlayState.word ?: "")
             put("phase", OverlayState.phase)
+            // 这一轮在跑的是哪一场、它那个环色是什么 (5 色轮转, 见 BallPhaseFile); 读文件读不动时
+            // phaseNote 里有人话 —— "球为什么不显示正在想"就靠这一对
+            put("session", OverlayState.session)
+            put("ringColor", OverlayState.ringColor)
+            put("phaseNote", OverlayState.phaseNote)
+            // 最近结束的那一轮是怎么收的 (2026-10-08): 球上写「失败」的判据就在这几个数上 ——
+            // `failedKind` 是宿主透传的原因, `failedWhy` 是失败那句理由 (球上不显示, 这里给排障读),
+            // 而 `failedAckAt` 是"主人点过一下球了没有"那一笔账: 字没亮时靠它分辨"没失败"与"认过了"
+            put("failedKind", OverlayState.failedKind)
+            put("failedAt", OverlayState.failedAt)
+            put("failedAckAt", OverlayState.failedAckAt)
+            put("failedWhy", OverlayState.failedWhy)
             put("mode", LwModes.active(context))
             put("url", OverlayState.url ?: "")
             put("page", OverlayState.lastError ?: "")

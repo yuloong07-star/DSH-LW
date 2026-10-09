@@ -44,8 +44,13 @@ internal object LwEdgeSpeech {
     /**
      * 设置页列出来的中文音色
      *
-     * 接口那边有几百条 (含方言与多语言), 这里只给常用的六个; 设置页的"音色"一行还要能自己填名字,
+     * 接口那边有几百条 (含方言与多语言), 这里只给常用的八个; 设置页的"音色"一行还要能自己填名字,
      * 所以清单只当快捷方式, 不当白名单
+     *
+     * **这份清单会过期, 而它会以"某个音色念不出来"的形式过期**: 2026-10-09 真机上试听没声音那次,
+     * 就是微软把「晓辰」下线了 —— 服务端收下 SSML 之后直接 close 1007 `Unsupported voice ...`, 而这里
+     * 还留着它, 于是手机上那个存着的音色一直念不出来。改这份清单要对着接口那一条
+     * `/voices/list?trustedclienttoken=...` 核一遍 (见 [closingFailure])
      */
     val VOICES = listOf(
         "zh-CN-XiaoxiaoNeural" to "晓晓 (女声, 通用)",
@@ -53,8 +58,27 @@ internal object LwEdgeSpeech {
         "zh-CN-YunxiNeural" to "云希 (男声, 年轻)",
         "zh-CN-YunyangNeural" to "云扬 (男声, 播报)",
         "zh-CN-YunjianNeural" to "云健 (男声, 沉稳)",
-        "zh-CN-XiaochenNeural" to "晓辰 (女声, 轻松)",
+        "zh-CN-YunxiaNeural" to "云夏 (少年, 轻松)",
+        "zh-CN-liaoning-XiaobeiNeural" to "小北 (东北话)",
+        "zh-CN-shaanxi-XiaoniNeural" to "小妮 (陕西话)",
     )
+
+    /**
+     * 对端主动关闭时该报什么: 没等到 `turn.end` 就算失败, 把 close 的 code 与理由原样带出去
+     *
+     * 为什么非有这一条不可: OkHttp 只在**我们自己发起关闭**时才回调 `onClosed`, 对端主动关只给
+     * `onClosing` —— 而这条接口拒绝一个音色时正是那个样子 (握手成功, `Path:turn.start` 之后紧跟一条
+     * close: 1007 `Unsupported voice zh-CN-XiaochenNeural.`)。那一处原来没人接, 于是只能干等满 60 秒
+     * 预算, 界面上一片安静
+     *
+     * [turnEnded] 那一位不能省: 正常念完时是**我们自己** `close(1000)`, 对端回过来的那条 close 不能再
+     * 被当成失败
+     */
+    fun closingFailure(code: Int, reason: String, turnEnded: Boolean): String? {
+        if (turnEnded) return null
+        val why = reason.trim()
+        return "the service closed the connection (code $code)" + if (why.isEmpty()) "" else ": $why"
+    }
 
     /** Windows FILETIME 纪元到 Unix 的秒差 (1601-01-01 → 1970-01-01) */
     private const val WINDOWS_EPOCH_SECONDS = 11_644_473_600.0

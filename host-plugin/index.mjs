@@ -138,6 +138,14 @@ export function apply(ctx) {
   } catch (error) {
     warn(ctx, `the on-device speech provider was not registered: ${error.message}`)
   }
+
+  // LW 插件 (批次 9): 应用那一侧是唯一做能力检查、授权与审计的地方, 这里只按它给的快照把工具登记上。
+  // 每几秒拉一次快照, revision 变了才重注册 —— "装一个插件 → 模型下一轮就能看到它"这条链靠的就是它
+  try {
+    startPluginTools(ctx)
+  } catch (error) {
+    warn(ctx, `the plugin tools were not registered: ${error?.message ?? error}`)
+  }
 }
 
 /**
@@ -905,6 +913,133 @@ function startCameraOwnerWatch(ctx) {
     if (cameraOwnerPath() === null) return
     void releaseCameraOwner(String(session.id))
   })
+}
+
+/**
+ * LW 插件 (批次 9): 把应用那一侧的快照变成这个宿主上的工具
+ *
+ * 分工是刻意的 —— **应用那一侧才是唯一做能力检查、授权与审计的地方**, 这里只负责"让模型看得见"。
+ * 装一份插件包不会让工具自动出现, 也没有一条路能绕开那边: 这个函数拿的就是那边给的那份清单
+ *
+ * 每 [PLUGIN_POLL_MS] 拉一次快照 (回环上一次调用, 代价可以忽略), **revision 没变就什么都不做** ——
+ * 于是"在设置页勾一条能力 / 停用 / 卸掉"这些事下一拍就反映到模型眼前, 不用重启 host
+ */
+const PLUGIN_POLL_MS = 3000
+
+const pluginRegistry = { revision: null, disposers: new Map() }
+
+function startPluginTools(ctx) {
+  const tick = async () => {
+    let snapshot
+    try {
+      snapshot = await call('plugin', { op: 'snapshot' })
+    } catch (error) {
+      // 应用那一侧还没起来 (或者通道还没接上): 下一拍再问, 这不是一个错误
+      return
+    }
+    if (snapshot === null || typeof snapshot !== 'object') return
+    if (snapshot.revision === pluginRegistry.revision) return
+    applyPluginTools(ctx, snapshot)
+  }
+  const timer = setInterval(() => void tick(), PLUGIN_POLL_MS)
+  if (typeof timer.unref === 'function') timer.unref()
+  void tick()
+}
+
+/** 一份快照换一套工具: 先把旧的都注销, 再按新的登记 */
+function applyPluginTools(ctx, snapshot) {
+  pluginRegistry.revision = snapshot.revision
+  for (const dispose of pluginRegistry.disposers.values()) {
+    try {
+      dispose()
+    } catch (error) {
+      warn(ctx, `unregistering a plugin tool failed: ${error?.message ?? error}`)
+    }
+  }
+  pluginRegistry.disposers.clear()
+  for (const plugin of Array.isArray(snapshot.plugins) ? snapshot.plugins : []) {
+    for (const tool of Array.isArray(plugin?.tools) ? plugin.tools : []) {
+      if (pluginRegistry.disposers.has(tool.name)) continue
+      try {
+        pluginRegistry.disposers.set(tool.name, ctx.tools.register(pluginTool(plugin, tool)))
+      } catch (error) {
+        warn(ctx, `the plugin tool ${tool.name} was not registered: ${error?.message ?? error}`)
+      }
+    }
+  }
+  const names = [...pluginRegistry.disposers.keys()]
+  console.log(`littlewhale-channel: plugin tools now ${names.length === 0 ? '(none)' : names.join(', ')}`)
+}
+
+/**
+ * 一个插件工具在模型眼里的样子
+ *
+ * 名字与参数表全部来自 `plugin.json` (插件不能运行时改自己的工具表), 而**说不说得清它来自插件**很
+ * 要紧: 模型要知道这一条不是内置能力, 它背后是别人写的包
+ */
+function pluginTool(plugin, tool) {
+  return defineTool({
+    name: tool.name,
+    description: `${tool.summary || '(这个插件没给它写摘要)'} —— 来自 LW 插件 ${plugin.name}`
+      + ` ${plugin.version} (${plugin.id}), 前缀 ${plugin.toolPrefix}_。它是别人写的包: 每一次能力调用`
+      + ' 都由应用那一侧逐次检查声明与授权, 并记一份审计',
+    parameters: pluginParameters(tool.params),
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          // additionalProperties 必须显式写出来 —— dsh-tools 在 import 那一刻就编译 schema
+          text: { type: 'string', required: true },
+          images: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        },
+      },
+      render: (_args, value) => {
+        const blocks = [{ type: 'text', text: value.text }]
+        for (const image of Array.isArray(value.images) ? value.images : []) {
+          blocks.push({ type: 'image', attachment: image })
+        }
+        return blocks
+      },
+    },
+    async execute(args) {
+      const result = await call('plugin', { op: 'invoke', id: plugin.id, tool: tool.name, args: drop(args) })
+      return await pluginAnswer(result)
+    },
+  })
+}
+
+/** 协议里那份参数窄子集, 原样交给 dsh-tools (多一个键在装包的时候就拒了) */
+function pluginParameters(params) {
+  if (params === null || typeof params !== 'object') return {}
+  const kept = {}
+  for (const [name, value] of Object.entries(params)) {
+    if (value === null || typeof value !== 'object') continue
+    const one = { type: String(value.type ?? 'string') }
+    if (typeof value.description === 'string') one.description = value.description
+    if (value.required === true) one.required = true
+    if (Array.isArray(value.enum)) one.enum = value.enum
+    if (value.items !== undefined) one.items = pluginParameters({ items: value.items }).items
+    kept[name] = one
+  }
+  return kept
+}
+
+/** 插件回的那一份: 一句话 + 它交出来的几张图 (路径), 图按 `lw_look` 那条路当附件交给模型 */
+async function pluginAnswer(result) {
+  const text = answerOf(result)
+  const paths = Array.isArray(result?.images)
+    ? result.images.filter((one) => typeof one === 'string' && one.length > 0)
+    : []
+  if (paths.length === 0) return { text, images: [] }
+  const { images, note } = await attachPictures(paths)
+  if (images.length === 0) {
+    return {
+      text: `${text}\n(图没有随结果交上来: ${note ?? '读不到那几张图'}; 路径是 ${paths.join(', ')})`,
+      images: [],
+    }
+  }
+  return { text, images }
 }
 
 const TOOLS = [
@@ -2636,9 +2771,10 @@ const TOOLS = [
       'Transcribe speech on this phone with no network and no API key: everything runs in the '
       + 'app process, so the audio never leaves the device. Two engines, and engine= picks one: '
       + 'engine=glm is Zhipu GLM-ASR-Nano (1.5 B, Q4_K, samples at a time of CPU: a couple of '
-      + 'seconds for a short phrase, ten seconds or more for a long sentence) which is the accurate '
-      + 'one and what the GUI voice input button uses by default, and engine=sherpa is SenseVoice '
-      + '(Chinese, English, Cantonese, Japanese and Korean, with punctuation) which is the fast one. '
+      + 'seconds for a short phrase, ten seconds or more for a long sentence), which is the accurate '
+      + 'one and is reached only by naming it, and engine=sherpa is SenseVoice '
+      + '(Chinese, English, Cantonese, Japanese and Korean, with punctuation), which is the fast one '
+      + 'and the default everywhere - the GUI voice input button and the ball both use it. '
       + 'op=status reports both engines and whether their models are on disk; op=prepare downloads '
       + 'the one named, from the hf-mirror copy (huggingface.co itself is unreachable from this '
       + 'phone) - GLM-ASR is about 1.6 GB, SenseVoice about 240 MB plus the 1.8 MB silero '
@@ -2653,8 +2789,9 @@ const TOOLS = [
       engine: {
         type: 'string',
         description:
-          'glm (accurate, 1.5 B, slow) or sherpa (fast, small); default is the accurate one, and '
-          + 'op=status ignores it',
+          'glm (accurate, 1.5 B, slow, and 1.6 GB of weights of its own) or sherpa (fast, small); '
+          + 'the default is sherpa, the same engine the GUI voice input button uses, and op=status '
+          + 'ignores this',
       },
       wav: {
         type: 'string',
@@ -2700,11 +2837,11 @@ const TOOLS = [
         if (engine === SPEECH_ENGINE_GLM) {
           const info = await speechPrepareGlm()
           return `the GLM-ASR-Nano model is ready in ${info.glm.directory}, about 1.6 GB of it;`
-            + ' transcribe with engine=glm, and the GUI voice input button uses it by default'
+            + ' transcribe with engine=glm (the GUI voice input button stays on SenseVoice)'
         }
         const info = await speechPrepare(SPEECH_ENGINE_SHERPA)
         return `the SenseVoice model is ready in ${info.directory}; op=transcribe engine=sherpa`
-          + ' can use it now'
+          + ' can use it now, and the GUI voice input button is on it'
       }
       if (args.op === 'transcribe') {
         if (!args.wav) throw new Error('op=transcribe names the recording with wav=<a 16 kHz mono WAV>')
@@ -2999,13 +3136,12 @@ const TOOLS = [
       + 'keyboard, the text channel, or simply not idle for 5 s yet), how long the text channel has '
       + 'been untouched, how many times it was double-tapped to interrupt, the text channel and its '
       + 'replies, the active mode and '
-      + 'the last problem. op=phase is the '
-      + 'host pushing its own turn state and is not something the model calls.',
+      + 'the last problem.',
     parameters: {
       op: {
         type: 'string',
         required: true,
-        description: 'show, expand, collapse, hide, state, channel, reply, note or phase'
+        description: 'show, expand, collapse, hide, state, channel, reply or note'
           + ' (the last three are host-side pushes)',
       },
       expand: {
@@ -3289,6 +3425,58 @@ const TOOLS = [
       throw new Error(`op has to be ref or album, not "${args.op}"`)
     },
   }),
+
+  // ---- 2.5.1 批次 9: LW 插件 (P0 / P1) ----
+  //
+  // 这一条是**管理**插件的那张脸 (装 / 启用 / 停用 / 卸 / 审计), 而插件自己的工具是这份模块之外的
+  // 东西: 它们由 startPluginTools 按应用那一侧的快照动态登记 (`<toolPrefix>_<动作>`), 于是模型眼里
+  // 插件工具与 lw_* 长得一样。**装一份包不等于启用它**: 能力要人在设置页逐条勾, 然后点启用
+
+  simpleTool(
+    'lw_plugin',
+    'The LW plugins installed on this phone: packages that add device-side abilities to LittleWhale'
+    + ' without rebuilding it (one JSON manifest each, one package per plugin, living in'
+    + ' DSH_HOME/plugins). Their tools are registered on this host under their own prefix -'
+    + ' <toolPrefix>_<action> - so once a plugin is enabled they look like any lw_* tool. op=list'
+    + ' says what is installed, its state and how many of its capabilities are allowed; op=read one'
+    + ' plugin in full (它的工具、要的每一条能力、发布者与指纹); op=install takes a path to an'
+    + ' unzipped package directory or a .lwp file and puts it in - **that does not enable it**,'
+    + ' and a package whose capabilities the user has not allowed yet can do nothing; op=enable /'
+    + ' op=disable turn one on or off (a companion plugin is an installed APK that LittleWhale'
+    + ' binds); op=uninstall asks before it deletes anything (keepData keeps the plugin\'s own'
+    + ' settings directory); op=audit prints the recent capability calls, refused ones included.'
+    + ' **A plugin is somebody else\'s code**: tell the user what it wants before enabling it, and'
+    + ' never turn on a capability they did not ask for. Capability names look like device.read,'
+    + ' notify.post, session.post (that one lets it drive the conversation).',
+    'plugin',
+    {
+      op: {
+        type: 'string',
+        required: true,
+        description: 'what to do with the plugin list',
+        enum: ['list', 'read', 'install', 'enable', 'disable', 'uninstall', 'audit'],
+      },
+      id: {
+        type: 'string',
+        description: 'For read / enable / disable / uninstall / audit: the plugin\'s id, exactly as'
+          + ' op=list prints it',
+      },
+      path: {
+        type: 'string',
+        description: 'For op=install: an absolute path to an unzipped package directory (the one'
+          + ' holding plugin.json) or to a .lwp file',
+      },
+      keepData: {
+        type: 'boolean',
+        description: 'For op=uninstall: keep the plugin\'s own settings directory. Defaults to'
+          + ' false; ask the user which they want',
+      },
+      lines: {
+        type: 'integer',
+        description: 'For op=audit: how many recent lines to print. Defaults to 20',
+      },
+    },
+  ),
 ]
 
 /** One request, one response: the app answers a single line and closes the connection */
@@ -4099,13 +4287,13 @@ const SPEECH_ENGINE_SHERPA = 'sherpa'
 const SPEECH_ENGINE_GLM = 'glm'
 
 /**
- * Which engine the page's own voice input button uses
+ * Which engine everything that does not name one uses, the page's own voice input button included
  *
- * The accurate one: pressing that button is a deliberate act, and the wait is what the user asked
- * to pay for accuracy. Anything interactive that cannot wait (the wake-word chain in the app)
- * stays on SenseVoice and does not read this constant.
+ * SenseVoice, the same one the ball and the wake-word chain use (2026-10-09 主人定的口径: 输入框与
+ * 球用同一套模型, 于是这台设备只需要下 240 MB, 而不是再拉 1.6 GB). GLM-ASR-Nano 仍在, 但**只有
+ * 点名 `engine=glm` 才会走到它**: 它不再是谁的缺省, 也没有一条路会替人把它下下来
  */
-const SPEECH_ENGINE_DEFAULT = SPEECH_ENGINE_GLM
+const SPEECH_ENGINE_DEFAULT = SPEECH_ENGINE_SHERPA
 
 const SPEECH_GLM_SOURCES = [
   'https://hf-mirror.com/concedo/GLM-ASR-Nano-2512-GGUF/resolve/main',
@@ -4127,13 +4315,37 @@ const SPEECH_GLM_FILES = [
   },
 ]
 
-/** How far the model is, as the page's voice input reads it */
-const speechState = { phase: 'checking', detail: 'looking for the model' }
+/**
+ * How far the model is, in the shape the page's voice input reads it
+ *
+ * **字段名按 dsh 的 `SpeechPreparationState` 来**: `downloading` 那一档认 `resource` /
+ * `completedBytes` / `totalBytes`, `failed` 认 `message` (外加可选的 `download` 诊断), `checking` /
+ * `loading` / `waking` 认 `startedAt` —— 写错名字不会有任何报错, 界面只会把进度显示成 NaN、把失败
+ * 原因吞掉 (2026-10-09 真机上就是这样: 那张卡写着"准备失败", 后面什么都没有)
+ */
+const speechState = { phase: 'checking', startedAt: Date.now() }
 const speechListeners = new Set()
 
-function speechAnnounce(phase, detail) {
+/** 每次宣布先把上一档的字段清掉: 留着会让界面读到"这一档不该有的"东西 (残留的 message / 进度) */
+const SPEECH_STATE_FIELDS = [
+  'message', 'download', 'resource', 'completedBytes', 'totalBytes', 'startedAt',
+]
+
+function speechAnnounce(phase, detail, extra = {}) {
+  for (const key of SPEECH_STATE_FIELDS) delete speechState[key]
   speechState.phase = phase
-  speechState.detail = detail
+  if (phase === 'failed') {
+    speechState.message = String(detail ?? 'the preparation failed')
+    if (extra.download) speechState.download = extra.download
+  }
+  if (phase === 'checking' || phase === 'loading' || phase === 'waking') {
+    speechState.startedAt = Date.now()
+  }
+  if (phase === 'downloading') {
+    speechState.resource = String(extra.resource ?? '')
+    speechState.completedBytes = Number(extra.completed ?? 0)
+    if (extra.total !== undefined) speechState.totalBytes = Number(extra.total)
+  }
   for (const listener of speechListeners) {
     try {
       listener()
@@ -4169,14 +4381,9 @@ async function speechInspect() {
   // "两个文件的大小都对得上" 那件事 —— 混用一个名字会让 provider 那一路拿到 undefined
   const glmPresent = Boolean(glmDirectory)
     && SPEECH_GLM_FILES.every((file, index) => glmSizes[index] === file.bytes)
-  speechAnnounce(
-    (glmPresent || (present && vad)) ? 'ready' : 'unprepared',
-    glmPresent
-      ? 'GLM-ASR-Nano (Q4_K) is on disk'
-      : present && vad
-        ? `sherpa-onnx ${info.sherpa}`
-        : present ? 'the silero VAD is not downloaded yet' : 'the model is not downloaded yet',
-  )
+  // 这张卡说的就是这个 provider 能不能用, 而它用的那一档是 SenseVoice (2026-10-09 统一之后):
+  // GLM 在不在盘上不再是判据 —— 它只是 `engine=glm` 那条路自己的事
+  speechAnnounce(present && vad ? 'ready' : 'unprepared')
   return { ...info, present, vad, glmPresent }
 }
 
@@ -4223,23 +4430,55 @@ async function speechPrepare(engine = SPEECH_ENGINE_DEFAULT) {
   return { ...info, present: true, vad: true }
 }
 
+/**
+ * 把一次下载失败翻成界面认的那种诊断 (`SpeechDownloadFailure`)
+ *
+ * 界面按 `reason` 取本地化的那一对文案与建议 (`download.timeout` 与 `downloadAdvice.timeout`), 而
+ * "未知" 与 "超时" 在最需要人动手的时候给的处置完全不同 —— 所以这里按错误码认一遍, 认不出来才回
+ * unknown。`resource` / `source` / `status` / `code` 都是给人看的, 里面不放任何凭据
+ */
+function speechFailureOf(file, source, error) {
+  const code = error?.cause?.code ?? error?.code
+  const message = String(error?.message ?? error)
+  let reason = 'unknown'
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') reason = 'dns'
+  else if (code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT' || error?.name === 'TimeoutError') {
+    reason = 'timeout'
+  } else if (code === 'ENOSPC' || code === 'EACCES' || code === 'EROFS' || code === 'EPERM') {
+    reason = 'storage'
+  } else if (code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'EPIPE') reason = 'network'
+  else if (code === 'ENETUNREACH' || code === 'EHOSTUNREACH') reason = 'network'
+  else if (typeof error?.status === 'number') reason = 'http'
+  else if (message.includes('sha256')) reason = 'integrity'
+  else if (/certificate|self.signed|unable to verify/i.test(message)) reason = 'certificate'
+  const failure = { resource: file.remote ?? file.name, source, reason }
+  if (typeof error?.status === 'number') failure.status = error.status
+  if (typeof code === 'string' && code.length > 0) failure.code = code
+  return failure
+}
+
 async function speechDownload(file, target, sources = SPEECH_SOURCES) {
   const remote = file.remote ?? file.name
   let failure = null
+  let failedSource = ''
   for (const base of sources) {
     const partial = `${target}.part`
     try {
-      speechAnnounce('downloading', `${remote} from ${new URL(base).host}`)
+      speechAnnounce('downloading', null, { resource: remote, completed: 0, total: file.bytes })
       const response = await fetch(`${base}/${remote}`)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      if (!response.ok) {
+        const refused = new Error(`HTTP ${response.status}`)
+        refused.status = response.status
+        throw refused
+      }
       const digest = createHash('sha256')
       let received = 0
       const meter = new Transform({
         transform(chunk, _encoding, callback) {
           digest.update(chunk)
           received += chunk.length
-          speechState.bytes = received
-          speechState.total = file.bytes
+          speechState.completedBytes = received
+          speechState.totalBytes = file.bytes
           callback(null, chunk)
         },
       })
@@ -4250,10 +4489,13 @@ async function speechDownload(file, target, sources = SPEECH_SOURCES) {
       return
     } catch (error) {
       failure = error
+      failedSource = new URL(base).origin
       await rm(partial, { force: true })
     }
   }
-  speechAnnounce('failed', String(failure?.message ?? failure))
+  speechAnnounce('failed', `${remote}: ${failure?.message ?? failure}`, {
+    download: speechFailureOf(file, failedSource, failure),
+  })
   throw new Error(`could not download ${file.name}: ${failure?.message ?? failure}`)
 }
 
@@ -5073,6 +5315,34 @@ function voiceTargetId(target) {
   return target?.sessionId ?? null
 }
 
+/**
+ * 双击打断该打哪一场
+ *
+ * 判据与球上那三个字同源: 球显示的是"哪几场在跑"里**最近开始的那一场** (`ball-phase.json` 里
+ * `startedAt` 最大的), 所以打断也打那一场 —— 显示什么就停什么, 中间没有第二套口径
+ *
+ * @param items `controller.list` 的那些条目 (只有 `running === true` 且是根会话的才算在跑)
+ * @param turns 宿主那本账: `{ id, startedAt }` 的数组
+ * @returns 要取消的 `sessionId`; 没有在跑的轮就是 `null` (**不是空字符串**)
+ */
+function pickInterruptTarget(items, turns) {
+  const list = Array.isArray(items) ? items : []
+  const running = new Set(
+    list
+      .filter((item) => item && item.running === true && item.origin !== 'subagent' && !item.parentSessionId)
+      .map((item) => String(item.sessionId)),
+  )
+  let best = null
+  for (const turn of Array.isArray(turns) ? turns : []) {
+    if (turn === null || typeof turn !== 'object') continue
+    const id = String(turn.id ?? '')
+    const startedAt = Number(turn.startedAt)
+    if (!id || !running.has(id) || !Number.isFinite(startedAt)) continue
+    if (best === null || startedAt > best.startedAt) best = { id, startedAt }
+  }
+  return best === null ? null : best.id
+}
+
 function voiceBlockEnd() {}
 
 /* ── 指代不明时自动附一张主屏截图 (批次 4 的需求 9) ───────────────────────────
@@ -5229,13 +5499,8 @@ const voiceCommands = { count: 0, last: null, error: null }
  */
 const voiceInterrupt = { count: 0, cancelled: 0, last: null, error: null }
 
-/** 把球上那三个字推回空闲: 打断的最后一步, 无论有没有真的取消到一轮 */
-function pushBallIdle() {
-  return call('overlay', { op: 'phase', phase: 'idle' }).catch(() => {})
-}
-
 /**
- * 打断: **只取消浮标那一场对话正在跑的轮** (主人 2026-10-06 选的范围)
+ * 打断: **取消"正在想"所指的那一轮** (主人 2026-10-08 定的范围)
  *
  * 入口是球上那一记双击 ("正在想"里 300 ms 之内两下, 见 `OverlayService.onTap`), 而它落到这里只
  * 经过一份队列 ([startVoiceInbox] 那一份) —— 应用那侧写一句 [VoiceCommands.INTERRUPT], 这一侧认出
@@ -5243,13 +5508,15 @@ function pushBallIdle() {
  *
  * 三件事与"切模式"那三句不同, 都要记住:
  *
- * 1. **范围只有浮标那一场**: 主人点名的口径是"只打断浮标那一场对话"。那一场是 [voiceCurrentSession]
- *    记着的 (20 分钟内那一场, `voice/session.json`), 别的会话 (主人在界面里自己开的) 不动 ——
- *    球上那三个字照样落下, 那一轮照旧跑 (下一次它开新轮时 `turn/start` 会把字推回来)
- * 2. **没在跑也要推状态**: "那一场没在跑"时什么都不取消, 但那三个字必须落下 —— 主人双击要的是
- *    "别让球一直写着正在想", 而状态是这一条唯一的可见结果
+ * 1. **打的是"正在想"指的那一场** (主人 2026-10-08: "双击暂停不会跟随停止"): 球上那三个字是
+ *    [startBallPhase] 按"哪几场在跑"写的, 所以打断也要打同一件事 —— 挑正在跑的那几场里**最近开始
+ *    的那一场** ([pickInterruptTarget])。原来只打 [voiceCurrentSession] 记的"浮标那一场", 于是任务
+ *    跑在别的会话里时双击等于什么都没停
+ * 2. **不推状态**: 那一轮真的停了, 宿主写 `ball-phase.json` (见 [startBallPhase]), 球上那三个字才落。
+ *    没有在跑的轮时什么都不取消、也**不清字** —— 原来那句无条件的 `pushBallIdle()` 正是"字落了而任务
+ *    还在跑"的来源
  * 3. **不 resolve 冷会话**: `controller.resolveAgent` 会把一个没活着的会话恢复起来, 于是"打断"
- *    会变成一个"启动" —— 所以先问 `controller.list` 那一份 `running`, 不在跑就到此为止
+ *    会变成一个"启动" —— 所以先问 `controller.list` 那一份 `running`, 不在跑就不打它
  *
  * `agent.cancel({ kind: 'user' }, { keepInbox: true })` 与界面那个停止键是同一条
  * (`packages/api/session-controller/src/commands.ts`): `keepInbox` 保住还没投出去的几句,
@@ -5261,26 +5528,17 @@ async function runVoiceInterrupt(ctx, line) {
     throw new Error('this profile has no session controller, so an interrupt has nowhere to go')
   }
   const signal = new AbortController().signal
-  const sessionId = await voiceCurrentSession()
+  const listed = await controller.list({}, signal)
+  const sessionId = pickInterruptTarget(listed.items, ballTurns())
   let cancelled = false
-  let detail = 'the ball had no conversation yet, so there was nothing to interrupt'
+  let detail = 'no turn was running, so there was nothing to interrupt'
   if (sessionId !== null) {
-    const listed = await controller.list({}, signal)
-    const item = listed.items.find((one) => String(one.sessionId) === sessionId)
-    if (item === undefined) {
-      detail = `the ball conversation ${sessionId} is not in the session list any more`
-    } else if (item.running !== true) {
-      detail = `the ball conversation ${sessionId} was not running a turn`
-    } else {
-      const resolved = await ctx.agents.withoutInitiator(() => controller.resolveAgent(sessionId))
-      if ('error' in resolved) throw resolved.error
-      resolved.agent.cancel({ kind: 'user' }, { keepInbox: true })
-      cancelled = true
-      detail = `cancelled the turn running in the ball conversation ${sessionId}`
-    }
+    const resolved = await ctx.agents.withoutInitiator(() => controller.resolveAgent(sessionId))
+    if ('error' in resolved) throw resolved.error
+    resolved.agent.cancel({ kind: 'user' }, { keepInbox: true })
+    cancelled = true
+    detail = `cancelled the turn running in ${sessionId}`
   }
-  // 状态落下去这一步**无论上面走哪一支都做**: 双击要的就是"球上那三个字不再写着正在想"
-  await pushBallIdle()
   voiceInterrupt.count += 1
   if (cancelled) voiceInterrupt.cancelled += 1
   voiceInterrupt.error = null
@@ -5426,8 +5684,8 @@ async function voiceDeliver(ctx, line) {
         voiceInterrupt.error = `interrupting failed: ${reason}`
         voiceInterrupt.last = { at: Date.now(), said: line.text, sessionId: null, cancelled: false, detail: reason }
         console.warn(`littlewhale-channel: the interrupt failed: ${reason}`)
-        // 失败了也要把状态落下来: 球上写着"正在想"而打断没成, 那三个字留着只会让人以为有事在跑
-        await pushBallIdle()
+        // **这里不碰状态** (2026-10-08): 球上那三个字是 `ball-phase.json` 说了算, 而"打断没成"时那一轮
+        // 多半还在跑 —— 把字清掉只会变成"字落了而任务还在跑"
         return { interrupt: true, cancelled: false, said: line.text, detail: reason }
       }
     }
@@ -5689,198 +5947,146 @@ async function isAllBlack(path) {
 /* ── 浮标上那个「正在想」 ──────────────────────────────────────────────────── */
 
 /**
- * 心跳那一拍多久 (见 [startBallPhase])
+ * 现在有哪几场在跑轮: `sessionId -> 开始那一刻`
  *
- * **它是"一轮在跑"或"刚收尾"时才有的一拍**, 空闲时那个定时器根本不存在 —— 所以这个数只决定"一轮
- * 跑着的时候多久对一次账、多久重推一次正在想", 与空闲功耗无关
+ * **提到模块级是为了两件事共用同一本账**: 写给应用的那份文件 ([writeBallPhase]) 与双击打断挑目标
+ * ([pickInterruptTarget])。子代理的轮次不进这本账 —— 那是模型自己在用的, 不是主人在等的那一轮
  */
-const BALL_PHASE_AUDIT_MS = 20_000
+const ballTurns = new Map()
 
 /**
- * 一个会话要**连着**几拍都说"没在跑"才把它从账上划掉
+ * 最近一次结束的轮是怎么收的: `{ id, at, kind, why? }` (还没结束过就是 null)
  *
- * `controller.list` 的 `running` 是"这个会话现在有没有活着的 agent 在跑轮" (`agents.get(id)?.status`),
- * 而 `get` 在**会话正在被重建的那一小段** (压缩 / 恢复 / 换 agent 实例) 会短暂地取不到 —— 那一拍它会
- * 报 `running: false`, 而那一轮其实还在跑。两拍 (40 s) 是给这种窗口留的余量: 真结束的一轮两拍之后
- * 照样划掉, 而"中间抖了一拍"的一轮**一直写着正在想**, 于是双击打断那条路不会凭空消失
+ * 与 [ballTurns] 分开是两件事: 那一本记**在跑**, 这一条记**刚跑完那一下是怎么收的** —— 应用据此
+ * 在球上写「失败」(2026-10-08)。两条口径要记住:
  *
- * 这一条是 2026-10-08 主人问"看门狗会不会把正在想打断"之后收紧的: 划早了不会取消任何东西 (划掉的
- * 只是一个显示字段), 但会让那颗球不再说"我在忙", 而人是靠那三个字去双击打断的
+ * - **`turn/start` 不清它**: 又开了一轮不代表上一次失败翻篇, 认没认过由应用那边"主人点了一下球"
+ *   说了算 (见 `OverlayState.failedAckAt`)
+ * - **宿主重启自然清掉**: 这条记忆随进程走, 新进程起来写的第一份文件里没有 `last`
  */
-const BALL_PHASE_CONFIRM_TICKS = 2
+let ballEnded = null
+
+/** 那份文件: `$DSH_HOME/lw/ball-phase.json` (与应用那侧的 `BallPhaseFile` 是同一个约定) */
+function ballPhasePath() {
+  const home = process.env.DSH_HOME
+  return home ? join(home, 'lw', 'ball-phase.json') : null
+}
+
+/** 给纯函数看的那一本账: `{ id, startedAt }` 的数组 */
+function ballTurnList() {
+  return [...ballTurns].map(([id, startedAt]) => ({ id, startedAt }))
+}
 
 /**
- * 一轮在跑就把浮标推成 thinking, 跑完推回 idle (批次 4)
+ * 一条结束记录: `{ id, at, kind, why? }`
+ *
+ * `kind` **原样透传** dsh 那张表 (`completed` / `aborted` / `blocked` / `error` / `max-tokens` /
+ * `interrupted` / `forked`) —— 哪几种写成球上那两个字由**应用**定, 于是以后 dsh 多一种原因, 这一侧
+ * 一个字都不用改
+ *
+ * `why` 只有 `error` 那条带结构化失败时才有 (截 200 字): 球上不显示它, 它是 `overlay op=state`
+ * 里的排障读数。`undefined` 会被 `JSON.stringify` 整个丢掉, 所以没有它时那份 JSON 里就没这个键
+ */
+function ballEndedFrom(id, reason) {
+  const kind = typeof reason?.kind === 'string' ? reason.kind : 'completed'
+  const message = reason?.error?.message
+  const why = typeof message === 'string' && message.length > 0 ? message.slice(0, 200) : undefined
+  return { id, at: Date.now(), kind, why }
+}
+
+/**
+ * 把"现在哪几场在跑"写给应用 (2026-10-08 主人定的口径: **文件即真相**)
+ *
+ * 为什么不是推送 (`overlay op=phase`, 那是原来那套): 推送有个躲不掉的毛病 —— **送不到就没人补**。
+ * 应用那一刻被系统冻住、通道一时连不上, 球上那三个字就永远留着 (我为它加过一个 20 秒的看门狗, 而
+ * 主人嫌延迟太大)。写成文件之后: 谁什么时候读都读得到同一份, 应用用 inotify 盯着那个目录**一改就
+ * 醒**, 两侧都是事件驱动、零轮询, 也没有会丢的东西
+ *
+ * **原子写** (先写 `.tmp` 再 rename): 应用那边从来不锁, 只 rename 才不会让它读到半份 JSON。
+ * 写不进去只记一行日志 —— 没装应用 / 浮标那一刻没在, 都不是要报给模型的错误
+ */
+async function writeBallPhase() {
+  const path = ballPhasePath()
+  if (path === null) return
+  const payload = { v: 1, at: Date.now(), turns: ballTurnList() }
+  // `last` 是**可选**键: 没有结束记录时整条不写, 版本号于是还是 1 —— 旧应用忽略这个键, 新应用
+  // 容忍它缺席 (两边本来都不校验 v)
+  if (ballEnded !== null) payload.last = ballEnded
+  const temporary = `${path}.tmp`
+  try {
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(temporary, `${JSON.stringify(payload)}\n`)
+    await rename(temporary, path)
+  } catch (error) {
+    console.warn(`littlewhale-channel: the ball phase file was not written: ${error?.message ?? error}`)
+  }
+}
+
+/**
+ * 一轮在跑就写着「正在想」: 由宿主把"哪几场在跑"写进那份文件, 应用读它 (批次 4 / 2026-10-08 改)
  *
  * **为什么这件事得由宿主做**: 「正在听」「正在念」在应用那一侧 (`VoiceState`), 而"模型正在干活"
- * 只有宿主知道 —— 应用那侧没有第二条路看得出这件事。所以就一个记号 (`overlay op=phase`), 浮标
- * 400 ms 读一次
+ * 只有宿主知道 —— 应用那侧没有第二条路看得出这件事
  *
- * `turn/start` / `turn/end` 两个事件成对: 用一个集合记正在跑的会话, 空 → 非空推 thinking,
- * 回到空推 idle —— 这样两个会话同时跑时不会一个结束就把另一个的"正在想"抹掉。子代理的轮次跳过
- * (那是模型自己在用的, 不是主人在等的那一轮)
+ * `turn/start` / `turn/end` 两个事件成对, 于是这本账也是成对的: `turn/start` 记入, `turn/end` 划掉,
+ * 一轮两次。两个会话同时跑时不会一个结束就把另一个的"正在想"抹掉; 子代理的轮次跳过
  *
- * **2026-10-08 补了一条看门狗**: 那两个事件是**成对**的, 而现实里会缺一半 —— 一轮崩了、被中断而
- * 回执没回来、或者那一场被别处收掉了, 于是 `running` 里永远留着它, 球上一直写着「正在想」, 按设计
- * 就不收边 (实测: `peekBlocked=voice phase` 挂了 60 s 以上, 手动推一次 `phase=idle` 之后 8 s 内就
- * 收边了)。看门狗**不猜时间**, 每 [BALL_PHASE_AUDIT_MS] 干两件事:
+ * **`turn/end` 那一次不论在不在账上都写**: 即使这一场没被记进账 (宿主是它跑着的时候才起来的),
+ * "这一轮是怎么收的"这件事照样要写进 `last` —— 那正是球上「失败」的判据
  *
- * 1. **对账**: 集合里那些会话现在还有没有在跑轮的? 没在跑的当场划掉 —— 于是"一轮跑得久"不会被误判
- *    成"那一轮没了", 判据用的是宿主自己对会话状态的回答。**而且它要连着 [BALL_PHASE_CONFIRM_TICKS]
- *    拍都这么说才算数** (见那一条说明: 会话被重建的那一小段会短暂地报"没在跑")
- * 2. **把现在的真相再推一遍**: 两个事件有一个没送到 (应用那边正好在重启、浮标那一刻没在) 时, 光靠
- *    补推是补不回来的 —— 而**这一拍就是那次重推**
- *
- * **心跳只在一轮开始、以及收尾那一拍之后开** (主人 2026-10-08 问"看门狗占功耗吗"之后定的): 账上空着
- * 的时候它是停着的 —— 没有定时器、没有回环调用, 也没有"通道连不上时挂在半路的那条 socket"。收尾之后
- * 再补一拍 idle 就收工, 而那一拍是给"turn/end 的推送正好没送到"留的最后一次机会
- *
- * 推不出去只记日志: 没装应用 / 没放浮标时它本来就是个没人看的字段, 而不是一条要报给模型的错误
+ * **没有看门狗, 也没有定时器** (2026-10-08 撤掉): 原来还担心"事件缺一半"——一轮崩了、被中断而回执
+ * 没回来 —— 而现在**那本账就是文件**, 应用每次读到的都是最新的一份; 真正"不知道"的情形只有宿主自己
+ * 重启 (那本账随进程没了, 所以起来时先写一次空表), 以及进程被杀 (应用那边会看到宿主不在跑)
  */
 function startBallPhase(ctx) {
-  const running = new Set()
-  /** 每一场"连着几拍被问出没在跑" (见 [BALL_PHASE_CONFIRM_TICKS]) */
-  const doubts = new Map()
-  /** 心跳: **只在账上有人 (或刚收尾那一拍) 时存在**, 空闲时它是 null (见 [startWatchdog]) */
-  let timer = null
-  const push = (phase) => {
-    void call('overlay', { op: 'phase', phase }).catch(() => {})
-  }
   ctx.on('session/event', (session, event) => {
     if (session.meta?.origin === 'subagent') return
     if (event.type === 'turn/start') {
-      const wasEmpty = running.size === 0
-      running.add(session.id)
-      // 刚开的一轮: 之前攒下的怀疑一笔勾销
-      doubts.delete(session.id)
-      if (wasEmpty) push('thinking')
-      startWatchdog()
+      ballTurns.set(session.id, Date.now())
+      void writeBallPhase()
       return
     }
     if (event.type !== 'turn/end') return
-    running.delete(session.id)
-    doubts.delete(session.id)
-    if (running.size === 0) {
-      push('idle')
-      // **收尾那一拍也留着**: 下一次心跳会把 idle 再补一遍再收工 —— 那一次是给"turn/end 的推送
-      // 正好没送到"留的 (应用那一刻被系统冻住 / 通道一时连不上), 而它是最后一次机会
-      startWatchdog()
-    }
+    ballTurns.delete(session.id)
+    ballEnded = ballEndedFrom(session.id, event.data?.reason)
+    void writeBallPhase()
   })
-
-  /**
-   * 开始心跳: **只在一轮开始, 以及收尾那一拍之后**才开
-   *
-   * 空闲时它一点都不跑 (没有定时器、没有回环调用、也没有连不上的那半条 socket), 这一点是主人
-   * 2026-10-08 问"看门狗占功耗吗"之后定的: 它的判据只在"账上真的有人"时才成立
-   */
-  function startWatchdog() {
-    if (timer !== null) return
-    timer = setInterval(() => {
-      void tick()
-    }, BALL_PHASE_AUDIT_MS)
-    // 它只是"补一次状态", 没有理由靠它把宿主这个进程一直挂在事件循环上
-    if (typeof timer.unref === 'function') timer.unref()
-  }
-
-  /** 心跳停了 (账空着, 而且那一遍 idle 已经补过) */
-  function stopWatchdog() {
-    if (timer === null) return
-    clearInterval(timer)
-    timer = null
-  }
-
-  /** 一拍: 账上有人就对账并重推"正在想"; 空着就把 idle 补完然后**收工** */
-  async function tick() {
-    if (running.size === 0) {
-      push('idle')
-      doubts.clear()
-      stopWatchdog()
-      return
-    }
-    await auditBallPhase(ctx, running, doubts)
-    // 重推: 两个事件的推送丢了时只有这里能补回来 (应用重启过也一样, 它会把这个字重新拿回来)
-    push(running.size > 0 ? 'thinking' : 'idle')
-  }
+  // **起来先写一次空表**: 宿主刚起来时账上一定是空的, 这一下顺手把应用里可能残留的旧字清掉
+  // (应用重启时它自己也会读一次, 所以两份都对得上)
+  void writeBallPhase()
 }
 
 /**
- * 对一遍"球说的正在想"与"宿主真的在跑": 把已经没有在跑轮的会话从集合里划掉
+ * Register the provider the page's voice input button resolves to
  *
- * **只看 `controller.list` 那一份 `running`**: 那是宿主自己对会话状态的回答, 是这个判据唯一可靠的
- * 来源 (与 [runVoiceInterrupt] 问的是同一个东西)。条目**不在列表里**也算划掉 —— 那一场被关掉了,
- * 它的 `turn/end` 自然不会再来。读不到列表时什么都不做: 看门狗自己不该变成一条要报给模型的错误
+ * 与球同一个引擎 (2026-10-09): 下载那一栏走的是 SenseVoice 那 240 MB, 界面里的磁盘 / 内存 / 时间
+ * 估算也跟着换成它那一档 —— 那三个数只给"这台设备够不够"当提示, 不是任何判据
  */
-async function auditBallPhase(ctx, running, doubts) {
-  const controller = ctx.get('sessionController')
-  // 对账: 只在"账上还有人"时才有意义 (空集不用问谁在跑)
-  if (running.size > 0 && controller) {
-    let listed = null
-    try {
-      listed = await controller.list({}, new AbortController().signal)
-    } catch {
-      // 列表读不到就再等一拍: 看门狗自己不该变成一条要报给模型的错误
-    }
-    if (listed !== null) {
-      const live = new Set(
-        listed.items.filter((item) => item.running === true).map((item) => String(item.sessionId)),
-      )
-      let dropped = 0
-      for (const id of [...running]) {
-        if (live.has(String(id))) {
-          doubts.delete(id)
-          continue
-        }
-        // 这一拍说"没在跑": 先记一笔, 连着 [BALL_PHASE_CONFIRM_TICKS] 拍才算数 (见那条说明)
-        const seen = (doubts.get(id) ?? 0) + 1
-        if (seen < BALL_PHASE_CONFIRM_TICKS) {
-          doubts.set(id, seen)
-          continue
-        }
-        doubts.delete(id)
-        running.delete(id)
-        dropped += 1
-      }
-      if (dropped > 0) {
-        warn(
-          ctx,
-          `a turn ended without its event: the ball dropped 正在想 for ${dropped} stale entry/entries`,
-        )
-      }
-    }
-  }
-  // 账一空就把怀疑清掉: 那些 id 不会再被问
-  if (running.size === 0) doubts.clear()
-  // 重推: 这一拍把"现在的真相"再送一遍 (两个事件的推送丢了时只有这里能补回来)
-  push(running.size > 0 ? 'thinking' : 'idle')
-}
-
-/** Register the provider the page's voice input button resolves to */function registerVoiceInput(ctx) {
+function registerVoiceInput(ctx) {
   const speech = ctx.speechToText
   if (!speech || typeof speech.register !== 'function') return
   speech.register({
     info: {
       id: SPEECH_PROVIDER_ID,
-      name: 'On-device GLM-ASR-Nano / SenseVoice',
+      name: 'On-device SenseVoice',
       location: 'host-local',
       languages: SPEECH_LANGUAGES,
       downloadSources: SPEECH_SOURCES,
-      // the numbers are the GLM-ASR-Nano pair (1.6 GB of weights, a resident 1.5 B model),
-      // because that is what the button trains on by default
+      // 磁盘那一栏是量的 (SenseVoice 228 MiB + tokens + 1.8 MB 的 silero), 内存那一栏是估的
       setupEstimate: {
-        recommendedDiskBytes: 1800 * 1024 * 1024,
-        expectedMemoryBytes: 2400 * 1024 * 1024,
-        minimumMinutes: 3,
-        maximumMinutes: 90,
+        recommendedDiskBytes: 260 * 1024 * 1024,
+        expectedMemoryBytes: 1000 * 1024 * 1024,
+        minimumMinutes: 1,
+        maximumMinutes: 15,
       },
     },
     preparation: {
       snapshot: () => ({ ...speechState }),
       prepare: async () => {
-        await speechPrepare()
+        await speechPrepare(SPEECH_ENGINE_SHERPA)
       },
       cancel: async () => {
-        speechAnnounce('ready', 'cancelled')
+        speechAnnounce('cancelled')
       },
       subscribe: (listener) => {
         speechListeners.add(listener)
@@ -5889,15 +6095,13 @@ async function auditBallPhase(ctx, running, doubts) {
     },
     async transcribe({ audio, language }) {
       const info = await speechInspect()
-      // the accurate engine when it is there, the fast one when it is not: a missing GLM model
-      // must not make the button dead, it must make it quieter about being less sure
-      const engine = info.glmPresent
-        ? SPEECH_ENGINE_GLM
-        : info.present ? SPEECH_ENGINE_SHERPA : null
-      if (engine === null) {
-        throw new Error('no speech model is downloaded yet: run lw_speech op=prepare once')
+      // 这条按钮与球走同一套 (2026-10-09): 盘上那一个模型就是它, 不再按"GLM 在不在"分岔 ——
+      // 分岔的代价是别人为了按一次按钮要多下 1.6 GB, 而 GLM 的准是**点名要它**时才值得的
+      const engine = SPEECH_ENGINE_SHERPA
+      if (!info.present) {
+        throw new Error('the SenseVoice model is not downloaded yet: run lw_speech op=prepare once')
       }
-      const directory = engine === SPEECH_ENGINE_GLM ? info.glm.directory : info.directory
+      const directory = info.directory
       await mkdir(directory, { recursive: true })
       const wav = join(directory, `recording-${randomUUID()}.wav`)
       await writeFile(wav, Buffer.from(audio))
