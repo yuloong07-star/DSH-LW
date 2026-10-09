@@ -1,0 +1,17 @@
+# Bundle patch for dsh-custom-mode: inserts the 自定义模式 settings page row.
+#
+# A bundle patch inserts new rows; the profile's own cordis.patch.yml can only
+# replace rows that already exist by id, which is why this row has to originate
+# here rather than in the profile file.
+#
+# The plugin provides no Cordis service. It registers one private HTTP route
+# (`/custom-mode`), and naming the package in the root loader is also
+# what makes `dsh-client-modules` discover this package's `dsh.client`
+# declaration and serve `client.js` to the page.
+#
+# Deleting this file's bundle entry (or removing the package from the profile)
+# removes the Settings page completely; nothing else in the harness references
+# it, and no agent preset depends on it.
+- insert:
+    - id: custom-mode
+      name: dsh-custom-mode

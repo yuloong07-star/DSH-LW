@@ -66,6 +66,12 @@ Android 上转不了。所以本机这份把推理放回 app 进程：APK 里静
   `lw_speech` 不带、直接走通道 `speech op=release` 放掉；下次转写会重建。
 - SenseVoice 只认中英日韩粤；别的语言要另配模型（`LwSpeech.kt` 里的 `MODEL_NAME` 与
   `modelDirectory` 就是留给换模型的接口）。
+- **语音那一句要开新会话时, 选中的预设必须真的注册过**（2026-10-09 主人报的那条）：新装的手机上
+  `custom` 预设的声明没装进去时, `sessionController.create()` 会以 `agent-preset/not-found` 失败,
+  现象是"进行语音输入时开不了新的会话"。现在两头都堵上了：首启把内置的 `dsh-custom-mode` 与三份
+  预设声明一起补齐（见 `presets/custom-mode/README.md`），而投递那一侧 `chooseVoicePreset` 按
+  `当前默认 → standard → 注册表里其他候选` 逐级回退, 并把"用了哪一个、为什么换"写进
+  `lw_voice op=status` 的 preset 那一行与日志（判据在 `tools/check-voice-inbox.mjs`）。
 
 ## 八、启用（不算在 APK 里）
 
@@ -267,6 +273,13 @@ post 到主线程再等它回话（8 秒预算，超时如实报错）。
 - **任务收尾**：`lw_speak op=speak text="一句话"` —— 与已有的完成通知并列，通知走通知栏、朗读
   走喇叭，两条互不影响。
 - **GUI 内的朗读按钮**：那是另一条路，见下面。
+
+**三条引擎都要合上半双工那道闸**（2026-10-09 真机修的）：`LwSpeak` 底下是三条引擎（系统 TTS /
+自带音色 / 在线 Edge 或 API），而**在线那两条过去不写 `VoiceState.speaking`** —— 用它念回答时
+麦克风照开着，喇叭里念的那句被录回去、又当成一句话投进会话（日志里那条 `segment queued as #24:
+主人素云在主上若无别的事…` 就是回答正文），球上也显示成「正在听」而不是「正在念」。现在
+`LwSpeak.speak()` 把三条引擎整段包在那道标记里，判据也换成 `VoiceState.speaking ||
+LwSpeak.speakingNow`（唤醒链的闸与球上那个字都用它）。
 
 ### GUI 里的「朗读」按钮（可选）
 

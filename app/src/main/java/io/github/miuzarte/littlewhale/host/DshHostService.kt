@@ -49,6 +49,9 @@ class DshHostService : Service() {
         LwModes.ensureDefault(this)
         // 随包那六项 (四份技能 + 两条样例快捷指令): 技能缺什么补什么, 样例只发一次
         LwSeed.ensure(this)
+        // 内置的 dsh-custom-mode 与它那个助手的五个文件: 新机开箱就有那个 `custom` 预设, 语音才能
+        // 开新会话 (主人 2026-10-09); profile 那一半在 host spawn 之前做 (见 CustomPresets)
+        CustomPresets.ensure(this)
         // 自动指令: 六个监测器按"有没有启用的规则"起落, 而这一句只是把引擎挂上 (一条规则都没有时
         // 它什么都不注册, 只留一拍 60 秒的心跳)
         AutomationEngine.ensure(this)

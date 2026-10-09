@@ -21,7 +21,7 @@ class BallTest {
     private val ball = 144 // 48 dp @ 3x, vivo 那块屏的密度
     private val screen = 1260
 
-    /* ── 状态词: 在念 > 在听 > 失败 > 在想 (2026-10-08 主人定的那两档) ─────────── */
+    /* ── 状态词: 在想 > 在念 > 在听 > 失败 (2026-10-09 主人定的"互相打断") ─────── */
 
     @Test
     fun `什么都没在跑时球上画的是那个标`() {
@@ -62,25 +62,34 @@ class BallTest {
         )
     }
 
+    /**
+     * **"正在想"盖过"正在念"** (2026-10-09 主人: "正在说不打断正在想")
+     *
+     * 两条同时成立是够得着的: 上一轮的回答还在念, 而另一场 (或刚插进来的那一句) 已经跑起来了 ——
+     * 这时球上写「正在想」, 于是双击那一下打的正是跑着的那一轮; 播报**不会**因为这次显示切换被停掉
+     * ("不停止任务"), 想停它就单点那一下 ([BallTouch.act] 里 `speaking` 仍排第一)
+     */
     @Test
-    fun `念回答的时候正在念也盖过正在想`() {
+    fun `念回答的时候正在想也盖过正在念`() {
         assertEquals(
-            BallWord.SPEAKING,
+            BallWord.THINKING,
             BallStatus.wordFor(speaking = true, thinking = true, listening = true, failed = false),
         )
     }
 
     /**
-     * **"正在听"盖过"正在想"** (2026-10-08 主人: "点击一次进入语音输入, 但是状态也要变为正在听")
+     * **"正在想"盖过"正在听"** (2026-10-09 主人: "正在听时可以被正在想打断")
      *
-     * 正在想时点一下球就是开语音输入 (那一下等过双击窗口才开, 见 [BallMinutes.THINKING_TAP_MS]), 而
-     * 开起来之后球上必须写着「正在听」—— 原来"在想"排前面, 于是麦克风开着而球还写着"正在想", 人只会
-     * 以为点没生效。那一轮还在跑这件事没丢: 语音窗口收掉之后球上立刻回到「正在想」
+     * 麦克风开着、同时有一轮在跑 —— 现在球上写「正在想」。改这一条之前是"在听"压着"在想" (那一版
+     * 的理由是"点了球开了麦克风, 球上必须看得出来")。现在主人要的是"想"最要紧: 它那一档才有
+     * **双击打断** ([BallTaps.kind] 按球上那个字认双击), 而麦克风开着这件事在别处也看得见 (系统那个
+     * 麦克风指示 + 输入框上沿那个胶囊)。**这只改显示**: 点一下那一档仍是"收回语音窗口"
+     * ([BallTouch.act] 的 `listening` 分支), 打断与收回两件事都还在
      */
     @Test
-    fun `正在听盖过正在想`() {
+    fun `正在想盖过正在听`() {
         assertEquals(
-            BallWord.LISTENING,
+            BallWord.THINKING,
             BallStatus.wordFor(speaking = false, thinking = true, listening = true, failed = false),
         )
     }
@@ -88,13 +97,16 @@ class BallTest {
     /* ── 「失败」那一档: 压过"在想", 让位给语音那两档 (2026-10-08) ─────────────── */
 
     /**
-     * **失败压过"在想"**: 上一轮没成这件事比"还有一轮在跑"更该让人看见 —— 而那个字要一直挂着,
-     * 直到主人点一下球 (`OverlayState.failedAckAt`)
+     * **"在想"盖过失败** (2026-10-09 随那条口径一起变的): 失败让位给三个"正在发生"的档。
+     *
+     * 改之前是"失败压过在想" —— 而"在想"现在是最上面那一档, 它同时也是双击打断的判据, 让失败压着它
+     * 就等于"跑着的那一轮既看不出来、也打不断"。**让位不等于认过**: 那一轮跑完 (或语音窗口收掉)
+     * 之后失败照样回来, 真正抹掉它的只有主人点一下球 (`OverlayState.failedAckAt`)
      */
     @Test
-    fun `失败盖过正在想`() {
+    fun `正在想盖过失败`() {
         assertEquals(
-            BallWord.FAILED,
+            BallWord.THINKING,
             BallStatus.wordFor(speaking = false, thinking = true, listening = false, failed = true),
         )
     }

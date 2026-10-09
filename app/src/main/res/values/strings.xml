@@ -344,14 +344,14 @@
     <string name="settings_automation_new">New automatic command</string>
     <string name="settings_automation_new_summary">Say in one line when and what; the model writes the conditions and the parameters</string>
     <string name="settings_automation_new_title">New automatic command</string>
-    <string name="settings_automation_new_dialog_summary">One line is enough: when it should fire and what it should do. The model writes the rule as JSON, and it shows up on this page once it is written</string>
+    <string name="settings_automation_new_dialog_summary">One line is enough: when it should fire and what it should do. You also pick the cooldown (0 to 1440 minutes, 0 means no cooldown); the model writes the rule as JSON, and it shows up on this page once it is written</string>
     <string name="settings_automation_new_hint">For example: remind me to take an umbrella at eight every day</string>
     <string name="settings_automation_create">Let the model write it</string>
-    <string name="settings_automation_create_prompt">请把下面这件事做成一条自动指令, 用 lw_automation op=write 写进 automations, 名字你起一个短的中文名, when 挑最合适的那一种条件, then 用 remind (提醒一声) 或 task (开一场会话去干活): %1$s</string>
+    <string name="settings_automation_create_prompt">请把下面这件事做成一条自动指令, 用 lw_automation op=write 写进 automations, 名字你起一个短的中文名, when 挑最合适的那一种条件, then 用 remind (提醒一声) 或 task (开一场会话去干活); 冷却时间必须写成 cooldownMinutes: %2$d 分钟 —— 这是主人自己定的, 不许改成别的数: %1$s</string>
     <string name="settings_automation_manage">Delete or change one</string>
     <string name="settings_automation_manage_summary">Pick a rule first, then pick what to do with it</string>
     <string name="settings_automation_manage_title">Which one?</string>
-    <string name="settings_automation_pick_summary">Then choose: run it once / change it / delete it</string>
+    <string name="settings_automation_pick_summary">Then choose: run it once / change the cooldown / change it / delete it</string>
     <string name="settings_automation_open_title">This automatic command</string>
     <string name="settings_automation_run">Run it once now</string>
     <string name="settings_automation_edit">Change it</string>
@@ -363,11 +363,19 @@
     <string name="settings_automation_delete_summary">Deletes the file "%1$s", with no way back</string>
     <string name="settings_automation_deleted">Deleted "%1$s"</string>
     <string name="settings_automation_delete_failed">"%1$s" was not deleted: the file is gone or could not be removed</string>
+    <string name="settings_automation_cooldown">Change the cooldown</string>
+    <string name="settings_automation_cooldown_title">Cooldown</string>
+    <string name="settings_automation_cooldown_dialog_summary">How long a rule waits before it may fire again: 0 to 1440 minutes, 0 means no cooldown. It takes effect at once</string>
+    <string name="settings_automation_cooldown_label">Cooldown (minutes)</string>
+    <string name="settings_automation_cooldown_saved">The cooldown is now %1$d minute(s)</string>
+    <string name="settings_automation_cooldown_failed">The cooldown was not changed: the rule cannot be read or the file is not writable</string>
     <string name="settings_automation_sent">Handed over: every firing opens a conversation of its own, and the wording of a reminder is written then</string>
     <string name="settings_automation_send_failed">It could not be handed over (the queue file is not writable)</string>
     <string name="settings_automation_broken">This one cannot be read: %1$s</string>
     <string name="settings_automation_rule_state">%1$d of %2$d today</string>
     <string name="settings_automation_last">last %1$s</string>
+    <string name="settings_automation_rule_cooldown">cooldown %1$d min</string>
+    <string name="settings_automation_rule_no_cooldown">no cooldown</string>
     <string name="settings_automation_monitors">The six watches: nothing is registered while no enabled rule needs it (that is the low-power promise)</string>
     <string name="settings_automation_monitor_notice">Notifications</string>
     <string name="settings_automation_monitor_foreground">Foreground app</string>

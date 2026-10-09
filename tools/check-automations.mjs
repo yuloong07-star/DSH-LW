@@ -11,6 +11,8 @@
  *   4. **桥与插件都挂了这一条工具**: 少了任何一侧都是"工具在但调不通"
  *   5. **设置页引用的字符串键两份 `strings.xml` 都有, 而且顺序一致** (`Resources.getString` 按名字
  *      取, 少一个就是 `Resources$NotFoundException`, 而它在 LazyColumn 预取时才炸)
+ *   6. **冷却那个数是主人自己定的** (2026-10-09): 新建时它随提示词交给模型, 管理里还有一条**不经过
+ *      模型**的直改 —— 两侧任何一侧掉了, 主人按的那个数就不算数
  *
  * 跑法: node tools/check-automations.mjs   (不需要设备, 也不需要 host)
  */
@@ -22,6 +24,7 @@ const read = (path) => readFile(new URL(path, root), 'utf8')
 
 const plugin = await read('host-plugin/index.mjs')
 const rule = await read('app/src/main/java/io/github/miuzarte/littlewhale/automation/AutomationRule.kt')
+const store = await read('app/src/main/java/io/github/miuzarte/littlewhale/automation/AutomationStore.kt')
 const tool = await read('app/src/main/java/io/github/miuzarte/littlewhale/tool/LwAutomation.kt')
 const bridge = await read('app/src/main/java/io/github/miuzarte/littlewhale/channel/PrivilegedBridge.kt')
 const inbox = await read('app/src/main/java/io/github/miuzarte/littlewhale/voice/VoiceInbox.kt')
@@ -53,6 +56,13 @@ function kotlinNumber(source, name) {
   const match = new RegExp(`const\\s+val\\s+${name}\\s*=\\s*(\\d+)`).exec(source)
   if (match === null) throw new Error(`在源码里找不到 ${name}`)
   return Number(match[1])
+}
+
+/** Kotlin 里 `val NAME = listOf(0, 5, ...)` 那张数表 */
+function kotlinNumbers(source, name) {
+  const match = new RegExp(`val\\s+${name}\\s*=\\s*listOf\\(([^)]*)\\)`).exec(source)
+  if (match === null) throw new Error(`在源码里找不到 ${name}`)
+  return [...match[1].matchAll(/(\d+)/g)].map((one) => Number(one[1]))
 }
 
 /** 插件里某个工具的 `enum: [...]` (从工具名那一行往后切到下一个工具) */
@@ -189,6 +199,49 @@ check(
     'settings_automation_rule_state', 'settings_automation_last']
     .map((name) => zh.includes(`name="${name}"`) && en.includes(`name="${name}"`)),
   [true, true, true, true, true],
+)
+
+/* ── 六、主人自己定的冷却 (2026-10-09) ─────────────────────────────────── */
+
+check(
+  '冷却那几档在 Kotlin 那一份里 (0 = 不冷却, 1440 = 一天一次)',
+  kotlinNumbers(rule, 'COOLDOWN_CHOICES'),
+  [0, 5, 15, 30, 60, 120, 360, 1440],
+)
+
+check(
+  '新建那条提示词把主人定的冷却点名写进 cooldownMinutes',
+  [
+    zh.includes('cooldownMinutes: %2$d'),
+    en.includes('cooldownMinutes: %2$d'),
+  ],
+  [true, true],
+)
+
+check(
+  '管理里有一条不经过模型的直改冷却 (三层都挂上)',
+  [
+    screen.includes('LwAutomation.setCooldown'),
+    /fun setCooldown\(context: Context, name: String, minutes: Int\)/.test(tool),
+    /fun setCooldown\(context: Context, name: String, minutes: Int\)/.test(store),
+    /AutomationRule\.withCooldown\(/.test(store),
+  ],
+  [true, true, true, true],
+)
+
+check(
+  '插件说明里点明"用户给的那个数不许改成 30"',
+  automation.includes('write that exact number into cooldownMinutes'),
+  true,
+)
+
+check(
+  '规则那一行的摘要报得出冷却 (设置页那两句都在)',
+  [
+    screen.includes('R.string.settings_automation_rule_cooldown'),
+    screen.includes('R.string.settings_automation_rule_no_cooldown'),
+  ],
+  [true, true],
 )
 
 console.log(`\n${checks - failures} / ${checks} 条通过`)

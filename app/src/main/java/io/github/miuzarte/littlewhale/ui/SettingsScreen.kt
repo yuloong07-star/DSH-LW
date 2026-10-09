@@ -55,6 +55,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.automation.AutomationEngine
+import io.github.miuzarte.littlewhale.automation.AutomationRule
 import io.github.miuzarte.littlewhale.automation.AutomationStore
 import io.github.miuzarte.littlewhale.channel.AccessibilitySetting
 import io.github.miuzarte.littlewhale.channel.CameraOwner
@@ -1457,6 +1458,8 @@ private fun AutomationItems() {
     var editingQuiet by rememberSaveable { mutableStateOf(false) }
     var acting by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<String?>(null) }
+    // 那条"直接改冷却"的路 (2026-10-09 主人: 由用户决定冷却闸多少时间)
+    var cooling by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
 
     // 这一页上的每一次改动都让 revision 变一下, 上面那几份读出来时自然就重读了
@@ -1495,6 +1498,12 @@ private fun AutomationItems() {
                     AutomationEngine.firedTodayCount(entry.name),
                     rule.dailyLimit,
                 )
+                // 冷却也要摆在规则那一行上: 它是主人自己定的那个数, 而"它怎么又响了 / 怎么不响"看的就是它
+                parts += if (rule.cooldownMinutes <= 0) {
+                    context.getString(R.string.settings_automation_rule_no_cooldown)
+                } else {
+                    context.getString(R.string.settings_automation_rule_cooldown, rule.cooldownMinutes)
+                }
                 AutomationEngine.lastFiredAt(entry.name)?.let { at ->
                     parts += context.getString(
                         R.string.settings_automation_last,
@@ -1613,11 +1622,11 @@ private fun AutomationItems() {
     if (creating) {
         AutomationCreateDialog(
             onDismiss = { creating = false },
-            onCreate = { said ->
+            onCreate = { said, cooldownMinutes ->
                 creating = false
                 message = sendAutomationSetup(
                     context,
-                    context.getString(R.string.settings_automation_create_prompt, said),
+                    context.getString(R.string.settings_automation_create_prompt, said, cooldownMinutes),
                 )
             },
         )
@@ -1647,6 +1656,10 @@ private fun AutomationItems() {
                 acting = null
                 editing = name
             },
+            onCooldown = {
+                acting = null
+                cooling = name
+            },
             onDelete = {
                 acting = null
                 message = if (LwAutomation.delete(context, name)) {
@@ -1669,6 +1682,24 @@ private fun AutomationItems() {
                     context,
                     context.getString(R.string.settings_automation_edit_prompt, name, said),
                 )
+            },
+        )
+    }
+
+    cooling?.let { name ->
+        val current = rules.firstOrNull { it.name == name }?.cooldownMinutes
+            ?: AutomationRule.DEFAULT_COOLDOWN_MINUTES
+        AutomationCooldownDialog(
+            current = current,
+            onDismiss = { cooling = null },
+            onSave = { minutes ->
+                cooling = null
+                message = if (LwAutomation.setCooldown(context, name, minutes)) {
+                    context.getString(R.string.settings_automation_cooldown_saved, minutes)
+                } else {
+                    context.getString(R.string.settings_automation_cooldown_failed)
+                }
+                revision += 1
             },
         )
     }
@@ -1705,9 +1736,15 @@ private fun sendAutomationSetup(context: Context, line: String): String {
     }
 }
 
-/** 新建那一问: 只要一行"什么时候、要做什么" */
+/**
+ * 新建那一问: 一行"什么时候、要做什么", 加上主人自己定的冷却
+ *
+ * 冷却那一个数是 2026-10-09 主人加进来的 ("由用户决定冷却闸多少时间后再次触发") —— 它随那一句话一起
+ * 交给模型 (提示词里点名 `cooldownMinutes: N`), 而写完之后还能在「删掉或改一改一条」里直接改,
+ * 所以模型万一没照写, 主人也不必再说一遍
+ */
 @Composable
-private fun AutomationCreateDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+private fun AutomationCreateDialog(onDismiss: () -> Unit, onCreate: (String, Int) -> Unit) {
     val haptic = LocalHapticFeedback.current
     OverlayDialog(
         show = true,
@@ -1717,12 +1754,24 @@ private fun AutomationCreateDialog(onDismiss: () -> Unit, onCreate: (String) -> 
         onDismissRequest = onDismiss,
     ) {
         var text by rememberSaveable { mutableStateOf("") }
+        var cooldown by rememberSaveable { mutableStateOf(AutomationRule.DEFAULT_COOLDOWN_MINUTES.toString()) }
+        val minutes = AutomationRule.coerceCooldown(
+            cooldown.trim().toIntOrNull() ?: AutomationRule.DEFAULT_COOLDOWN_MINUTES,
+        )
         SuperTextField(
             modifier = Modifier.padding(bottom = 16.dp),
             value = text,
             onValueChange = { text = it },
             label = stringResource(R.string.settings_automation_new_hint),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        )
+        // 冷却: 只收数字, 最多四位 (1440 就是上限), 空着或超出范围都收到那一份边界里
+        SuperTextField(
+            modifier = Modifier.padding(bottom = 16.dp),
+            value = cooldown,
+            onValueChange = { typed -> cooldown = typed.filter { it.isDigit() }.take(4) },
+            label = stringResource(R.string.settings_automation_cooldown_label),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
         )
         Row(horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(
@@ -1740,7 +1789,7 @@ private fun AutomationCreateDialog(onDismiss: () -> Unit, onCreate: (String) -> 
                     // 空的一行什么都不做: 投出去也只是一句"请把这件事做成自动指令:" —— 没有内容
                     if (text.isNotBlank()) {
                         haptic.confirm()
-                        onCreate(text)
+                        onCreate(text, minutes)
                     }
                 },
                 modifier = Modifier.weight(1f),
@@ -1786,13 +1835,14 @@ private fun AutomationPickDialog(
     }
 }
 
-/** 一条规则能做什么: 立刻跑一次 / 改一改 / 删掉 */
+/** 一条规则能做什么: 立刻跑一次 / 改冷却 / 改一改 / 删掉 */
 @Composable
 private fun AutomationActionDialog(
     name: String,
     onDismiss: () -> Unit,
     onRun: () -> Unit,
     onEdit: () -> Unit,
+    onCooldown: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
@@ -1817,6 +1867,14 @@ private fun AutomationActionDialog(
             onClick = {
                 haptic.confirm()
                 onEdit()
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        TextButton(
+            text = stringResource(R.string.settings_automation_cooldown),
+            onClick = {
+                haptic.confirm()
+                onCooldown()
             },
             modifier = Modifier.fillMaxWidth(),
         )
@@ -1875,6 +1933,54 @@ private fun AutomationEditDialog(name: String, onDismiss: () -> Unit, onEdit: (S
                         haptic.confirm()
                         onEdit(text)
                     }
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
+}
+
+/**
+ * 改冷却那一问: **不经过模型的直改** (2026-10-09 主人)
+ *
+ * 同一条规则两次触发之间至少隔这么久, 数是主人当场按的, 所以它落盘就是最终值 —— 模型那条路只在
+ * **新建**时用一次 (把数写进提示词), 而这里读出现有那份 JSON 只换 `cooldownMinutes` 一个键
+ */
+@Composable
+private fun AutomationCooldownDialog(current: Int, onDismiss: () -> Unit, onSave: (Int) -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = stringResource(R.string.settings_automation_cooldown_title),
+        summary = stringResource(R.string.settings_automation_cooldown_dialog_summary),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismiss,
+    ) {
+        var text by rememberSaveable { mutableStateOf(current.toString()) }
+        val minutes = AutomationRule.coerceCooldown(text.trim().toIntOrNull() ?: current)
+        SuperTextField(
+            modifier = Modifier.padding(bottom = 16.dp),
+            value = text,
+            onValueChange = { typed -> text = typed.filter { it.isDigit() }.take(4) },
+            label = stringResource(R.string.settings_automation_cooldown_label),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+        )
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                text = stringResource(R.string.button_cancel),
+                onClick = {
+                    haptic.contextClick()
+                    onDismiss()
+                },
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                text = stringResource(R.string.settings_automation_edit),
+                onClick = {
+                    haptic.confirm()
+                    onSave(minutes)
                 },
                 modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.textButtonColorsPrimary(),

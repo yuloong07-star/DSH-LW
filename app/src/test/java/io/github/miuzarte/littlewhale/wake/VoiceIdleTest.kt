@@ -1,5 +1,6 @@
 package io.github.miuzarte.littlewhale.wake
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -48,5 +49,56 @@ class VoiceIdleTest {
     @Test
     fun `两个时刻取后到的那个`() {
         assertFalse(VoiceIdle.expired(now = 12_000, lastTextAt = 11_500, lastVoiceAt = 1_000, limit = 10_000))
+    }
+
+    /* ── 想 / 念期间挂起那一笔账 (主人 2026-10-09: "语音输入没说完自动退出") ── */
+
+    /** 助手还在想: 挂起, 不收 (主人正是在等它想的时候会说下一句) */
+    @Test
+    fun `正在想的时候不关`() {
+        assertTrue(VoiceIdle.held(thinking = true, speaking = false))
+    }
+
+    /** 助手正在念: 挂起, 不收 (半双工那道闸这一会儿本来就关着, 收窗等于把麦克风也收走) */
+    @Test
+    fun `正在念的时候不关`() {
+        assertTrue(VoiceIdle.held(thinking = false, speaking = true))
+    }
+
+    /** 两个都不在: 不挂起, 该计时就计时 (原来那四条判据一个字没变) */
+    @Test
+    fun `都没在跑就不挂起`() {
+        assertFalse(VoiceIdle.held(thinking = false, speaking = false))
+    }
+
+    /* ── 投出去一句之后那一档 (主人 2026-10-09: "发送问题后就可以收掉" + "要看还在不在说") ── */
+
+    /** 还没说到一句: 上限就是调用方给的 10 s */
+    @Test
+    fun `还没说到一句时上限是十秒`() {
+        assertEquals(10_000L, VoiceIdle.limit(delivered = false, limit = 10_000L))
+    }
+
+    /** 投出去一句之后: 上限掉到那条短尾巴 */
+    @Test
+    fun `投出去一句之后上限是那条短尾巴`() {
+        assertEquals(WakeTuning.SENT_TAIL_MS, VoiceIdle.limit(delivered = true, limit = 10_000L))
+    }
+
+    /**
+     * 投出去之后**人声照样续期**: 接着说不收, 一停下来就收
+     *
+     * 这一条与 [VoiceIdleTest] 上面那些的区别只在"上限" —— 服务那一侧还会把"想 / 念期间挂起"这一档
+     * 关掉 (见 `WakeWordService.startWatchdog` 里那个 `!voiceDelivered` 的分支), 所以问一句之后
+     * 等回答的那几十秒里窗口照样会收
+     */
+    @Test
+    fun `投出去之后还在说就不收停了就收`() {
+        val sentAt = 10_000L
+        val limit = VoiceIdle.limit(delivered = true, limit = 10_000L)
+        // 还在说: 最后一次人声是 2 秒前投出的那一句之后
+        assertFalse(VoiceIdle.expired(now = 12_200, lastTextAt = sentAt, lastVoiceAt = 12_000, limit = limit))
+        // 停了: 人声之后够一条尾巴就收
+        assertTrue(VoiceIdle.expired(now = 12_000 + WakeTuning.SENT_TAIL_MS, lastTextAt = sentAt, lastVoiceAt = 12_000, limit = limit))
     }
 }

@@ -64,6 +64,18 @@ internal object LwAutomation {
         return ok
     }
 
+    /**
+     * 设置页那条**直接改冷却** (2026-10-09 主人加的: 由用户决定冷却闸多少时间)
+     *
+     * 与 [setEnabled] 同一个形状, 而它改的是 `cooldownMinutes` —— 改完引擎要重读, 否则正在跑的那一份
+     * 规则还是旧数 (冷却那笔账就在 [AutomationEngine.act] 里读它)
+     */
+    fun setCooldown(context: Context, name: String, minutes: Int): Boolean {
+        val ok = AutomationStore.setCooldown(context, name, minutes)
+        if (ok) AutomationEngine.invalidate()
+        return ok
+    }
+
     /** 设置页那个删除按钮 */
     fun delete(context: Context, name: String): Boolean {
         val ok = AutomationStore.delete(context, name)

@@ -33,7 +33,8 @@ const api = new Function(
   'readFile', 'mkdir', 'stat', 'writeFile', 'join', 'dirname',
   `${body}\nreturn { voiceInboxPath, voiceReadNew, voiceCursorStore, voiceInboxState,` +
     ' voiceCurrentSession, voiceSessionBump, voiceSessionReset, voiceTargetSession,' +
-    ' voiceTargetId, voiceAfterFailure, withTimeout, VOICE_DELIVER_TRIES, pickInterruptTarget }',
+    ' voiceTargetId, voiceAfterFailure, withTimeout, VOICE_DELIVER_TRIES, pickInterruptTarget,' +
+    ' chooseVoicePreset, describePresetFailure }',
 )(readFile, mkdir, stat, writeFile, join, dirname)
 
 const home = mkdtempSync(join(tmpdir(), 'lw-inbox-'))
@@ -300,6 +301,78 @@ check(
     [{ id: 's3', startedAt: 9 }],
   ),
   null,
+)
+
+// 16. 新开会话用哪个预设, 以及选中的那个没注册时怎么退 (2026-10-09)
+//
+// 真机上的那条: 新装的手机没有 `custom` 预设的声明, 而设备上存着"上次选的是它" —— 于是
+// `sessionController.create()` 直接抛 `agent-preset/not-found`, 表现是**语音输入开不了新的会话**。
+// 这一段的判据是"逐级回退 + 说实话": 能解析出来的就用, 换过的要在 `why` 里写清换了谁
+function presetContext(resolve) {
+  return { get: (name) => (name === 'agentPresets' ? { resolve } : undefined) }
+}
+
+/** 一个"没注册"的错: 形状与 dsh 的 RemoteError 一致 (`code` + `details.available`) */
+function notRegistered(wanted, available) {
+  const error = new Error(`Unknown agent preset: ${wanted}`)
+  error.code = 'agent-preset/not-found'
+  error.details = { agentPreset: wanted, available }
+  return error
+}
+
+check(
+  '默认预设解析得出来就直接用它',
+  await api.chooseVoicePreset(presetContext(async (id) => {
+    if (id !== undefined) throw new Error(`unexpected ${String(id)}`)
+    return { id: 'custom' }
+  })),
+  { id: 'custom', why: 'the current default preset (custom)' },
+)
+
+check(
+  '默认那个没注册: 退到 standard, 并且说明是退过来的',
+  await api.chooseVoicePreset(presetContext(async (id) => {
+    if (id === undefined) throw notRegistered('custom', ['custom', 'standard', 'mobile-use'])
+    if (id === 'standard') return { id: 'standard' }
+    throw new Error(`should not try ${id}`)
+  })),
+  {
+    id: 'standard',
+    why: 'preset "custom" is not registered (agent-preset/not-found); fell back to standard',
+  },
+)
+
+check(
+  'standard 也没了: 按注册表报出来的顺序再试一个',
+  await api.chooseVoicePreset(presetContext(async (id) => {
+    if (id === undefined || id === 'standard') throw notRegistered(String(id ?? 'custom'), ['video', 'mobile-use'])
+    if (id === 'video') return { id: 'video' }
+    throw new Error(`should not try ${id}`)
+  })),
+  {
+    id: 'video',
+    why: 'preset "custom" is not registered (agent-preset/not-found); fell back to video',
+  },
+)
+
+check(
+  '一个都解析不出来: 回 undefined 让 create 去报真正的原因',
+  (await api.chooseVoicePreset(presetContext(async (id) => {
+    throw notRegistered(String(id ?? 'custom'), ['custom'])
+  }))).id,
+  undefined,
+)
+
+check(
+  '没有预设注册表那一路照旧 (id undefined)',
+  (await api.chooseVoicePreset({ get: () => undefined })).id,
+  undefined,
+)
+
+check(
+  '那个短句不会说 [object Object]',
+  api.describePresetFailure(notRegistered('custom', [])),
+  'preset "custom" is not registered (agent-preset/not-found)',
 )
 
 rmSync(home, { recursive: true, force: true })

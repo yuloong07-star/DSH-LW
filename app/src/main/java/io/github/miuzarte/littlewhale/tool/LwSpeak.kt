@@ -177,6 +177,23 @@ internal object LwSpeak {
         if (text.isEmpty()) {
             unavailable("speaking", "the text is empty")
         }
+        // **半双工那道闸对三条引擎都得合上** (2026-10-09 真机上踩的这条): 原来只有系统那条 (下面那个
+        // try/finally) 与自带那条 (`LwTts` 自己置) 会写 [VoiceState.speaking], 而**在线那两条
+        // (Edge / API) 一个字节都没置** —— 于是用在线引擎念回答时麦克风照开着, 喇叭里念的那句被录
+        // 回去、再当成"主人说的一句话"投进会话 (主人那条: "把她自己的说录入听里去了"), 球上也就显示
+        // 成「正在听」而不是「正在念」。现在整段调用都在闸里, 三条引擎一样
+        //
+        // 包住的是**整段**: 下面的 `unavailable` 会抛, 那时标记也必须放回去, 不然麦克风一直关着
+        VoiceState.speaking = true
+        try {
+            return speakWith(context, request, text)
+        } finally {
+            VoiceState.speaking = false
+        }
+    }
+
+    /** [speak] 的真身: 三条引擎各自怎么念 (闸在上面那一层合, 这里只管念) */
+    private fun speakWith(context: Context, request: JsonObject, text: String): JsonObject {
         // 自带那条先问: 设置页选了它、而且真的挑了一个音色目录, 就整段交给它 (它自己按句切)
         if (SpeakSettings.usesOnDevice()) {
             val wanted = SpeakSettings.model

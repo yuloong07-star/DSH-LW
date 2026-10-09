@@ -344,14 +344,14 @@
     <string name="settings_automation_new">新建一条自动指令</string>
     <string name="settings_automation_new_summary">说一句"什么时候、要做什么", 条件与参数交给模型写</string>
     <string name="settings_automation_new_title">新建自动指令</string>
-    <string name="settings_automation_new_dialog_summary">只要一行: 什么时候、要做什么。规则由模型写成 JSON, 写完这一页就能看见它</string>
+    <string name="settings_automation_new_dialog_summary">只要一行: 什么时候、要做什么。冷却时间 (0 到 1440 分钟, 0 表示不冷却) 由你定; 规则由模型写成 JSON, 写完这一页就能看见它</string>
     <string name="settings_automation_new_hint">例如: 每天八点提醒我带伞</string>
     <string name="settings_automation_create">交给模型写</string>
-    <string name="settings_automation_create_prompt">请把下面这件事做成一条自动指令, 用 lw_automation op=write 写进 automations, 名字你起一个短的中文名, when 挑最合适的那一种条件, then 用 remind (提醒一声) 或 task (开一场会话去干活): %1$s</string>
+    <string name="settings_automation_create_prompt">请把下面这件事做成一条自动指令, 用 lw_automation op=write 写进 automations, 名字你起一个短的中文名, when 挑最合适的那一种条件, then 用 remind (提醒一声) 或 task (开一场会话去干活); 冷却时间必须写成 cooldownMinutes: %2$d 分钟 —— 这是主人自己定的, 不许改成别的数: %1$s</string>
     <string name="settings_automation_manage">删掉或改一改一条</string>
     <string name="settings_automation_manage_summary">先选一条, 再选做什么</string>
     <string name="settings_automation_manage_title">哪一条?</string>
-    <string name="settings_automation_pick_summary">选中之后再选: 立刻跑一次 / 改一改 / 删掉</string>
+    <string name="settings_automation_pick_summary">选中之后再选: 立刻跑一次 / 改冷却时间 / 改一改 / 删掉</string>
     <string name="settings_automation_open_title">这条自动指令</string>
     <string name="settings_automation_run">立刻跑一次</string>
     <string name="settings_automation_edit">改一改</string>
@@ -363,11 +363,19 @@
     <string name="settings_automation_delete_summary">删掉「%1$s」这个文件, 不可恢复</string>
     <string name="settings_automation_deleted">已经删掉「%1$s」</string>
     <string name="settings_automation_delete_failed">「%1$s」没删掉: 文件不在或者删不动</string>
+    <string name="settings_automation_cooldown">改冷却时间</string>
+    <string name="settings_automation_cooldown_title">冷却时间</string>
+    <string name="settings_automation_cooldown_dialog_summary">同一条规则两次触发之间至少隔这么久; 0 到 1440 分钟, 0 = 不冷却。改完立刻生效</string>
+    <string name="settings_automation_cooldown_label">冷却时间 (分钟)</string>
+    <string name="settings_automation_cooldown_saved">冷却改成 %1$d 分钟了</string>
+    <string name="settings_automation_cooldown_failed">冷却没改成: 这条规则读不出来或者文件写不进去</string>
     <string name="settings_automation_sent">已经投出去了: 每次触发都新开一场会话, 提醒的措辞由模型现写</string>
     <string name="settings_automation_send_failed">没能投出去 (队列文件写不进去)</string>
     <string name="settings_automation_broken">这一条读不出来: %1$s</string>
     <string name="settings_automation_rule_state">今天 %1$d/%2$d 次</string>
     <string name="settings_automation_last">上次 %1$s</string>
+    <string name="settings_automation_rule_cooldown">冷却 %1$d 分钟</string>
+    <string name="settings_automation_rule_no_cooldown">不冷却</string>
     <string name="settings_automation_monitors">六个监测器: 没有启用的规则就不注册 (省电那条口径的落点)</string>
     <string name="settings_automation_monitor_notice">通知</string>
     <string name="settings_automation_monitor_foreground">前台应用</string>

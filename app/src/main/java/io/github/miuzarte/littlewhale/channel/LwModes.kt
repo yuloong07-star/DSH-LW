@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.host.DshHost
+import io.github.miuzarte.littlewhale.host.CustomPresets
 import io.github.miuzarte.littlewhale.tool.LwCamera
 import io.github.miuzarte.littlewhale.tool.LwWakeWord
 import io.github.miuzarte.littlewhale.wake.WakeWordState
@@ -337,6 +338,9 @@ internal object LwModes {
             put("promptFile", target.absolutePath)
             put("promptWritten", target.isFile)
             put("modesDirectory", modesDir(context).absolutePath)
+            // 那个助手与它那几份预设声明齐了没有 (2026-10-09): 新机上"语音开不了新会话"就是这一行
+            // 报出来的东西; 判据与首启安装那一步同源 (见 [CustomPresets])
+            put("customPreset", CustomPresets.describe(context))
         }
     }
 

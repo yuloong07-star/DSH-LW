@@ -19,7 +19,7 @@
 运行期以 **profile patch** 为准，本目录只是可分享副本，两者需同步：
 
 - 预设声明落在 `<DSH_HOME>/profiles/web/cordis.patch.yml`（`<DSH_HOME>` = `/data/data/io.github.miuzarte.littlewhale/files/dsh-home`）末尾的 `- insert:` 段，行 id `preset-mobile-use`，`config.id = mobile-use`，显示名「手机模式」，`order: 5`。
-- 安装（等价于本目录 `cordis.patch.yml` 的内容）：把该段追加到 profile patch；`dsh-hmr` 监听该文件，保存即 `reconcileProfilePatches` 热生效，**不必重启 dsh web**。
+- **2026-10-09 起这一步由应用自己做**（`app/src/main/java/.../host/CustomPresets.kt`）：host spawn 之前把本目录 `cordis.patch.yml` 开头那段 `- insert:` 按行 id 追加进 profile patch（随 host 树走的那一份在 `lw-presets/mobile-use.patch.yml`），`dsh-hmr` 监听该文件，保存即 `reconcileProfilePatches` 热生效，**不必重启 dsh web**。手工装仍然可行，但先按行 id 看一眼有没有，免得重复追加。
 - 也支持作为 bundle 安装（`dsh.bundle.patch` 已声明）：本机 `plugin_manager install_bundle` 被 `DSHA_NATIVE_PLUGIN_MANAGER` 策略拦截，走既定直改安装范式（拷包 → `profiles/web/node_modules` 软链 → `package.json` 的 dependencies 与 `dsh.profile.bundles`）。
 
 ## 配套技能 android-device-control

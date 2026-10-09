@@ -2658,7 +2658,9 @@ const TOOLS = [
     + ' 允许它自己动手). **Do not write the wording of a reminder into then.text: that sentence is'
     + ' written when the rule fires, in the conversation the rule opens**; put there what the user'
     + ' asked for (for example "提醒主人今天是妈妈的生日"). Leave the two limits out unless the user'
-    + ' asked for something else: the defaults are cooldownMinutes (30) and dailyLimit (5);'
+    + ' asked for something else: the defaults are cooldownMinutes (30) and dailyLimit (5). **When the'
+    + ' user names a cooldown, write that exact number into cooldownMinutes instead of 30** - the'
+    + ' settings page lets them set it themselves too, and 0 means no cooldown at all;'
     + ' at most one rule with the same name exists,'
     + ' so op=write overwrites. op=list shows the rules, op=read one, op=status says which of the six'
     + ' watches can run right now and what is holding a rule back (no notification access,'
@@ -3051,6 +3053,9 @@ const TOOLS = [
               : 'there is no current conversation yet'}`
               + `${voiceDelivery.reused ? ` (${voiceDelivery.reused} line(s) reused it)` : ''}`
               + `${voiceDelivery.why ? `, last line: ${voiceDelivery.why}` : ''}`,
+            // 新开一场时用的是哪个预设 (2026-10-09): 选中的那个没注册时这里会写"退到了哪一个"
+            `preset for a new conversation: ${voiceDelivery.preset || 'the registry default'}`
+              + `${voiceDelivery.presetWhy ? ` - ${voiceDelivery.presetWhy}` : ''}`,
             // **跳过的那几句要说出来** (见 [startVoiceInbox]): 订阅的人看不到日志, 而"你说了话, 没有
             // 回音"与"这一句没能送出去"是两件事
             `${voiceDelivery.skipped} line(s) gave up after ${VOICE_DELIVER_TRIES} tries`
@@ -5343,6 +5348,54 @@ function pickInterruptTarget(items, turns) {
   return best === null ? null : best.id
 }
 
+/**
+ * 开新会话之前先把预选定下来 (2026-10-09)
+ *
+ * 主人 2026-10-09 报的那条: 新装的手机上 `custom` 预设的声明没装进去, 而设备上存着"上次选的就是
+ * 它", 于是 `sessionController.create()` 直接抛 `agent-preset/not-found` —— 表现是**语音输入开不了
+ * 新的会话** (那句话根本没地方去)。一句话不该被一个缺失的预设整个掐掉, 所以这里逐级回退:
+ * **当前默认 -> standard -> 注册表报出来的其他候选**, 谁先解析得出来用谁
+ *
+ * 回退不是静默降级: 用了哪一个、为什么换, 原文进 `voiceDelivery.presetWhy` (与 `op=status` 那一行),
+ * 也进日志。判据在 `tools/check-voice-inbox.mjs`
+ *
+ * @param ctx - host context carrying `agentPresets`.
+ * @returns {Promise<{id?: string, why: string}>} `id` 为 undefined = 这个 profile 没有预设注册表,
+ *   照老样子让 `create()` 自己挑
+ */
+async function chooseVoicePreset(ctx) {
+  const presets = ctx.get('agentPresets')
+  if (!presets || typeof presets.resolve !== 'function') {
+    return { id: undefined, why: 'this profile has no preset registry, so the create picks for itself' }
+  }
+  try {
+    const current = await presets.resolve(undefined)
+    return { id: current.id, why: `the current default preset (${current.id})` }
+  } catch (error) {
+    const first = describePresetFailure(error)
+    const available = Array.isArray(error?.details?.available) ? error.details.available : []
+    // standard 是 dsh 出厂那一个, 所以它排在最前; 其余候选按注册表报出来的顺序试
+    for (const id of ['standard', ...available]) {
+      try {
+        const resolved = await presets.resolve(id)
+        return { id: resolved.id, why: `${first}; fell back to ${resolved.id}` }
+      } catch {
+        // 这一个也不行, 试下一个
+      }
+    }
+    return { id: undefined, why: `${first}; no registered preset resolved, so the create below reports it` }
+  }
+}
+
+/** 一个预设解析失败的短句 (回退那句"为什么换"要用它, 而不是 `[object Object]`) */
+function describePresetFailure(error) {
+  const code = error?.code ?? error?.message ?? String(error)
+  const wanted = error?.details?.agentPreset
+  return wanted === undefined
+    ? `the default preset could not be resolved (${code})`
+    : `preset "${wanted}" is not registered (${code})`
+}
+
 function voiceBlockEnd() {}
 
 /* ── 指代不明时自动附一张主屏截图 (批次 4 的需求 9) ───────────────────────────
@@ -5596,6 +5649,14 @@ const voiceDelivery = {
   /** 最近一条被跳过的 (序号 / 正文 / 为什么) —— 它必须答得出来, 跳过不等于静默丢掉 */
   lastSkip: null,
   /**
+   * 最近一次新开会话时用的预设, 以及为什么用它 (2026-10-09)
+   *
+   * 新装的手机上 `custom` 预设的声明没装进去时, 开新会话会以 `agent-preset/not-found` 失败 ——
+   * 那条路上现在逐级回退, 而这两个字段就是"最后用了哪一个、为什么换"的读数
+   */
+  preset: null,
+  presetWhy: null,
+  /**
    * 自动附图那条路 (批次 4 的需求 9): 真的去截了几条 / 附上了几条 / 命中词表但没附几条 / 最近一条
    *
    * 它与投递本身分开记, 因为"这一句投出去了"与"它带着一张图投出去"是两件事 —— 主人问"为什么它没看见
@@ -5714,9 +5775,31 @@ async function voiceDeliver(ctx, line) {
   // "没有"那张卡上 `sessionId` 是 null, 而它必须走新建
   const existing = voiceTargetId(target)
   const opened = existing === null
-  const sessionId = opened
-    ? (await controller.create(workspace === null ? {} : { cwd: workspace })).sessionId
-    : existing
+  let sessionId = existing
+  if (opened) {
+    // 开新会话这一跳**要带一个能解析出来的预设** (2026-10-09): 见 [chooseVoicePreset] 上面那段
+    const preset = await chooseVoicePreset(ctx)
+    voiceDelivery.preset = preset.id ?? ''
+    voiceDelivery.presetWhy = preset.why
+    const request = {
+      ...(workspace === null ? {} : { cwd: workspace }),
+      ...(preset.id === undefined ? {} : { agentPreset: preset.id }),
+    }
+    try {
+      sessionId = (await controller.create(request)).sessionId
+    } catch (error) {
+      // "解析得出来但起不来" (broken mount) 的那一档: 再退一次 standard, 别的错照抛
+      if (preset.id === undefined || preset.id === 'standard') throw error
+      const retry = await controller.create({
+        ...(workspace === null ? {} : { cwd: workspace }),
+        agentPreset: 'standard',
+      })
+      sessionId = retry.sessionId
+      voiceDelivery.preset = 'standard'
+      voiceDelivery.presetWhy = `${preset.why}; the create failed (${describePresetFailure(error)}),`
+        + ' so standard was used instead'
+    }
+  }
   // **投递之前先把"指代不明"那一张图备好** (批次 4 的需求 9): 截的是主人手里那块屏 (display 0), 而
   // 它不进正文 —— 图块与那句话一起构成这一条用户消息。截不出来照投文字, 理由记在读数里 (见
   // [autoScreenShot]): "这一句没投出去"与"这句投出去了但没带图"是两件事, 前者会重试, 后者不会
@@ -5764,13 +5847,21 @@ async function voiceDeliver(ctx, line) {
     reused: target?.why === 'the ball conversation, reused',
     source: line.source ?? 'voice',
     screenshot: outcome.screenshot === true,
+    // 新开一场时用的是哪个预设 (复用那一场时不记: 那是它自己的事, 见 [chooseVoicePreset])
+    preset: opened ? (voiceDelivery.preset ?? '') : null,
+    presetWhy: opened ? voiceDelivery.presetWhy : null,
   }
   voiceDelivery.error = null
   ctx.logger?.info?.(
     `voice line #${line.seq} ${opened ? 'opened a new conversation' : outcome.running ? 'steered into' : 'queued on'}`
       + ` ${String(sessionId)} (${voiceDelivery.why})`
+      + `${opened && voiceDelivery.preset ? ` on preset ${voiceDelivery.preset}` : ''}`
       + `${outcome.screenshot === true ? ' + one screenshot of the phone\'s own screen' : ''}`,
   )
+  // 预设被换过的那一档单独说一句: 它不是正常的选预设, 而是"选中的那个用不了"
+  if (opened && typeof voiceDelivery.presetWhy === 'string' && voiceDelivery.presetWhy.includes('fell back')) {
+    console.warn(`littlewhale-channel: line #${line.seq} opened its conversation on a fallback preset - ${voiceDelivery.presetWhy}`)
+  }
   if (auto.tried && auto.images.length === 0) {
     console.warn(`littlewhale-channel: line #${line.seq} went in without its screenshot: ${auto.why}`)
   }

@@ -121,6 +121,9 @@ val packHostTree = tasks.register<Exec>("packHostTree") {
     inputs.dir(rootProject.file("host-plugin"))
     // The image backend is copied over sharp the same way, so it is one as well
     inputs.dir(rootProject.file("image-backend"))
+    // 三份预设声明与内置的 dsh-custom-mode 也从仓库拷进树 (见 tools/pack-host.mjs 那两段),
+    // 所以 preset 那几份源码也是这一步的输入
+    inputs.dir(rootProject.file("presets"))
     inputs.property("dshPin", dshPin)
     inputs.files(dshSources)
     outputs.dir(hostTree)
@@ -201,12 +204,11 @@ android {
         // decision: the accessibility tree path needs API 30, and nothing here has been run below 33.
         minSdk = 33
         targetSdk = 37
-        // 2.6.0: 2.5.0 的正文 (浮标几何与模式硬闸 / 锁屏与唤醒 / 两个模式 / 指代不明自动截图 /
-        // 快捷指令 / 自动指令 / p 图) 加上 2.6.0 这一批 —— LW 插件 (伴侣 APK 那一层)、
-        // 「正在想」由一份文件说了算、球上手势的防误触档、输入框幂等、回复回到"我发话的那一场"、
-        // 语音输入缺省统一到 SenseVoice, 以及朗读那两条 (服务端主动关闭要当场说, 内置音色表去掉下线的晓辰)
-        versionCode = 8
-        versionName = "2.6.0"
+        // 2.6.5: 唤醒那一摊的整批修 (内置 custom 预设随包安装 + 语音开新会话回退 / 唤醒召回调参 +
+        // 命中去抖 / 唤醒到开麦的延迟 / 在线引擎念回答时的半双工闸 / 球的状态优先级改成"想 > 说 > 听" /
+        // 说完一句就收窗 / 自动指令的冷却由主人自己定)
+        versionCode = 9
+        versionName = "2.6.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

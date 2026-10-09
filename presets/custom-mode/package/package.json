@@ -1,0 +1,99 @@
+{
+  "name": "dsh-custom-mode",
+  "version": "2.0.1",
+  "description": "Custom modes and custom prompts for DeepSeek Harness (dsh): edit a mode's system prompt on the settings page (it takes effect on the next model step), pick its base mode, switch plugin rows one by one, and keep several assistants side by side — coding, chat or roleplay (RP) personas (multi-mode / multi-agent).",
+  "license": "MIT",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BOWLUNA/dsh-custom-mode.git"
+  },
+  "homepage": "https://github.com/BOWLUNA/dsh-custom-mode#readme",
+  "bugs": {
+    "url": "https://github.com/BOWLUNA/dsh-custom-mode/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "deepseek",
+    "dsh-plugin",
+    "cordis",
+    "plugin",
+    "agent-preset",
+    "agent-mode",
+    "custom-mode",
+    "multi-mode",
+    "assistant",
+    "system-prompt",
+    "custom-prompt",
+    "prompt-editor",
+    "prompt-engineering",
+    "persona",
+    "multi-agent",
+    "roleplay",
+    "chat",
+    "settings-page",
+    "自定义模式",
+    "系统提示词",
+    "提示词编辑",
+    "多助手",
+    "角色扮演",
+    "deepseek-desktop",
+    "agent-preset",
+    "persona-editor",
+    "dshpreset"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "files": [
+    "index.mjs",
+    "assistants.mjs",
+    "seed.mjs",
+    "atomic.mjs",
+    "client.js",
+    "composition.mjs",
+    "base-composition.mjs",
+    "meta.mjs",
+    "paths.mjs",
+    "locales.mjs",
+    "journal.mjs",
+    "cordis.patch.yml",
+    "LICENSE",
+    "postures.mjs",
+    "preset-backend/",
+    "preset/"
+  ],
+  "scripts": {
+    "test": "node test/run.mjs",
+    "verify-translation-pairing": "node tools/verify-translation-pairing.mjs",
+    "verify-doc-numbers": "node tools/verify-doc-numbers.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.5-rc.2 <0.2.0-0 || >=0.1.6-alpha.1 <0.2.0-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-0 <0.3.0-0 || >=0.2.1-alpha.1 <0.3.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.1.5-rc.2 <0.2.0-0 || >=0.1.6-alpha.1 <0.2.0-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-0 <0.3.0-0 || >=0.2.1-alpha.1 <0.3.0-0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "latest"
+  }
+}

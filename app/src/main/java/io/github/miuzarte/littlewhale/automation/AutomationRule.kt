@@ -45,11 +45,38 @@ internal object AutomationRule {
     const val DEFAULT_DAILY_LIMIT = 5
     const val DEFAULT_RADIUS_METERS = 300
 
-    /** 冷却与上限的边界: 越界一律拒, 顺手挡住"0 分钟"这种等于关掉防骚扰的写法 */
+    /**
+     * 冷却与上限的边界: 越界一律拒
+     *
+     * 冷却那一头的**下限是 0**: 主人 2026-10-09 要的是"由用户决定冷却闸多少时间", 而"不要冷却"
+     * (0 分钟) 是其中一个正当选择 —— 引擎读 `last + 0 > now` 正好就是每次都放行, 所以这里不再替人挡
+     */
     const val MAX_COOLDOWN_MINUTES = 1440
     const val MAX_DAILY_LIMIT = 200
     const val MIN_RADIUS_METERS = 50
     const val MAX_RADIUS_METERS = 5000
+
+    /**
+     * 设置页给主人挑的那几档冷却 (分钟)
+     *
+     * 0 = 不冷却, 30 是缺省, 1440 = 一天最多一次。**这张表只是给人挑的档位**, 真正落盘的仍然是
+     * `cooldownMinutes` 这个数 —— 想写 45 这种档位外的数, 走"改一改"那条路让模型写, 校验照样认
+     */
+    val COOLDOWN_CHOICES = listOf(0, 5, 15, 30, 60, 120, 360, 1440)
+
+    /** 把一个冷却数收进合法范围 (设置页那条直改与模型那条 write 用的是同一个边界) */
+    fun coerceCooldown(minutes: Int): Int = minutes.coerceIn(0, MAX_COOLDOWN_MINUTES)
+
+    /**
+     * 把一份规则 JSON 里的 `cooldownMinutes` 换成 [minutes], **别的键一个都不动**
+     *
+     * 设置页那条"直接改冷却"用它: 那条路不经过模型, 所以不能重新拼一份规则 —— 只替换这一个键,
+     * 写回去之后再走 [AutomationStore.write] 那次校验。纯函数, 判据在 `AutomationCooldownTest`
+     */
+    fun withCooldown(root: JsonObject, minutes: Int): JsonObject = buildJsonObject {
+        root.forEach { (key, value) -> if (key != "cooldownMinutes") put(key, value) }
+        put("cooldownMinutes", coerceCooldown(minutes))
+    }
 
     /** 光感那条最多允许"持续多久" (秒) */
     const val MAX_LIGHT_SECONDS = 600

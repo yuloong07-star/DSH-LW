@@ -2181,7 +2181,11 @@ class OverlayService : Service() {
         if (metrics.widthPixels != lastWidth || metrics.heightPixels != lastHeight) relayoutAll(force = true)
         else if (force) noteRects()
         val word = BallStatus.wordFor(
-            speaking = VoiceState.speaking,
+            // **念那一路有两个来源** (2026-10-09 真机: 在线引擎念的时候球上写着「正在听」):
+            // `VoiceState.speaking` 是半双工那道闸的标记, 而三条引擎各自的 `speaking` 是
+            // [LwSpeak.speakingNow] —— 只看前者时, 在线那两条 (Edge / API) 念的那几秒球会说成
+            // "正在听"。点球那一下 ([tapAction]) 早就是两个一起看的, 这里对齐它
+            speaking = VoiceState.speaking || LwSpeak.speakingNow,
             thinking = OverlayState.phase == OverlayState.PHASE_THINKING && DshHost.status is HostStatus.Running,
             // "正在听"说的就是这一句话的窗口开着 ([VoiceState.capturing]): 唤醒词一直守着, 而守着这件事
             // 不该在球上写成"正在听" —— 那是常态, 一直挂着只会让人以为麦克风在被吃

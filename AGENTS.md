@@ -106,7 +106,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 - **捐赠那一页是随包的** (`ui/DonateScreen` + `app/src/main/assets/donate.html`): ⋮ 与「关于」里那一行都走 `navigator.push(Screen.Donate)`, 在应用内用 WebView 渲染 (`file:///android_asset/`), **不联网也不跳浏览器**; 那一页零 `<script>`, 所以那个 WebView **不开 JS**; 仓库里原来那份 `docs/donate.html` 2026-10-08 已删 (提交 `4f21025`), 页面内容只此一份。**捐赠地址没有任何"可填"的入口** (主人 2026-10-08: "不要让别人填地址, 这是我自己的捐赠项目") —— 要改那一页就换 `assets/donate.html` 并重新出包
 - **系统返回键由 `AppNav` 那个 `BackHandler` 自己弹一层** (2026-10-08 修): `BackHandler` 是**后登记的先赢** (LIFO), 而它写在 `NavDisplay` 后面, 于是库里"还有上一页就 pop"那一个永远轮不到 —— 现象是**设置页与捐赠页上按返回什么都不发生**。现在那一行是 `if (backStack.size > 1) navigator.pop() else onBack()`, 主页上仍走「再按一次退出」(把任务放到后台, 不是退出)
 - **「正在想」是一份文件说了算, 不是推送** (2026-10-08 主人定的口径): `$DSH_HOME/lw/ball-phase.json` (`{"v":1,"at":…,"turns":[{"id":…,"startedAt":…}]}`, 宿主**原子写** —— `.tmp` + rename, 只在 `turn/start` / `turn/end` 真的改了那本账时写, 另外起来先写一次空表) 由 `app/src/main/java/…/overlay/BallPhaseFile.kt` 读: **`FileObserver` 盯那个目录 (inotify), 一改就重读并当场重画**, 另有"服务起来读一次"与"宿主翻成在跑读一次"两处。两侧都是事件驱动、**零轮询**, 也没有"推送丢了没人补"这回事 —— 那个 20 秒的看门狗 (它对不住主人的体感延迟) 连同 `overlay op=phase` 一起删了。球上取 `startedAt` **最大**的那一场, 它的**环色按会话固定**: 5 个色 (`BallPhaseFile.palette`) 轮转发给见过的会话并记在偏好里, 于是多个会话同时在想时一眼看得出"这是不是我先前那一场"
-- **在想时点一下球就是开语音, 但排在双击窗口之后** (2026-10-08 主人: "点击一次进入语音输入…进入语音输入要比第二次点击慢一点"): 那一下要等 `BallMinutes.THINKING_TAP_MS` (**450 ms**, 比双击的 300 ms 与防连击的 350 ms 都晚) 才开麦, 而**双击打断会把那个待办当场取消** (同一档上两个手势靠时间分开, 见 `OverlayService.onTap`)。开起来之后球上写**「正在听」** —— 状态词优先级是**在念 > 在听 > 在想** (`BallStatus.wordFor`, 主人点名改的: 原来"在想"压着"在听", 于是麦克风开着而球还写着正在想, 人以为点没生效); 语音窗口收掉之后立刻回到「正在想」
+- **在想时点一下球就是开语音, 但排在双击窗口之后** (2026-10-08 主人: "点击一次进入语音输入…进入语音输入要比第二次点击慢一点"): 那一下要等 `BallFeel.thinkingTapMs()` (标准档 430 ms, 比双击的 300 ms 与防连击的 350 ms 都晚) 才开麦, 而**双击打断会把那个待办当场取消** (同一档上两个手势靠时间分开, 见 `OverlayService.onTap`)。**状态词的优先级 2026-10-09 改成「在想 > 在念 > 在听 > 失败」** (`BallStatus.wordFor`, 主人: "支持互相打断, 正在听时可以被正在想打断, 正在说可以打断正在听, 正在说不打断正在想, 不停止任务, 只是优先显示并支持手动打断") —— 也就是说麦克风开着而有一轮在跑时, 球上写的是**「正在想」**(双击打断按它认), 而**动作那一边仍是"念 > 想 > 听"**(显示写着在想而喇叭也在念时, 单点那一下仍是"别念了"), 两件事分开写在 `BallTouch.act` 上
 - **双击打断打的是"正在想"指的那一场** (主人 2026-10-08: "双击暂停不会跟随停止"): `pickInterruptTarget` (纯函数, 在 `tools/check-voice-inbox.mjs` 抽的那一段里) 在"根会话且 `running === true`"里挑 `startedAt` 最大的那场, 没有就什么都不取消; 而**字由文件说了算 —— 应用不再乐观清字** (`interruptBall` 只写队列+记账, `phase` 一个字节都不动), 那一轮真停了之后 `turn/end` 写一次文件, 字才落
 - **设置页没有「工作区」与「网络」两段** (2026-10-06 撤掉, 见 `docs/ui-record.md` 第七轮): 工作区落在哪是 host 启动时按 `Workspace.resolve` 那三档自己挑的, 网络那个开关 (局域网) 改完也要重启 host —— 两者都是"平时不用动"的。**能力一个都没删**: `Workspace` 三档解析 / `Workspace.requestAllFilesAccess` / `HostSettings.lanAccess` 与 ⋮ 里那条重启照旧, 只是不再有这两个设置入口 (要开所有文件访问就 `tools/lw-install.ps1`, 要开局域网就写偏好 + 重启 host)
 - **「截图」那段是两条预算, 都是滑块** (见 `channel/ScreenshotBudget.kt`): **像素**三档 (低 262144 = dsh 的 `imagePixelBudget: low`、默认 640000 = dsh 的缺省、高 1690000 = DeepSeek 那头的处理预算), **字节** 256 KiB~1 MiB 连续可滑 (吸附点 256/512/768/1024, 打字给到 4096)。两条给的都是 **app 这一半** (截图产生时缩到多少), 路由那一半 (`imagePixelBudget` / `imageMaxBytes`) 在 dsh 自己的 `settings.yaml` 里, **app 读不到也写不到** —— app 这一半超过路由那一半没用, 只会把注定要被重编码的图交出去 (超了要在 host 那边重编码, 多一次往返也多一次质量损失), 所以滑块上端就停在路由缺省那个数。滑块是搬来的 SFA `ArrowSlider` (`scaffolds/`, 点标题那一行可打字给精确值)
@@ -636,6 +636,19 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
   **这一轮没验的**: 特权通道在模拟器上没起来 (Shizuku 13.6 装了但没跑, 模拟器没有 root, 而它的 starter
   要在界面里点一次), 所以 OCR / 虚拟屏 / 输入那几条这一轮没跑; 真机 `OJZD5D6TMNSKFYHM` 这一轮掉线了,
   它上面装的是 10-09 13:14 那一份 (同一份代码, 只是版本号还写着 2.5.0)
+- **2.6.5 (2026-10-09 收口): 唤醒那一摊整批** —— `versionCode 9 / versionName "2.6.5"`, 干净构建
+  (`:app:clean` 之后全量 `assembleDebug`) 226,243,234 字节 (215.8 MiB), sha256
+  `2b89e2c8d870d8b33bad724fedfce564fbe3b6d0af88acaa48bede907e8569e7`; `tools/apk-bytes.py` 最大无归属
+  区间 4,098 字节 (与 2.6.0 那份干净包同一个量级); 发在 `yuloong07-star/DSH-LW` 的 `v2.6.5`
+  (Release 正文在工作区 `docs\DSH-LW-2.6.5-release-notes.md`)。内容: **内置 custom 预设随包安装**
+  (`presets/custom-mode/` vendored + `host/CustomPresets.kt`, 新机开箱就有「自定义模式」) 与
+  **语音开新会话的预设回退** (`chooseVoicePreset`); **唤醒召回** (`wake/WakeTuning.kt` 四个参数
+  0.01 / 3.0 / 1 / 16, `wake/WakeDecision.kt` 冷却 1.5 s + 命令尾 2 s, `op=status` 报 `suppressed`);
+  **唤醒到开麦的延迟** (命中那串动作里"耳朵先开", 点亮屏幕与解锁挪出采集线程, 每次命中打一行毫秒数);
+  **在线引擎念回答时的半双工闸** (三条引擎都合, 判据 `VoiceState.speaking || LwSpeak.speakingNow` ——
+  修的是"她自己的回答被录回去又投成一句话"); **球的状态优先级改成「在想 > 在念 > 在听 > 失败」**
+  (互相打断, 只改显示与双击打断打谁, 不动任务); **说完一句就收窗** (投出去之后上限 0.3 s、不挂起、
+  人声照旧续期, 看门狗节拍 2 s → 0.5 s); **自动指令的冷却由主人自己定** (新建时选 + 管理里直改)
 
 ## 工作区与存储
 

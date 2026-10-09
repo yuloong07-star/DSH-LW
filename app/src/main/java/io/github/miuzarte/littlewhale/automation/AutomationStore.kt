@@ -171,6 +171,28 @@ internal object AutomationStore {
         return true
     }
 
+    /**
+     * 设置页那条**直接改冷却**: 只换 `cooldownMinutes`, 其余键一个都不动
+     *
+     * 主人 2026-10-09 要的是"由用户决定冷却闸多少时间后再次触发", 而新建那条路是投一句话让模型写
+     * JSON —— 模型万一没照写, 主人按的那个数就不算数。所以除了新建时把数写进提示词, 这里再给一条
+     * **不经过模型**的路: 读出现有那份 JSON, 只替换冷却这一个键, 过一遍与 `write` 同一道校验闸, 再
+     * 原样落盘 (未知键也留着, 以后的版本加的键不会被这一条吃掉)
+     */
+    fun setCooldown(context: Context, name: String, minutes: Int): Boolean {
+        val source = file(context, name)
+        if (!source.isFile) return false
+        return runCatching {
+            val root = AutomationJson.parse(source.readText())
+            val next = AutomationRule.withCooldown(root, minutes)
+            val text = AutomationJson.writer.encodeToString(JsonObject.serializer(), next)
+            // 与模型那条 `write` 同一道闸: 一条已经坏了的规则不许被这一条"改成"另一条坏的
+            AutomationRule.parse(name, text)
+            source.writeText(text + "\n")
+            true
+        }.getOrDefault(false)
+    }
+
     fun delete(context: Context, name: String): Boolean =
         runCatching { file(context, name).delete() }.getOrDefault(false)
 

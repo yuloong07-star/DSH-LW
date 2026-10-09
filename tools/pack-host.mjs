@@ -531,6 +531,35 @@ execFileSync(process.execPath, [
   join(installed, 'index.mjs'),
 ], { cwd: out, stdio: 'inherit' })
 
+/**
+ * 内置的 dsh-custom-mode: 让新机开箱就有那个 `custom` 预设 (2026-10-09 主人报的那条)
+ *
+ * 与 littlewhale-channel 同一条路 —— 拷进 node_modules; 而"它是不是这一棵树的一个 bundle"由
+ * profile 的 `dsh.profile.bundles` 说了算, 那一步在应用那一侧 ([host/CustomPresets.kt])。只拷不读:
+ * 这个包没有构建步骤, 也没有外部依赖 (见 presets/custom-mode/README.md)
+ */
+const customMode = fileURLToPath(new URL('../presets/custom-mode/package', import.meta.url))
+const customInstalled = join(out, 'node_modules', 'dsh-custom-mode')
+cpSync(customMode, customInstalled, { recursive: true })
+console.log(`pack-host: installed dsh-custom-mode from ${customMode}`)
+
+/**
+ * 另外两份预设声明 (手机模式 / 视频模式) 随树走, 落在 `lw-presets/` 下
+ *
+ * 它们的正文本来就是仓库里的 `presets/<名字>/cordis.patch.yml`; 应用那一侧要把开头那段 `- insert:`
+ * 追加进 profile patch, 而它读不到仓库 —— 所以这里拷进树里。mobile-use 那一份末尾还带着它自己的
+ * `agent-preset-registry` 与 `session-log-deepseek` 两行, 应用只取 `- insert:` 那一整段
+ */
+const presetSeed = join(out, 'lw-presets')
+mkdirSync(presetSeed, { recursive: true })
+for (const name of ['mobile-use', 'video']) {
+  cpSync(
+    fileURLToPath(new URL(`../presets/${name}/cordis.patch.yml`, import.meta.url)),
+    join(presetSeed, `${name}.patch.yml`),
+  )
+}
+console.log(`pack-host: staged the preset declarations in ${presetSeed}`)
+
 // sharp 随树装进来 (见 IMAGE_BACKEND), 这里不再覆盖任何东西 —— 以前那一步是把一个只认 PNG 的
 // 替身盖在 sharp 上, 代价是相册里的照片一律进不来
 

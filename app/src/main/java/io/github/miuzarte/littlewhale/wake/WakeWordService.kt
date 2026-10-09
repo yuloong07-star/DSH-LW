@@ -31,10 +31,12 @@ import io.github.miuzarte.littlewhale.R
 import io.github.miuzarte.littlewhale.host.DshHost
 import io.github.miuzarte.littlewhale.host.HostStatus
 import io.github.miuzarte.littlewhale.lock.LockReplay
+import io.github.miuzarte.littlewhale.lock.LockSetting
 import io.github.miuzarte.littlewhale.overlay.BallSpot
 import io.github.miuzarte.littlewhale.overlay.OverlayService
 import io.github.miuzarte.littlewhale.overlay.OverlayState
 import io.github.miuzarte.littlewhale.tool.LwSpeech
+import io.github.miuzarte.littlewhale.tool.LwSpeak
 import io.github.miuzarte.littlewhale.tool.LwWakeWord
 import io.github.miuzarte.littlewhale.voice.AudioCapture
 import io.github.miuzarte.littlewhale.voice.SpeechSegmenter
@@ -69,6 +71,17 @@ internal object WakeWordState {
     @Volatile
     var hits: Int = 0
 
+    /**
+     * **被去抖吃掉几次** (主人 2026-10-09 调参那一批)
+     *
+     * 声学阈值从 0.25 降到 0.01 之后 KWS 会灵敏得多, 同一个词连着报两遍、或者指令前半段被当成下一次
+     * 唤醒都会变多; [WakeDecision] 把它们压掉, 而"压掉了几次"必须看得见 —— 它是"去抖真在起作用"与
+     * "阈值是不是放得太开"共用的那个读数 ([io.github.miuzarte.littlewhale.tool.LwWakeWord] 的
+     * `op=status` 与 `hits` 并排报)
+     */
+    @Volatile
+    var suppressed: Int = 0
+
     @Volatile
     var lastKeyword: String? = null
 
@@ -77,6 +90,24 @@ internal object WakeWordState {
 
     @Volatile
     var startedAt: Long = 0
+
+    /**
+     * **正在跑的那一份 KWS 参数** (阈值 / 加分 / 候选路数 / 挂帧数)
+     *
+     * 起监听那一刻由 [WakeWordService.startListening] 写, 通道 `op=status` 报的是这四个而不是
+     * [WakeTuning] 里的缺省 —— "守的是哪个数"与"缺省是哪个数"在真机回调时是两件事
+     */
+    @Volatile
+    var threshold: Double = WakeTuning.KEYWORDS_THRESHOLD.toDouble()
+
+    @Volatile
+    var score: Double = WakeTuning.KEYWORDS_SCORE.toDouble()
+
+    @Volatile
+    var maxActivePaths: Int = WakeTuning.MAX_ACTIVE_PATHS
+
+    @Volatile
+    var trailingBlanks: Int = WakeTuning.NUM_TRAILING_BLANKS
 
     /** 麦克风前台服务那条类型有没有被系统接下来: 退到 specialUse 时后台可能录不到音 */
     @Volatile
@@ -122,6 +153,10 @@ internal object WakeWordState {
  * 只写一处, 不为唤醒词开例外
  *
  * 两条判据是三条展开的 `if`, 所以它抽成一个纯函数 (`forward`) —— 没有设备也能量, 见 [HalfDuplexTest]
+ *
+ * **喂进来的那个"在说话没有"是两个来源的并集** (2026-10-09 修的): `VoiceState.speaking` 是这道闸
+ * 自己的标记, 而三条 TTS 引擎各自还在不在放由 `LwSpeak.speakingNow` 说 —— 在线那两条 (Edge / API)
+ * 过去不写前者, 于是它念回答时麦克风开着, 自己的声音被录回去 ([WakeWordService.voiceSink])
  */
 internal object HalfDuplex {
 
@@ -145,6 +180,33 @@ internal object HalfDuplex {
  * 抽成纯函数是为了没有设备也能一条条量, 见 [VoiceIdleTest]
  */
 internal object VoiceIdle {
+
+    /**
+     * 助手还在想 / 还在念的时候, 这一笔闲置账**挂起**, 不收这一句话的窗口
+     *
+     * **2026-10-09 加的** (主人报"语音输入没说完自动退出"): 原来这两个状态也在计时, 而它们正是主人
+     * 最可能在"想下一句怎么说"的时候 —— 比如问完一句、等回答的那几秒, 窗口自己收了, 下一句就得
+     * 重新喊唤醒词
+     *
+     * 判据只有两个, 都是**球上看得见**的状态 (与球上三个字同源): 「正在想」(`OverlayState.phase`,
+     * 宿主写进 `ball-phase.json` 那一笔账) 与「正在念」(`VoiceState.speaking`)。两个都不在时, 调用方
+     * 把这一笔账从那一刻重新起算 —— 所以"想完了 / 念完了"之后仍然有完整的一份 [expired] 那个 limit
+     *
+     * **但它只管"还没说到一句"的那一段** (2026-10-09 补): 一句话已经出字投出去了之后就不该再挂起
+     * —— 那时窗口只剩 [WakeTuning.SENT_TAIL_MS] 那条短尾巴 (人声照样续期, 见 [limit])。调用方用
+     * [WakeWordService.voiceDelivered] 把这两档分开
+     *
+     * 纯函数, 判据在 [VoiceIdleTest]
+     */
+    fun held(thinking: Boolean, speaking: Boolean): Boolean = thinking || speaking
+
+    /**
+     * 这一笔闲置账用哪个上限
+     *
+     * 还没说到一句时是调用方给的 [limit] (10 s: "想一下再说第一句"那一段); **投出去过一句之后**是
+     * [WakeTuning.SENT_TAIL_MS] —— 一次唤醒买的就是一句话
+     */
+    fun limit(delivered: Boolean, limit: Long): Long = if (delivered) WakeTuning.SENT_TAIL_MS else limit
 
     /**
      * 从"最后一次活动"到现在够不够 [limit]
@@ -206,12 +268,34 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
     private var modelDirectory: File? = null
 
     // 类型写出来是必须的: 这两个数从 Intent 那来的是 Double (extra 只有 double), 而 sherpa 的
-    // 配置要的是 Float,原来靠 `= DEFAULT_THRESHOLD` 推出来的类型是 Double, 于是同一个文件里
-    // ".toFloat() 赋给 Double 字段" 与 "Double 传给要 Float 的形参" 两处都过不了编译
-    private var threshold = DEFAULT_THRESHOLD.toFloat()
-    private var score = DEFAULT_SCORE.toFloat()
+    // 配置要的是 Float,原来靠 `= WakeTuning.KEYWORDS_THRESHOLD` 推出来的类型是 Float, 于是同一个文件里
+    // ".toFloat() 赋给 Float 字段" 与 "Float 传给要 Float 的形参" 两处都要写清楚
+    //
+    // 四个数的缺省在 [WakeTuning] 那张表里**只此一份** (2026-10-09 从两处重复的常量收拢过来)
+    private var threshold = WakeTuning.KEYWORDS_THRESHOLD
+    private var score = WakeTuning.KEYWORDS_SCORE
+    private var maxActivePaths = WakeTuning.MAX_ACTIVE_PATHS
+    private var trailingBlanks = WakeTuning.NUM_TRAILING_BLANKS
     private var onWake = WAKE_TO_APP
     private var vibrateMs = DEFAULT_VIBRATE_MS
+
+    /**
+     * 命中之后的静默窗: 在这一刻之前报出来的词一律不算数 ([WakeDecision])
+     *
+     * 采集线程 ([keywordSink]) 读它决定放不放行, 而命中那一刻 ([hit]) 与"第一段出字投递" ([deliver])
+     * 两处写它 —— 后者在另一条线程上 (认字线程), 所以它是 `@Volatile`
+     */
+    @Volatile
+    private var kwsMutedUntil = 0L
+
+    /**
+     * 这一次静默是不是还在"等第一段出字把命令尾收掉"
+     *
+     * 命中时置真, 第一段出字投递时置假 (并把静默窗收到冷却下限), 于是**一次命中只收一次** ——
+     * 一句话被 VAD 切成两段时, 第一段把窗收掉, 第二段不再动它
+     */
+    @Volatile
+    private var kwsAwaitingTail = false
 
     /**
      * 命中之后除了叫醒还要做什么 (批次 4.4)
@@ -287,6 +371,16 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
     /** 这一次开门里 VAD 最近一次说有人声的时刻, 0 = 还没听见过 (跟着 [openVoice] 归零) */
     @Volatile
     private var voiceHeardAt = 0L
+
+    /**
+     * 这一次开门里**已经投出去过一句话**没有 (2026-10-09: "一次唤醒 = 一句话")
+     *
+     * 它决定闲置账用哪一档 ([VoiceIdle.limit]) 与要不要挂起 ([VoiceIdle.held]): 投出去之前是 10 s
+     * 且思考/念期间挂起 (主人还得把那一句说完), 投出去之后只剩 [WakeTuning.SENT_TAIL_MS] 那条短尾巴 ——
+     * 而**又听到人声就清掉** ([noteVoice]), 因为那说明下一句还在说
+     */
+    @Volatile
+    private var voiceDelivered = false
 
     private var watchdog: Thread? = null
 
@@ -384,8 +478,11 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
         }
         modelDirectory = File(directory)
         keywordsFile = File(keywords)
-        threshold = intent.getDoubleExtra(EXTRA_THRESHOLD, DEFAULT_THRESHOLD).toFloat()
-        score = intent.getDoubleExtra(EXTRA_SCORE, DEFAULT_SCORE).toFloat()
+        // 四个数各有缺省 (见 [WakeTuning]), 而通道那条 op=start 仍可以逐个点名覆盖 —— 真机回调要用
+        threshold = intent.getDoubleExtra(EXTRA_THRESHOLD, WakeTuning.KEYWORDS_THRESHOLD.toDouble()).toFloat()
+        score = intent.getDoubleExtra(EXTRA_SCORE, WakeTuning.KEYWORDS_SCORE.toDouble()).toFloat()
+        maxActivePaths = intent.getIntExtra(EXTRA_MAX_ACTIVE_PATHS, WakeTuning.MAX_ACTIVE_PATHS)
+        trailingBlanks = intent.getIntExtra(EXTRA_TRAILING_BLANKS, WakeTuning.NUM_TRAILING_BLANKS)
         onWake = intent.getStringExtra(EXTRA_ON_WAKE) ?: WAKE_TO_APP
         vibrateMs = intent.getIntExtra(EXTRA_VIBRATE_MS, DEFAULT_VIBRATE_MS)
         onHit = intent.getStringExtra(EXTRA_ON_HIT) ?: LwWakeWord.onHit(this)
@@ -471,6 +568,10 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
                     keywordsFile = keywords.absolutePath,
                     keywordsScore = score,
                     keywordsThreshold = threshold,
+                    // 四个数都是显式给的 (2026-10-09 调参): 后两个以前吃的是 sherpa 自己的缺省 (4 / 2),
+                    // 而"连续帧确认"这件事就落在 numTrailingBlanks 上 —— AAR 不吐分数, 它是能做的那一半
+                    maxActivePaths = maxActivePaths,
+                    numTrailingBlanks = trailingBlanks,
                 ),
             )
         } catch (error: Throwable) {
@@ -496,6 +597,11 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
         }
         listening = true
         WakeWordState.listening = true
+        // "守的是哪个数"要让 op=status 报得出来 (真机回调那几次全靠它)
+        WakeWordState.threshold = threshold.toDouble()
+        WakeWordState.score = score.toDouble()
+        WakeWordState.maxActivePaths = maxActivePaths
+        WakeWordState.trailingBlanks = trailingBlanks
         WakeWordState.keywords = keywords.readLines()
             .filter { it.isNotBlank() }
             .map { keywordName(it) }
@@ -528,6 +634,8 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
      */
     private fun openVoice(sticky: Boolean = false) {
         if (voiceActive) return
+        // "把耳朵打开要多久"这个数 (主人 2026-10-09 问的那条延迟): 主体是切段器那条 ONNX 会话
+        val began = System.currentTimeMillis()
         // **省电模式里这一路永远不常驻** (主人 2026-10-07: 省电模式就是"麦克风别一直开着"): 视频模式
         // 那个记号此刻也不作数 —— 一句话说完 [closeVoice] 就把麦克风还回去, 出了时段再谈常驻
         if (!powerSave && (sticky || residentWanted())) voiceSticky = true
@@ -537,13 +645,16 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
         voiceActive = true
         voiceIdleSince = System.currentTimeMillis()
         voiceHeardAt = 0L
+        // 新开的一次: 还没说出任何一句, 所以闲置账是 10 s 那一档 (见 [voiceDelivered])
+        voiceDelivered = false
         VoiceState.capturing = true
         WakeWordState.voiceActive = true
         preheat()
         announce(listeningText())
         Log.i(
             TAG,
-            "the voice chain is up (VAD ${VoiceState.vadReady}, ASR ${VoiceState.asrReady}), sticky: $voiceSticky",
+            "the voice chain is up (VAD ${VoiceState.vadReady}, ASR ${VoiceState.asrReady}), sticky: $voiceSticky," +
+                " opened in ${System.currentTimeMillis() - began}ms",
         )
     }
 
@@ -650,11 +761,38 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
                     return@Thread
                 }
                 if (!voiceActive || voiceSticky) continue
+                // **助手还在想 / 还在念的时候不收** (主人 2026-10-09: "语音输入没说完自动退出")
+                //
+                // 两个判据都取球上那个**看得见**的状态: 「正在想」是宿主写进 `ball-phase.json` 那一笔账
+                // ([OverlayState.phase], 与球上三个字同源), 「正在念」是 TTS 自己在跑 —— 都是"主人此刻
+                // 还在等一句话说完"的样子, 这时候把麦收了, 他下一句就得重新喊唤醒词
+                //
+                // 收的代价也没有了: 两个状态都不在时这一笔闲置账从**那一刻**重新起算 (下面那两行),
+                // 于是"想完了 / 念完了"之后仍然有完整的一份 [VOICE_IDLE_MS] 可以说下一句
+                val now = System.currentTimeMillis()
+                // **投出去一句之后就不挂起了** (见 [voiceDelivered]): 那时窗口只剩一条短尾巴, 主人要的
+                // 是"发送问题后就收掉"; 挂起只管"还没把那一句说完"的那一段
+                if (!voiceDelivered) {
+                    val held = VoiceIdle.held(
+                        thinking = OverlayState.phase == OverlayState.PHASE_THINKING &&
+                            DshHost.status is HostStatus.Running,
+                        speaking = VoiceState.speaking,
+                    )
+                    if (held) {
+                        voiceIdleSince = now
+                        voiceHeardAt = 0L
+                        continue
+                    }
+                }
                 val expired = VoiceIdle.expired(
-                    now = System.currentTimeMillis(),
+                    now = now,
                     lastTextAt = voiceIdleSince,
+                    // **人声照样算一次活动** (主人 2026-10-09: "要看'还在不在说'"): 投出去之后他要是
+                    // 接着说, 人声每 32 ms 给这一笔账续一次期, 窗口就继续留着; 一停下来 [SENT_TAIL_MS]
+                    // 那条短尾巴就走完。与"还没说到一句"那一档的差别只在**上限** (0.3 s 而不是 10 s)
+                    // 与**不挂起** (见上面那个 `!voiceDelivered` 的分支)
                     lastVoiceAt = voiceHeardAt,
-                    limit = VOICE_IDLE_MS,
+                    limit = VoiceIdle.limit(voiceDelivered, VOICE_IDLE_MS),
                 )
                 if (!expired) continue
                 // 在采集线程之外收: closeVoice 会 join 认字线程, 在采集线程上等它就是把采集卡死
@@ -773,7 +911,11 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
      * 判据 (闭闸时作废 / 闭闸时唤醒词跟着哑 / 开闸时两个消费者都喂) 是真的要一条条量的
      */
     private val voiceSink = AudioCapture.Sink { samples ->
-        when (HalfDuplex.forward(VoiceState.speaking)) {
+        // **闸的判据是两个来源的并集** (2026-10-09): [VoiceState.speaking] 是半双工那道标记, 而三条
+        // 引擎各自还在放没有 (在线那两条过去不写那个标记) 由 [LwSpeak.speakingNow] 说。只看前者时,
+        // 在线引擎念回答那几秒麦克风是开着的 —— 她自己的回答被录回去、当成一句话投进会话 (真机上
+        // 实测到的那条)。两个一起看, 谁在放都不吃音频
+        when (HalfDuplex.forward(VoiceState.speaking || LwSpeak.speakingNow)) {
             // 在采集线程上: 这一句与 keywordSink / vad 那两个消费者是同一个线程, 所以与它们不冲突
             HalfDuplex.ABANDON -> vad?.abandon()
             HalfDuplex.ACCEPT -> {
@@ -787,21 +929,50 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
      * 唤醒词这一路消费者: 与原来那条循环一模一样, 只是音频从共享采集那来
      *
      * 它在采集线程上跑, 而 KWS 一次只认 100 ms (几十毫秒的活), 所以不会拖住采集
+     *
+     * **命中之后有一段静默窗** (2026-10-09 调参那一批, 判据见 [WakeDecision]): 阈值降到 0.01 之后
+     * 同一个词被连着报、指令前半段被当成下一次唤醒都会变多, 所以窗里报出来的词**照样解码但不认**
+     * (只把 [WakeWordState.suppressed] 加一)
+     *
+     * **为什么是"接着解码"而不是"干脆不喂"**: 不喂的话 `isReady` 会一直是真, 静默窗一过那条 while
+     * 会把攒下来的整段音频一次性解完, 而里面正是刚刚那条指令 —— 反而当场误触发一次。接着解码、
+     * 只是不认, 窗一过再 `reset` 一次就是干净的一段
      */
     private val keywordSink = AudioCapture.Sink { samples ->
         val spotter = spotter ?: return@Sink
         val stream = stream ?: return@Sink
+        // 静默窗刚过的那一帧: 先把解码器手里那一截丢掉 (见上面那条注释), 再从干净的一段接着听
+        val muted = !WakeDecision.accepts(System.currentTimeMillis(), kwsMutedUntil)
+        if (mutedFrame && !muted) {
+            spotter.reset(stream)
+            Log.i(TAG, "the cooldown is over; the wake word starts from a clean segment again")
+        }
+        mutedFrame = muted
         stream.acceptWaveform(samples, AudioCapture.SAMPLE_RATE)
         while (spotter.isReady(stream)) {
             spotter.decode(stream)
             val heard = spotter.getResult(stream).keyword
-            if (heard.isNotBlank()) {
-                // 命中之后必须立刻复位, 不然同一个词会被连着报好几次
-                spotter.reset(stream)
+            if (heard.isBlank()) continue
+            // 命中之后必须立刻复位, 不然同一个词会被连着报好几次
+            spotter.reset(stream)
+            // **每个词各自判一次**: 上面那次 hit 可能刚刚把静默窗立起来, 同一条 while 里再报一个词
+            // 就不该算数了 (拿帧首那个 `muted` 去判会漏掉这一种)
+            if (WakeDecision.accepts(System.currentTimeMillis(), kwsMutedUntil)) {
                 hit(heard)
+            } else {
+                WakeWordState.suppressed += 1
+                Log.i(TAG, "ignored \"$heard\": inside the cooldown after the last hit")
             }
         }
     }
+
+    /**
+     * 采集线程自己的一个记号: 上一帧在不在静默窗里
+     *
+     * **只有 [keywordSink] 那一根线程碰它**, 所以不必 `@Volatile`; 它只为"窗刚过"那一下服务, 用来
+     * 决定要不要 `reset` 一次
+     */
+    private var mutedFrame = false
 
     /** 切段那一路消费者: 把整段话丢进队列就走, 不等识别 */
     private fun rememberSegment(samples: FloatArray) {
@@ -952,6 +1123,20 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
         VoiceState.lastText = text
         VoiceState.lastAt = System.currentTimeMillis()
         voiceIdleSince = System.currentTimeMillis()
+        // **这一句投出去了**: 从这一刻起这一次开门只剩一条短尾巴 ([WakeTuning.SENT_TAIL_MS]) ——
+        // 主人 2026-10-09 那条"说完后发送问题, 正在听状态没有结束, 应该结束掉"就是它。再听到人声
+        // ([noteVoice]) 会把这一笔清掉, 那说明下一句还在说
+        voiceDelivered = true
+        // **这一句话的第一段出字了**: 命令尾到此为止, 把静默窗收到冷却下限 ([WakeDecision]) ——
+        // 一次命中只收一次, 后面几段出字不再动它 (一句话被 VAD 切成两段时会来第二次)
+        if (kwsAwaitingTail) {
+            kwsMutedUntil = WakeDecision.afterDelivery(
+                now = VoiceState.lastAt,
+                hitAt = WakeWordState.lastHitAt,
+                mutedUntil = kwsMutedUntil,
+            )
+            kwsAwaitingTail = false
+        }
         // 读一次就消费掉: 头一句之后回到老规矩 (投给最近动过的那个会话)
         val fresh = wakeWindow
         wakeWindow = false
@@ -976,24 +1161,39 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
     /**
      * 听到了一次
      *
-     * 顺序是"先让人知道, 再叫起来": 震动与那一声短提示音是当场的手感, 通知是事后看得见的记录,
-     * **开常驻语音**是"唤醒之后才轮到它"那一步, 唤起才是这个功能的目的, 任何一步失败都不该把监听
-     * 带走, 所以各自 runCatching
+     * **第一件事是开门, 别的都排在它后面** (2026-10-09 主人: "听到唤醒词到语音输入间隔多长, 可以再
+     * 缩短吗")。原来那一串是"先让人知道 (震动 / 通知 / 点亮屏幕), 再开语音", 而**点亮屏幕那一步
+     * 最多占住采集线程 600 ms** ([HIT_WAKE_BUDGET_MS]) —— 那 600 ms 里麦克风没人读, 主人喊完紧接着说
+     * 出口的头几个字就是这样丢的。现在顺序改成:
+     *
+     *   1. [openForOneSentence]: 先把切段器与认字线程铺开 (耳朵打开)
+     *   2. 震动 / 通知: 当场的手感与看得见的记录
+     *   3. 点亮屏幕与解锁: **另起一条线程**, 不再占着采集线程
+     *   4. 把球叫出来 / "叫醒之后"那句命令
+     *
+     * 任何一步失败都不该把监听带走, 所以各自 runCatching
      */
     private fun hit(keyword: String) {
         WakeWordState.hits += 1
         WakeWordState.lastKeyword = keyword
-        WakeWordState.lastHitAt = System.currentTimeMillis()
+        val now = System.currentTimeMillis()
+        WakeWordState.lastHitAt = now
         Log.i(TAG, "heard $keyword (${WakeWordState.hits} so far)")
+        // **去抖那笔账在这里立起来, 而且排在下面那些活之前**: 下面有一步点亮屏幕最多占住采集线程
+        // 600 ms, 静默窗要从"听到"那一刻起算, 不能从那一串活干完起算
+        kwsMutedUntil = WakeDecision.afterHit(now)
+        kwsAwaitingTail = true
+        // **耳朵先打开**: 这一句排在最前, 后面那几步都不许再挡着麦克风 (见上面那段)
+        runCatching { openForOneSentence() }
         if (vibrateMs > 0) runCatching { buzz(vibrateMs.toLong()) }
         runCatching { announce(heardText(keyword)) }
-        // **批次 5: 点亮屏幕, 顺手把解锁那一段丢到后台**
-        //
-        // 顺序与预算都是刻意的: 这一句跑在采集线程上 (见 [voiceSink]), 在那里等几秒等于让麦克风几秒
-        // 没人读 —— 所以点亮只给 [HIT_WAKE_BUDGET_MS] 这一点预算 (KEYCODE_WAKEUP 通常几百毫秒就亮
-        // 了), 而重放那几秒由它自己的线程走。解锁成不成都不影响下面两句
-        runCatching { LockReplay.onWake(this, HIT_WAKE_BUDGET_MS) }
-        runCatching { openForOneSentence() }
+        // **点亮屏幕与解锁整段丢到后台** (批次 5 那条的收尾): 点亮是同步的 (它有预算, 而且"屏幕亮了
+        // 没有"决定重放要不要跑), 而解锁重放本来就在它自己的 worker 上 —— 但这一句以前跑在采集线程
+        // 上, 屏幕熄着时那几百毫秒等于麦克风没人读。整段挪到自己的线程之后, 耳朵已经开着、音频在
+        // 缓冲里等着, 屏幕晚几百毫秒亮不影响主人说那一句
+        if (LockSetting.wakeScreen(this)) {
+            Thread({ runCatching { LockReplay.onWake(this, HIT_WAKE_BUDGET_MS) } }, "lw-wake-screen").start()
+        }
         runCatching { wake(keyword) }
         runCatching { afterHit() }
     }
@@ -1014,6 +1214,7 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
      *   "有人用框" (开语音要给那 20 s 的空闲账续期, 主人 2026-10-06 点名的那一条)
      */
     private fun openForOneSentence() {
+        val began = System.currentTimeMillis()
         VoiceState.speaking = true
         try {
             beep(BEEP_MS)
@@ -1026,6 +1227,15 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
         if (target != null) OverlayState.noteBoxActivity()
         wakeWindow = true
         openVoice()
+        // **主人问的那条延迟就是这一行** (2026-10-09): 从"命中/点球那一下"到"耳朵真的开着"的毫秒数。
+        // 命中那一次另外把"听到唤醒词"那一刻也带上 —— 两个数之差就是 KWS 接受那一小段
+        val now = System.currentTimeMillis()
+        val hit = WakeWordState.lastHitAt
+        Log.i(
+            TAG,
+            "the ears are open ${now - began}ms after the tap/wake" +
+                (if (hit in 1..now && now - hit < 15_000) ", ${now - hit}ms after the hit" else ""),
+        )
     }
 
     /**
@@ -1133,6 +1343,9 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
         spotter?.let { runCatching { it.release() } }
         spotter = null
         wakeWindow = false
+        // 去抖那笔账跟着这一条链一起清: 服务停了再起来是全新的一段, 不该继承上一次的静默窗
+        kwsMutedUntil = 0L
+        kwsAwaitingTail = false
         VoiceState.capturing = false
         WakeWordState.listening = false
         WakeWordState.voiceActive = false
@@ -1342,6 +1555,8 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
         const val EXTRA_KEYWORDS_FILE = "keywordsFile"
         const val EXTRA_THRESHOLD = "threshold"
         const val EXTRA_SCORE = "score"
+        const val EXTRA_MAX_ACTIVE_PATHS = "maxActivePaths"
+        const val EXTRA_TRAILING_BLANKS = "numTrailingBlanks"
         const val EXTRA_ON_WAKE = "onWake"
         const val EXTRA_VIBRATE_MS = "vibrateMs"
 
@@ -1366,9 +1581,7 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
          */
         private const val HIT_WAKE_BUDGET_MS = 600L
 
-        /** sherpa-onnx 的缺省值, 与它自己文档里那组一致: 分数越低越容易触发, 阈值越低越容易报 */
-        private const val DEFAULT_THRESHOLD = 0.25
-        private const val DEFAULT_SCORE = 1.5
+        /** 四个 KWS 参数 (阈值 / 加分 / 挂帧 / 候选路数) 的缺省都在 [WakeTuning] 那一份表里, 这里不抄第二遍 */
         private const val DEFAULT_VIBRATE_MS = 500
 
         /** 命中那一声短提示音: 一个系统自带的气泡音, 够短也够认得出, 音量取 ToneGenerator 的 0..100 */
@@ -1401,11 +1614,21 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
          * **活动有两种** (2026-10-06 补上的第二条): 出一句字, 或者 VAD 说这一窗有人声 —— 只看前者的
          * 话, 一口气不停顿地说得比这个数还长, 会在说到一半时被收回 (VAD 要静音 0.8 s 才出字,
          * 见 [VoiceIdle])
+         *
+         * **这个数只管"还没说到一句"的那一段** (2026-10-09 补): 一句话出字投出去之后 ([voiceDelivered])
+         * 超时换成 [WakeTuning.SENT_TAIL_MS] (0.3 s), 而且不再因"它在想 / 它在念"而挂起 —— 人声照样
+         * 续期, 所以"还在说"不会从中间被收掉, 一停下来就收
          */
         internal const val VOICE_IDLE_MS = 10_000L
 
-        /** 看门狗的检查节拍: 两秒一次, 比超时值小一个量级就够, 它只读内存里的两个数 */
-        private const val WATCHDOG_MS = 2_000L
+        /**
+         * 看门狗的检查节拍
+         *
+         * 2026-10-09 从 2 s 收到 **500 ms**: 投出去一句话之后那一档的超时只有
+         * [WakeTuning.SENT_TAIL_MS] (300 ms) —— 2 s 的节拍会让"发送问题后收掉"最多晚两秒才发生, 而
+         * 主人对那个状态很敏感。一拍只读两个内存里的数, 快一点不花什么
+         */
+        private const val WATCHDOG_MS = 500L
 
         /**
          * 盯 `VoiceState.speaking` 的节拍

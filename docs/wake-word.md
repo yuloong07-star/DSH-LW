@@ -163,12 +163,36 @@ lw_wakeword op=keywords words=["肥鱼肥鱼=fei2 yu2 fei2 yu2","小爱同学=xi
   存着、悬浮窗授权在、host 在跑), 有一件不成立就退回应用 —— 没有浮标的人照旧得到"把界面叫起来"
   这唯一做得到的事, 所以"缺悬浮窗授权"那一条不会变成一次什么都不发生的唤醒。工具那条路
   (`lw_wakeword op=start`) 仍可以点名 `onWake: "app"` 覆盖缺省
-- 参数: `threshold` (默认 0.25, 越低越容易触发、误报越多)、`score` (默认 1.5)、`vibrateMs` (默认 500,
-  0 就是不振)。
+- 参数 (**2026-10-09 调过两轮, 唯一的一份表在 `wake/WakeTuning.kt`**): `threshold` (默认 **0.01**, 旧值
+  0.25 —— 越低越容易触发、误报越多)、`score` (**3.0**)、`numTrailingBlanks` (**1**)、`maxActivePaths`
+  (**16**)、`vibrateMs` (默认 500, 0 就是不振)。四个 KWS 参数都能在 `lw_wakeword op=start` 上点名覆盖,
+  `op=status` 报的是**正在跑的那一份** (不是缺省表)
+- **`numTrailingBlanks` 越大越难唤醒, 这一条最容易搞反**: 它说的不是"确认几帧", 而是 sherpa 的解码器
+  要求关键词 tokens 之后**还要出现这么多帧空白**才肯收 (upstream `transducer-keyword-decoder.cc` 里
+  `num_trailing_blanks > num_trailing_blanks_`, 一帧 subsampling 之后是 40 ms)。第一轮按"连续 2-3 帧"
+  把它抬到 3, 等于要求喊完之后有 160 ms 静音 —— 而"肥鱼肥鱼 + 紧接一句指令"中间根本没有那个空档,
+  于是**那一句永远唤不醒** (主人 2026-10-09 第二轮报的"还是难唤醒"就有这一条)。现在回到 1 (要 80 ms),
+  多出来的抖动交给冷却窗压
+- **`op=status` 的 `hits` / `suppressed` 是调这两个数的仪表**: `hits` 低而你怎么喊都不动, 先看
+  `threshold` 是不是被谁覆盖了、再看省电模式; `suppressed` 涨得快说明冷却窗吃掉了太多真实唤醒
+  (那就要把 `HIT_COOLDOWN_MS` 或 `COMMAND_TAIL_MAX_MS` 收小)
+- **命中之后有一段去抖窗** (同一天加的): 阈值放开之后"同一个词连着报两遍"与"指令前半段被当成下一次
+  唤醒"都会变多, 所以命中之后 KWS 照样解码但**结果一律不算**, 直到这一句话的第一段出字投递 (下限
+  `HIT_COOLDOWN_MS` 1.5 s, 上限 `COMMAND_TAIL_MAX_MS` 5 s); 窗里被吃掉的次数记在
+  `op=status` 的 `suppressed` 上。判据是纯函数 `wake/WakeDecision.kt`
+- **分数 EMA 没做, 也做不了**: 钉的这份 sherpa-onnx AAR (1.13.8, upstream 最新也是) 里
+  `KeywordSpotterResult` 只有 keyword / tokens / timestamps, **不吐任何分数** (上游源码里就是
+  `// TODO: Add more fields`)。所以"对分数做 EMA"拿不到输入值; 能做的那一半就是 `numTrailingBlanks=3`
+  这个模型内建的帧确认, 加上上面那层判定去抖。要真做 EMA 得自己重编 AAR 把 token 概率暴露出来
 - **一句话什么时候算说完由 silero VAD 那个静音窗定**: `SpeechSegmenter.MIN_SILENCE_SECONDS` 现在是
   **0.8 s** (2026-10-05 从 3.0 s 收下来的, 主人反馈"说话结束到发送等得太久")。它同时定两件事: 等够
   它才把段交出去, 而段尾就落在"最后一段人声 + 它" —— 所以它多长, 主人就多等多久。说话中间停顿长的
   人会被切成两段, 真机上真被切了就把它调回 1.0-1.2 s (那一处改一行)
+- **投出去一句之后窗口就进入"短尾巴"那一档** (2026-10-09 主人: "说完后发送问题, 正在听状态没有结束,
+  应该结束掉才对" + "要看还在不在说"): 还没说到一句时是"闲置 10 s + 想/念期间挂起"; 一句出字**投出去
+  之后**上限换成 `WakeTuning.SENT_TAIL_MS` (0.3 s) 且不再挂起, 而**人声照样续期** —— 还在说就继续听,
+  一停下来就收 (看门狗节拍 500 ms, 所以实际是 0.3-0.8 s)。代价写在 `WakeTuning` 那段注释里: 一句话
+  中间停顿超过 0.8 s 被切成两段时, 后半句要重新喊一次唤醒词
 - 同一批里另两条与延迟有关的改动: 命中那一下另起线程**预热识别器** (`LwSpeech.warmUp`, 把 240 MB
   的加载挪到主人还在说话的那几秒里), 以及宿主侧读队列的间隔从 500 ms 收到 **150 ms**
   (`VOICE_POLL_MS`)。三处加起来大约把"说完到发出去"从 3-4 秒压到 1 秒出头
@@ -274,10 +298,20 @@ node tools/check-wake-words.mjs
 
 ## 九、已知边界与风险
 
+- **"喊不醒"的第一件事是看省电模式**: 省电模式生效时**麦克风整个关着** (服务、通知、浮标都还在),
+  喊什么都没有用 —— 通知栏那条会写"省电模式 · 麦克风关着 · 点球还能说一句", `lw_wakeword op=status`
+  里则有 `powerSave` / `powerSaveManual` / `powerWindow` / `powerWindowActive` 四个数。2026-10-09
+  真机上那一轮"还是难唤醒"里就是它: 日志里 `power save is on: the microphone stays closed`, 而主人
+  在设置页关掉之后同一份代码立刻能唤醒了 —— 排查顺序因此是 **省电 → 省电时段 → 权限/模型 → 参数**
 - **误触发看词的长短**。「肥鱼肥鱼」是四个音节, 比两字词稳得多 (两字词与同音的日常词太近), 但阈值
   仍值得真机调。三到六字的词都建议先实测一遍 `threshold` / `score`。缺省那张表另外带了三条容错读音
   (声母 f / h 与韵母 ü / i 两处口音合并), 词条多了误报面也跟着大一点 —— 先用 `op=status` 的
   `hits` / `lastKeyword` 看哪几条真的用得上, 再决定留几条
+- **阈值 0.01 这一档故意放得很开** (2026-10-09 主人按"漏唤醒太多"给的): 它压的是"模型分够了而
+  后处理太硬"那一种漏检, 代价是**孤立误触发不会被冷却窗吃掉** (冷却只管"连着来"的那一类)。真机上
+  回调时先看 `op=status` 的 `hits` 与 `suppressed` 两个数: 前者高得离谱而后者不高, 就说明该把
+  `threshold` 往回抬一点, 或者把词表里那三条容错读音收掉几条 —— 四个值都能在 `op=start` 上单独覆盖,
+  不必改包
 - **后台起麦克风前台服务是受限的** (Android 14 起): 带 `microphone` 类型从后台启动需要豁免, 持有
   `SYSTEM_ALERT_WINDOW` 是官方豁免之一, 但不是所有 ROM 都认。被拒时退到 `specialUse` 并把这件事记在
   `status.microphoneForeground` 上 —— **前台时照常, 退到后台可能就听不到了**。稳妥的用法是把设置页的
@@ -352,8 +386,16 @@ node tools/check-wake-words.mjs
 ## 十一、这一块改了什么
 
 ```
-host-plugin/index.mjs                             lw_wakeword 工具、模型清单 (重钉到自建 Release)、镜像优先、装完清另一套; voiceDeliver 按 voice/session.json 那笔账挑对话 (2026-10-06 起 wake 只是头句记号, 不再另开一场; 2026-10-07 起那笔账是 20 分钟); VOICE_COMMANDS 那张命令表 + applyMode (与 lw_mode 共用, 切模式时相机与常驻语音两件一起做); startBallPhase 推"正在想"
+host-plugin/index.mjs                             lw_wakeword 工具、模型清单 (重钉到自建 Release)、镜像优先、装完清另一套; voiceDeliver 按 voice/session.json 那笔账挑对话 (2026-10-06 起 wake 只是头句记号, 不再另开一场; 2026-10-07 起那笔账是 20 分钟); VOICE_COMMANDS 那张命令表 + applyMode (与 lw_mode 共用, 切模式时相机与常驻语音两件一起做); startBallPhase 推"正在想"; chooseVoicePreset 开新会话前把预设解析出来并逐级回退 (2026-10-09)
 app/src/main/java/.../wake/WakeWordService.kt     前台服务、两层 (唤醒词一直守 / 识别链按命中·点球·视频模式开)、命中之后那几件事、闲置超时、半双工闸、ACTION_LISTEN_NOW (浮标点一下)、ACTION_HUSH (收回这一句) 与 afterHit (叫醒之后那两句命令)
+app/src/main/java/.../wake/WakeTuning.kt          四个 KWS 参数与两个窗的**唯一一份表** (2026-10-09: 0.01 / 2.0 / 3 / 8 + 冷却 1.5 s + 命令尾上限 5 s), 替掉两处重复的 DEFAULT_THRESHOLD / DEFAULT_SCORE
+app/src/main/java/.../wake/WakeDecision.kt        命中之后的去抖纯函数 (冷却判定 / 命中立窗 / 第一段出字收窗), 判据在 WakeDecisionTest
+app/src/main/java/.../host/CustomPresets.kt       内置 dsh-custom-mode 与三份预设声明的首启安装 (耐久副本 / profile 合并 / 行 id 去重), 判据在 CustomPresetsTest
+presets/custom-mode/                              vendored 的 dsh-custom-mode@2.0.1 (MIT) + 它怎么进设备的那份说明
+presets/{mobile-use,video}/cordis.patch.yml       随包进 profile 的那两段声明 (正文就是原本那两份 preset)
+app/src/main/java/.../automation/AutomationRule.kt 自动指令的冷却档位与 withCooldown (主人自己定冷却那一条)
+app/src/main/java/.../automation/AutomationStore.kt setCooldown: 不经过模型、只换 cooldownMinutes 一个键
+tools/check-custom-preset.mjs                     内置预设有四份东西不许漂 (包 / 助手文件 / 三段声明 / 打包那一步)
 app/src/main/java/.../voice/SpeechSegmenter.kt    silero VAD 切段、abandon() 丢半句话、静音窗 0.8 s
 app/src/main/java/.../voice/VoiceState.kt         capturing = "这一句话的窗口开着" (视频模式常驻那一档也在里面)
 app/src/main/java/.../voice/VoiceInbox.kt         投递队列, 头一句带 wake 记号

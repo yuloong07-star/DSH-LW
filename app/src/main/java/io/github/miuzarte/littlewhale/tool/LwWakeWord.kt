@@ -17,6 +17,7 @@ import io.github.miuzarte.littlewhale.wake.WakeWordService
 import io.github.miuzarte.littlewhale.wake.WakeWordState
 import io.github.miuzarte.littlewhale.wake.WakeWordWords
 import io.github.miuzarte.littlewhale.wake.PowerWindow
+import io.github.miuzarte.littlewhale.wake.WakeTuning
 import io.github.miuzarte.littlewhale.wake.keywordName
 import io.github.miuzarte.littlewhale.wake.symbolsOf
 import io.github.miuzarte.littlewhale.wake.unknownTokens
@@ -461,6 +462,13 @@ internal object LwWakeWord {
             put("voiceActive", WakeWordState.voiceActive)
             put("liveKeywords", WakeWordState.keywords.joinToString(", "))
             put("hits", WakeWordState.hits)
+            // 被去抖吃掉几次 (2026-10-09 调参那一批): 与 hits 并排看才知道阈值放到了什么程度
+            put("suppressed", WakeWordState.suppressed)
+            // **正在跑的**那四个 KWS 参数 (不是缺省表里的那一份): 真机回调时看它才对得上
+            put("threshold", WakeWordState.threshold)
+            put("score", WakeWordState.score)
+            put("maxActivePaths", WakeWordState.maxActivePaths)
+            put("numTrailingBlanks", WakeWordState.trailingBlanks)
             put("lastKeyword", WakeWordState.lastKeyword ?: "")
             put("lastHitAt", WakeWordState.lastHitAt)
             put("startedAt", WakeWordState.startedAt)
@@ -506,6 +514,11 @@ internal object LwWakeWord {
                         "listening" to WakeWordState.listening.toString(),
                         "resident voice running" to WakeWordState.voiceActive.toString(),
                         "hits" to WakeWordState.hits.toString(),
+                        // 去抖吃掉几次, 以及正在跑的那四个 KWS 参数 (2026-10-09 调参那一批)
+                        "hits dropped by the cooldown" to WakeWordState.suppressed.toString(),
+                        "KWS tuning (threshold / score / paths / trailing blanks)" to
+                            "${WakeWordState.threshold} / ${WakeWordState.score}" +
+                            " / ${WakeWordState.maxActivePaths} / ${WakeWordState.trailingBlanks}",
                         "last heard" to (WakeWordState.lastKeyword ?: "nothing yet"),
                         // 这一句说的是"话正被听着" (常驻那一档或刚买来的那一句, 都在这个记号里)
                         "capture running" to VoiceState.capturing.toString(),
@@ -611,8 +624,17 @@ internal object LwWakeWord {
         val intent = Intent(context, WakeWordService::class.java).apply {
             putExtra(WakeWordService.EXTRA_MODEL_DIR, directory.absolutePath)
             putExtra(WakeWordService.EXTRA_KEYWORDS_FILE, keywords.absolutePath)
-            putExtra(WakeWordService.EXTRA_THRESHOLD, request.number("threshold", DEFAULT_THRESHOLD))
-            putExtra(WakeWordService.EXTRA_SCORE, request.number("score", DEFAULT_SCORE))
+            putExtra(WakeWordService.EXTRA_THRESHOLD, request.number("threshold", WakeTuning.KEYWORDS_THRESHOLD.toDouble()))
+            putExtra(WakeWordService.EXTRA_SCORE, request.number("score", WakeTuning.KEYWORDS_SCORE.toDouble()))
+            // 四个数里后两个以前吃的是 sherpa 自己的缺省 (4 / 2), 2026-10-09 起显式给并且可覆盖
+            putExtra(
+                WakeWordService.EXTRA_MAX_ACTIVE_PATHS,
+                request.int("maxActivePaths", WakeTuning.MAX_ACTIVE_PATHS),
+            )
+            putExtra(
+                WakeWordService.EXTRA_TRAILING_BLANKS,
+                request.int("numTrailingBlanks", WakeTuning.NUM_TRAILING_BLANKS),
+            )
             putExtra(
                 WakeWordService.EXTRA_ON_WAKE,
                 if (request.string("onWake", WakeWordService.WAKE_TO_APP) == WakeWordService.WAKE_TO_OVERLAY) {
@@ -758,8 +780,10 @@ internal object LwWakeWord {
     internal fun listen(context: Context): JsonObject = start(
         context,
         buildJsonObject {
-            put("threshold", DEFAULT_THRESHOLD)
-            put("score", DEFAULT_SCORE)
+            put("threshold", WakeTuning.KEYWORDS_THRESHOLD)
+            put("score", WakeTuning.KEYWORDS_SCORE)
+            put("maxActivePaths", WakeTuning.MAX_ACTIVE_PATHS)
+            put("numTrailingBlanks", WakeTuning.NUM_TRAILING_BLANKS)
             put("vibrateMs", DEFAULT_VIBRATE_MS)
             put("onWake", WakeWordService.WAKE_TO_OVERLAY)
         },
@@ -863,9 +887,7 @@ internal object LwWakeWord {
         }
     }
 
-    /** 与 sherpa-onnx 自己的缺省值一致 */
-    private const val DEFAULT_THRESHOLD = 0.25
-    private const val DEFAULT_SCORE = 1.5
+    /** 四个 KWS 参数的缺省在 [WakeTuning] 那一份表里, 这里只剩震动这一个数 */
     private const val DEFAULT_VIBRATE_MS = 500
 
     /**
