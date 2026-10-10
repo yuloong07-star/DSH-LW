@@ -101,7 +101,7 @@ class WhalePluginService : Service() {
 
     companion object {
         const val ID = "io.github.yuloong07star.luwi.sample.whalewidget"
-        const val VERSION = "1.1.0"
+        const val VERSION = "1.1.1"
         const val TOOL_LIST = "whale_list"
         const val TOOL_NEXT = "whale_next"
         const val TOOL_SET = "whale_set"

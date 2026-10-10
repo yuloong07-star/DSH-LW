@@ -10,7 +10,11 @@ Luwi → 设置 → 插件 → **从链接装入**, 把下面那一条粘进去�
 
 | 包 | 它是什么 | 链接 |
 | :-- | :-- | :-- |
-| `whale-widget-1.1.0.lwp` | 鲸鱼娘桌面小组件 (需要先装同版本的伴侣 APK) | `https://cdn.jsdelivr.net/gh/yuloong07-star/Luwi@main/plugins/whale-widget-1.1.0.lwp` |
+| `whale-widget-1.1.1.lwp` | 鲸鱼娘桌面小组件 (需要先装伴侣 APK) | `https://cdn.jsdelivr.net/gh/yuloong07-star/Luwi@main/plugins/whale-widget-1.1.1.lwp` |
+
+**这一层只留最新那一份**: 旧的版本在 Releases 里 (每一份插件包都跟一版 Release 走)。链接也可以直接用
+仓库原地址 (`https://raw.githubusercontent.com/yuloong07-star/Luwi/main/plugins/…`), 只不过在国内
+这台开发机上它不通, 所以文档里写 jsDelivr 那一条 —— 协议那边认的是"任意 https", 两条都行。
 
 **从链接装不比从本地装少验一样东西**: 下到 app 私有目录之后走的是同一条链 —— 验发布者签名与逐文件
 哈希、查 protocol / `minLw` / 工具前缀冲突 / 未知能力, 全过才落地; 而**装完还要在设置页勾能力、

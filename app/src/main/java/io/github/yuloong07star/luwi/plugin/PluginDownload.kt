@@ -37,8 +37,12 @@ internal object PluginDownload {
     private const val CONNECT_MS = 15_000
     private const val READ_MS = 30_000
 
-    /** 一份空 zip 的头两个字节, 也就是 `PK` */
-    private const val ZIP_MARK = 0x50
+    /**
+     * zip 的头两个字节, 也就是 `P` 与 `K` (**两个都要写对**: 第一版这里只写了 0x50 当"魔数",
+     * 于是第二个字节那个 0x4B 永远对不上, 一份好端端的包也被说成"不像 zip" —— 2026-10-10 实测撞的)
+     */
+    private const val ZIP_FIRST = 0x50
+    private const val ZIP_SECOND = 0x4B
 
     /**
      * 下到 `cacheDir/plugin-download/` 里的一份临时文件并返回它
@@ -104,7 +108,7 @@ internal object PluginDownload {
                 break
             }
             if (target.length() == 0L) throw IllegalArgumentException("这个链接下下来是空的")
-            checkLooksLikePackage(target)
+            checkLooksLikePackage(target, current)
             Log.i(TAG, "fetched ${target.length()} bytes from $trimmed")
             return target
         } catch (problem: Throwable) {
@@ -132,12 +136,29 @@ internal object PluginDownload {
         return connection
     }
 
-    /** 前两个字节得是 `PK`: 不是的话下下来的多半是一页 JSON 或者一页网页 */
-    private fun checkLooksLikePackage(file: File) {
+    /**
+     * 前两个字节得是 `PK`: 不是的话下下来的多半是一页 JSON 或者一页网页
+     *
+     * 那句错话里带上**实际收到的开头** (前 60 个可打印字符) 与最后落到的那条地址: 少了这两样, 撞上
+     * "这个链接下的不是一份 .lwp"时人只能猜是链接写错了还是对面回了一页 HTML
+     */
+    private fun checkLooksLikePackage(file: File, landed: String) {
         val head = ByteArray(2)
         val read = file.inputStream().use { it.read(head) }
-        if (read < 2 || (head[0].toInt() and 0xFF) != ZIP_MARK || (head[1].toInt() and 0xFF) != ZIP_MARK) {
-            throw IllegalArgumentException("这个链接下的不是一份 .lwp (包是一个 zip); 拿到的头两个字节不像 zip")
+        if (read < 2 ||
+            (head[0].toInt() and 0xFF) != ZIP_FIRST ||
+            (head[1].toInt() and 0xFF) != ZIP_SECOND
+        ) {
+            val peek = ByteArray(60)
+            val got = file.inputStream().use { it.read(peek) }.coerceAtLeast(0)
+            val text = (0 until got).map { index ->
+                val value = peek[index].toInt() and 0xFF
+                if (value in 32..126) value.toChar() else '.'
+            }.joinToString("")
+            throw IllegalArgumentException(
+                "这个链接下的不是一份 .lwp (包是一个 zip)。它最后落在 $landed, " +
+                    "开头是这段: $text",
+            )
         }
     }
 }
