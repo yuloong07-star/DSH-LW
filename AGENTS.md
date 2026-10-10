@@ -669,6 +669,12 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
   设置页多了「技能」一段, 桥多了 `skill` 方法 (`op=scan` / `op=install`)。落点是
   `$DSH_HOME/skills/`, **只加不改** (已经在的那一份一个字节都不动); 点名装 (`skills:[…]`) 时
   **不要求那个应用在场**, 不带点名才是"按这台机器上装了的应用来"
+- **插件支持从链接安装** (协议第 13 节的裸 URL 那一条): `plugin/PluginDownload.kt` 只收 https
+  (每一跳都重查)、边读边数 32 MB 上限、下到 cache 之后交给 `PluginInstaller` 走**与本地包完全
+  同一条链**; 设置页那一段多一行「从链接装入」, `lw_plugin` 的 `install` 多收一个 `url` (与 `path`
+  二选一)。签好名的 `.lwp` 随仓库发在 `plugins/` 下 (旧版本跟 Release 走), 那是给它一条稳定的
+  https 地址 —— 这台机器上 `github.com` 与 `raw.githubusercontent.com` 都不通, 所以文档里写的是
+  `cdn.jsdelivr.net/gh/yuloong07-star/Luwi@main/plugins/…` 那一条
 
 ## 工作区与存储
 

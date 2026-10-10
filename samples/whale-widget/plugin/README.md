@@ -48,6 +48,10 @@ XML), 代价只是包大一点。
 
 ## 怎么装
 
+**从链接装那一条最省事**: 仓库里 `plugins/README.md` 有一份签好名的包与它的 https 地址, Luwi 的
+设置页 → 插件 → 「从链接装入」粘进去就行 (下下来之后走的是与本地包完全同一条校验链)。下面这三步是
+从零构建那一份时的走法。
+
 ```powershell
 # 1. 装伴侣 APK (同签名那一档, 系统自动给 signature 级权限)
 pwsh -File D:\apk\dev.ps1 gradle -Task ':sample-whale-widget:assembleDebug'
