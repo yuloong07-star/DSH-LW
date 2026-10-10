@@ -676,6 +676,13 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
   二选一)。签好名的 `.lwp` 随仓库发在 `plugins/` 下 (旧版本跟 Release 走), 那是给它一条稳定的
   https 地址 —— 这台机器上 `github.com` 与 `raw.githubusercontent.com` 都不通, 所以文档里写的是
   `cdn.jsdelivr.net/gh/yuloong07-star/Luwi@main/plugins/…` 那一条
+- **这一批随 2.7.4 一起发了** (2026-10-10): `versionCode 12 / versionName "2.7.4"`, 干净构建
+  (`:app:clean` 之后全量 `assembleDebug`, host 树重打) 226,357,300 字节 (215.9 MiB), sha256
+  `723b6298000f506945334187f7dd8f90f3441a000f86c47c8f13a65ce46799d8`; `tools/apk-bytes.py` 量出
+  最大无归属区间 4,098 字节 (与 2.6.0 / 2.6.5 / 2.6.7 那几份干净包同一处、同一个量级); 发在
+  `yuloong07-star/Luwi` 的 `v2.7.4` (Release 正文在工作区 `docs\DSH-LW-2.7.4-release-notes.md`)。
+  同一版里还进了**全仓图标换成 Luwi 自己的标记** (启动器 / 通知栏 / 球上那圈 0.378 → 0.65), 那一批
+  自己的记录在 `docs/floating-input.md` 与 `tools/make-icons.py` 的文件头
 
 ## 工作区与存储
 
