@@ -10,7 +10,7 @@ plugins {
 }
 
 android {
-    namespace = "io.github.miuzarte.littlewhale.plugin.api"
+    namespace = "io.github.yuloong07star.luwi.plugin.api"
     compileSdk {
         version = release(37)
     }

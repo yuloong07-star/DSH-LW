@@ -11,10 +11,10 @@
 param(
     [int]$Limit = 0,
     [switch]$Apply,
-    [string]$RepoRoot = 'D:\apk\LittleWhale',
-    [string]$Repo = 'yuloong07-star/DSH-LW',
+    [string]$RepoRoot = 'D:\apk\Luwi',
+    [string]$Repo = 'yuloong07-star/Luwi',
     [string]$Gh = 'D:\Codex\gh-cli\gh.exe',
-    [string]$RemoteRef = 'dshlw/main',
+    [string]$RemoteRef = 'luwi/main',
     [string]$Tag = 'v1.0.3'
 )
 

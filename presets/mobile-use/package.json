@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "LittleWhale/Android local adaptation of AcidGr/dsh-preset-mobile-use: a DSH agent preset driving the phone through the native lw_* channel.",
+  "description": "Luwi/Android local adaptation of AcidGr/dsh-preset-mobile-use: a DSH agent preset driving the phone through the native lw_* channel.",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

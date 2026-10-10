@@ -1,6 +1,6 @@
 ---
 name: weather
-description: 本机 (LittleWhale) 查天气的规范: 用免 key 的 Open-Meteo (先 geocoding 把地名换成经纬度, 再 forecast 拿实况与三天预报), weather_code 对照表, 以及网不通时如实说。用户问今天 / 明天 / 这周末 / 某个城市的天气时先加载本技能。
+description: 本机 (Luwi) 查天气的规范: 用免 key 的 Open-Meteo (先 geocoding 把地名换成经纬度, 再 forecast 拿实况与三天预报), weather_code 对照表, 以及网不通时如实说。用户问今天 / 明天 / 这周末 / 某个城市的天气时先加载本技能。
 ---
 
 # 查天气 (Open-Meteo 版)

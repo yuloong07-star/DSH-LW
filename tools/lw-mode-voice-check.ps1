@@ -18,7 +18,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $adb = if ($env:LW_ADB) { $env:LW_ADB } else { 'D:\apk\Sdk\platform-tools\adb.exe' }
-$package = 'io.github.miuzarte.littlewhale'
+$package = 'io.github.yuloong07star.luwi'
 $forward = if ($Serial -eq 'emulator-5554') { 29993 } else { 29992 }
 
 function Sh($command) { & $adb -s $Serial shell $command }

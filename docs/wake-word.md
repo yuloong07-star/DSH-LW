@@ -30,7 +30,7 @@ int8 那一套** (4 个文件, 5 519 884 B, 约 5.3 MB):
 | `joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx` | 65242 | `f79760052b87239e325f0567c752ad3130b30d92effb847d4307743c20c59a24` |
 | `tokens.txt` | 1627 | `72316508d9119696145abc6f1f8cdc46287535c34e5ce7e595f845cb1499cf2e` |
 
-- 来源是**我们自己的 Release**: `yuloong07-star/DSH-LW` 的标签 `models-kws-2024-01-01`, 四个文件都
+- 来源是**我们自己的 Release**: `yuloong07-star/Luwi` 的标签 `models-kws-2024-01-01`, 四个文件都
   在那一版里。字节数与 sha256 都是 GitHub 自己算的那份 (`assets[].digest`), 与本地文件逐个核过。
 - **镜像优先**: `https://ghfast.top/https://github.com/...`。这台手机上 `github.com` 直连只回 302, 真正
   的字节在 `objects.githubusercontent.com` 那一跳上, 出不去, 而镜像那一层实测 200 且逐字节一致。
@@ -245,7 +245,7 @@ resident`), 所以设置页没有开关可给, 但状态那一行照旧如实说
   "开口说话", 喊一声就回来了 (视频模式那档也一样, 再点球或者再喊一声就又开)。整件事收工是通知栏
   那个「停止」。**纯唤醒词守着时它不出现**: 那是常驻
   状态, 一直挂着只会让人以为麦克风在被吃 (桥给页面的是 `voice`, 不是 `listening`)
-- 实现是 `addJavascriptInterface(WakeBridge, "LittleWhale")` 加一段每次 `onPageFinished` 注入的 JS。
+- 实现是 `addJavascriptInterface(WakeBridge, "Luwi")` 加一段每次 `onPageFinished` 注入的 JS。
   **不是 dsh 的 client 插件加一条私有路由**: 那个指示器要的状态 (服务在不在听、命中几次) 只有 app
   这一侧知道, 而点它要停的也是 app 里那个前台服务 —— 插件跑在浏览器 JS 里两个都拿不到, 还得再连一
   条回 app 的通道。桥与路由的信任边界是一样的: 这个 WebView 只加载本机 host 那一个页面, 而暴露出去
@@ -275,7 +275,7 @@ lw_wakeword op=stop       # 停止
 一条钉正确性、一条钉两份实现不许漂:
 
 ```
-.\gradlew.bat :app:testDebugUnitTest --tests "io.github.miuzarte.littlewhale.wake.WakeWordWordsTest"
+.\gradlew.bat :app:testDebugUnitTest --tests "io.github.yuloong07star.luwi.wake.WakeWordWordsTest"
 node tools/check-wake-words.mjs
 ```
 

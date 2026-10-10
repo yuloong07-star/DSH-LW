@@ -1,8 +1,8 @@
 {
-  "name": "littlewhale-channel",
+  "name": "luwi-channel",
   "version": "0.0.0",
   "private": true,
-  "description": "The dsh tools that reach LittleWhale's privileged channel",
+  "description": "The dsh tools that reach Luwi's privileged channel",
   "type": "module",
   "main": "index.mjs",
   "exports": {

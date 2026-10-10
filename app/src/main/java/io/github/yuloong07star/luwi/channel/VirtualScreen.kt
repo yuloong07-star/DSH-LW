@@ -1,0 +1,885 @@
+package io.github.yuloong07star.luwi.channel
+
+import android.content.Context
+import android.content.res.Resources
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
+import android.hardware.display.DisplayManager
+import android.util.DisplayMetrics
+import android.util.Log
+import android.view.Display
+import android.view.Surface
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import io.github.yuloong07star.luwi.workspace.Workspace
+import java.io.File
+import java.util.LinkedHashMap
+import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import kotlin.math.ceil
+import kotlin.math.min
+import kotlin.math.sqrt
+
+/**
+ * A virtual screen that exists right now
+ * @property displayId the system's id for it, which is what every other call names
+ * @property width the screen's own width in its own pixels
+ * @property height the screen's own height in its own pixels
+ * @property dpi the screen's own density
+ * @property label what the menu calls it, which is the name its creator gave it
+ * @property acceptsControl whether tools may still act on it, which the user turns off from the
+ *   menu when they want the model's hands off this screen. The user's own finger on the preview is
+ *   never subject to it: pausing stops the model, not the person holding the phone
+ */
+data class ScreenState(
+    val displayId: Int,
+    val width: Int,
+    val height: Int,
+    val dpi: Int,
+    val label: String,
+    val acceptsControl: Boolean = true,
+) {
+    /** Width over height, which is the shape a picture of it has to keep */
+    val aspect: Float get() = width.toFloat() / height.toFloat()
+
+    /** The short side over the long one, which is what a landscape screen shrinks its box to */
+    val shape: String get() = "$width x $height"
+}
+
+/**
+ * The virtual screens, from the app's side
+ *
+ * The screens are built in the privileged process and this is the app's whole handle on them:
+ * every call here is one transaction, and they all go through a single worker thread, because the
+ * first of them may have to start that process and because the order of a detach and an attach is
+ * the state of the preview
+ *
+ * What the app contributes is the half the privileged side cannot have - the surface the frames
+ * land on, which belongs to this process and dies with its window. Those two lifetimes are the
+ * reason attaching is separate from selecting: a screen outlives the preview, and a screen that is
+ * not selected keeps running, because whatever is on it is not the app's business to stop
+ */
+object VirtualScreen {
+
+    private const val TAG = "LwScreen"
+
+    /**
+     * 一次截图留下的那两个文件
+     *
+     * 两份都在工作区里, 而且**是一对**: 全尺寸那份给人看, [fitted] 那份给模型。名字由这一层说,
+     * 因为只有它知道缩放那份叫什么 (`.model` 后缀是 [Picture] 里的常量) —— 让上面照着全尺寸那个名字
+     * 去猜, 猜错过一次
+     *
+     * @property fitted 交给模型的那一份 (装得下预算时就是全尺寸那份本身)
+     * @property full 工作区里的全尺寸那份
+     */
+    data class Shot(val fitted: Picture.Fitted, val full: File)
+
+    /**
+     * 一次连拍拼成的那一张网格
+     * @property shot 拼出来的文件, 与一次截图一样是一对 (给人看的全尺寸 + 给模型的那份)
+     * @property columns 一行几格
+     * @property rows 一共几行
+     */
+    data class Sheet(val shot: Shot, val columns: Int, val rows: Int)
+
+    /** Every screen the device is hosting, in the order they were made */
+    var screens: List<ScreenState> by mutableStateOf(emptyList())
+        private set
+
+    /** The screen the preview is showing, null while none is selected */
+    var selected: ScreenState? by mutableStateOf(null)
+        private set
+
+    /** Why the last attempt failed, cleared by the next one that works */
+    var lastError: String? by mutableStateOf(null)
+        private set
+
+    /** Whether a call is in flight, which is what a caller waits on before asking again */
+    var working: Boolean by mutableStateOf(false)
+        private set
+
+    /**
+     * The surface each screen's preview draws into, by display id
+     *
+     * One per screen rather than one for the app: a preview that is being replaced reports its
+     * surface going away at some point around the replacement, and with a single slot that report
+     * could land on the screen that just took over
+     */
+    private val surfaces = mutableMapOf<Int, Surface?>()
+
+    /**
+     * The app-owned surface each screen falls back to when no preview is drawing into it
+     *
+     * See [ScreenKeeper] for why a screen may never be left without one: the preview is a thing a
+     * person looks at, and what the model sees through the tools is not that - hiding the preview,
+     * or the app going to the background, must not take the screen away from the model
+     */
+    private val keepers = mutableMapOf<Int, ScreenKeeper>()
+
+    /** How many screens this app has asked for, which is only used to label the unnamed ones */
+    private var created = 0
+
+    /**
+     * The screens that were closed lately, by display id, so a call on a dead id can say who
+     * closed it. Bounded: only the most recent few are worth remembering, and an id that comes
+     * back around would be a new screen anyway
+     */
+    private val closed = LinkedHashMap<Int, ClosedScreen>()
+
+    /** Where a picture of the screen is left, which only the app's own directories can be */
+    @Volatile
+    private var pictures: File? = null
+
+    /** The app, kept for the one thing here that needs to name a directory of its own */
+    @Volatile
+    private var application: Context? = null
+
+    /**
+     * Everything that changes which screen draws where, one at a time and in order
+     *
+     * A single thread is what makes a switch safe: detaching the old screen and attaching the new
+     * one are two transactions, and a preview that came and went between them would otherwise be
+     * able to leave the surface on a screen nobody is looking at
+     */
+    private val worker = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "lw-screen").apply { isDaemon = true }
+    }
+
+    /** Touch, queued on a thread of its own so a gesture never waits for a screen switch */
+    private val touches = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "lw-screen-touch").apply { isDaemon = true }
+    }
+
+    /**
+     * Build the one thing here that needs a context: somewhere to write a captured picture
+     *
+     * The picture is written by the privileged process, which runs as the uid Shizuku or root gave
+     * it rather than as the app, and that uid is what decides where it may write. It cannot open
+     * anything inside the app's sandbox - that is what a sandbox is - and the external cache is no
+     * better: `/storage/emulated/0` belongs to the `media_rw` group, a process that came up as the
+     * shell uid is not in it, and every write under it is refused outright. What that process can
+     * write is the shell scratch directory, which belongs to the shell uid itself, and the app can
+     * read a file left there, which is the pair this needs
+     *
+     * The staged name carries a random part because that directory is traversable by every process
+     * on the device: a file in it is readable by anything that can guess the name, and a picture of
+     * the phone is not something to leave where the name can be guessed
+     */
+    fun initialize(context: Context) {
+        application = context.applicationContext
+        val scratch = File(SHELL_SCRATCH)
+        val directory = if (scratch.isDirectory) scratch else context.applicationContext.cacheDir
+        pictures = File(directory, "$PICTURE_PREFIX${UUID.randomUUID()}$PICTURE_SUFFIX")
+    }
+
+    /**
+     * Ask for one more screen and show it, blocking
+     *
+     * Blocking because nobody in the app calls this: a screen is made by whatever is driving the
+     * device - a tool, over the bridge - and that caller wants the screen it just asked for. The
+     * app's own UI only lists them and gives them back
+     *
+     * @param name what its creator wants it called, numbered if that name is taken, and only
+     *   falling back to a generated one when nothing was said
+     * @param width the screen's own size, or 0 to take this device's
+     * @param height the screen's own size, or 0 to take this device's
+     * @param dpi the screen's density, or 0 to take this device's
+     */
+    fun create(name: String? = null, width: Int = 0, height: Int = 0, dpi: Int = 0): ScreenState? {
+        val metrics = Resources.getSystem().displayMetrics
+        val pixelsWide = if (width > 0) width else metrics.widthPixels
+        val pixelsHigh = if (height > 0) height else metrics.heightPixels
+        val density = if (dpi > 0) dpi else metrics.densityDpi
+        Log.i(TAG, "asking for a ${pixelsWide}x$pixelsHigh screen at ${density}dpi named ${name ?: "(none)"}")
+        return try {
+            val service = requireService()
+            val id = service.createDisplay(pixelsWide, pixelsHigh, density, null)
+            created += 1
+            val screen = ScreenState(id, pixelsWide, pixelsHigh, density, label(name))
+            screens = screens + screen
+            selected = screen
+            // 建屏时就把面交上去: 预览可能过很久才挂上, 也可能一直不挂, 而屏从存在的那一刻起就该
+            // 有画面 —— 有画面才有窗口, 有窗口工具才找得到它
+            service.setDisplaySurface(id, surfaceFor(screen))
+            lastError = null
+            screen
+        } catch (problem: Throwable) {
+            report("create", problem)
+            null
+        }
+    }
+
+    /**
+     * Give one screen another shape, with whatever is running on it left running
+     *
+     * Blocking, because the caller is a tool that will look at the result next: an app on the screen
+     * is re-laid out rather than restarted, and the size it now has is what the next picture and the
+     * next coordinates have to be read against
+     *
+     * @param width the screen's new width, or 0 to keep the one it has
+     * @param height the screen's new height, or 0 to keep the one it has
+     * @param dpi the screen's new density, or 0 to keep the one it has
+     * @param swap trade width for height instead of naming a size, which is the same change said
+     *   the way a caller thinks about it: the density does not move
+     */
+    fun resize(
+        screen: ScreenState,
+        width: Int = 0,
+        height: Int = 0,
+        dpi: Int = 0,
+        swap: Boolean = false,
+    ): ScreenState? {
+        // 暂停是"别碰这块屏", 换尺寸也在碰它: 用户刚说过别动, 底下的布局不该在他手底下换掉
+        requireAcceptsControl(screen)
+        val pixelsWide = if (swap) screen.height else if (width > 0) width else screen.width
+        val pixelsHigh = if (swap) screen.width else if (height > 0) height else screen.height
+        val density = if (dpi > 0) dpi else screen.dpi
+        requireSize(pixelsWide, "width")
+        requireSize(pixelsHigh, "height")
+        return try {
+            requireService().resizeDisplay(screen.displayId, pixelsWide, pixelsHigh, density)
+            val resized = screen.copy(width = pixelsWide, height = pixelsHigh, dpi = density)
+            screens = screens.map { if (it.displayId == screen.displayId) resized else it }
+            if (selected?.displayId == screen.displayId) selected = resized
+            // 面是一块按老尺寸做好的 buffer, 换尺寸就得跟着换: 合成器不缩放, 旧面只装得下新屏的
+            // 左上角。预览那块 SurfaceView 会自己 setFixedSize 并重新 attach, 这一句管的是没有
+            // 预览、只剩保活面的那种屏
+            requireService().setDisplaySurface(resized.displayId, surfaceFor(resized))
+            lastError = null
+            resized
+        } catch (problem: Throwable) {
+            report("resize", problem)
+            null
+        }
+    }
+
+    /** Refuse a size that is a typo rather than a screen, before the device tries to allocate it */
+    private fun requireSize(pixels: Int, side: String) {
+        if (pixels in MIN_DISPLAY_SIDE..MAX_DISPLAY_SIDE) return
+        throw IllegalArgumentException(
+            "$side of $pixels is not a screen: a side is between $MIN_DISPLAY_SIDE and" +
+                " $MAX_DISPLAY_SIDE pixels",
+        )
+    }
+
+    /** What to call a screen: its given name, made unique, or a generated one if it has none */
+    private fun label(name: String?): String {
+        val wanted = name?.trim().orEmpty().ifEmpty { "虚拟屏 $created" }
+        var candidate = wanted
+        var suffix = 2
+        while (screens.any { it.label == candidate }) {
+            candidate = "$wanted $suffix"
+            suffix += 1
+        }
+        return candidate
+    }
+
+    /** Show one screen, or stop showing the one that is already showing */
+    fun toggle(screen: ScreenState) {
+        select(if (selected?.displayId == screen.displayId) null else screen)
+    }
+
+    /**
+     * Let tools act on one screen again, or stop them
+     *
+     * A screen accepts control from the moment it is made; this is the user's brake on the model,
+     * for when they want to take over by hand or stop what it is doing. It does not touch the
+     * screen, does not close it and does not stop the preview - it only makes every acting call
+     * refuse until it is turned back on
+     */
+    fun setAcceptsControl(screen: ScreenState, accepts: Boolean) {
+        screens = screens.map {
+            if (it.displayId == screen.displayId) it.copy(acceptsControl = accepts) else it
+        }
+        // 选中的那个是列表里的一份旧拷贝, 不跟着换菜单里就还是旧状态
+        if (selected?.displayId == screen.displayId) {
+            selected = screens.firstOrNull { it.displayId == screen.displayId }
+        }
+    }
+
+    /**
+     * Refuse an action while the user has this screen paused
+     *
+     * Reads the current list rather than the caller's copy: a call that was queued before the user
+     * pressed pause has to see the pause too
+     */
+    fun requireAcceptsControl(screen: ScreenState) {
+        val current = screens.firstOrNull { it.displayId == screen.displayId } ?: return
+        if (current.acceptsControl) return
+        throw IllegalStateException(
+            "the user paused control of the virtual screen \"${current.label}\"" +
+                " (displayId ${current.displayId}), so nothing may act on it" +
+                " - tell them to resume it from the phone's menu" +
+                " (虚拟屏 -> ${current.label} -> 继续接受控制)",
+        )
+    }
+
+    /**
+     * The phone's own screen, which every acting call can name like any other
+     *
+     * Read out of the display manager on each call rather than remembered, because its size turns
+     * with the device and the coordinates a caller sends have to be in the space it has right now.
+     * It is deliberately never one of [screens]: it is not ours to preview, to pause or to give
+     * back, and it exists whether or not this app is running
+     */
+    @Suppress("DEPRECATION")
+    fun mainScreen(): ScreenState {
+        val metrics = DisplayMetrics()
+        application
+            ?.getSystemService(DisplayManager::class.java)
+            ?.getDisplay(Display.DEFAULT_DISPLAY)
+            ?.getRealMetrics(metrics)
+        // An app that has not been initialized, or a device with no display manager, falls back to
+        // the same metrics a screen of ours would be made with - both name this phone's own screen
+        if (metrics.widthPixels <= 0 || metrics.heightPixels <= 0) {
+            val system = Resources.getSystem().displayMetrics
+            return ScreenState(MAIN_DISPLAY, system.widthPixels, system.heightPixels, system.densityDpi, MAIN_LABEL)
+        }
+        return ScreenState(MAIN_DISPLAY, metrics.widthPixels, metrics.heightPixels, metrics.densityDpi, MAIN_LABEL)
+    }
+
+    /** Show a screen, or none, moving the preview's surface with it */
+    private fun select(screen: ScreenState?) {
+        val previous = selected
+        if (previous?.displayId == screen?.displayId) return
+        selected = screen
+        // 两边的面都在这条线程上取好: 下面那段跑在 worker 上, 而 surfaces 与 keepers 是主线程也在
+        // 动的两张表 (与上一版把 surface 先取出来是同一个理由)
+        val letting = previous?.let { it to surfaceFor(it) }
+        val taking = screen?.let { it to surfaceFor(it) }
+        worker.execute {
+            try {
+                val service = requireService()
+                // The old one is let go first: two screens drawing into one buffer would leave the
+                // picture on whichever the compositor happened to finish last. It goes back to its
+                // keeper rather than to null, so it stays a screen the tools can still use
+                letting?.let { (old, surface) -> service.setDisplaySurface(old.displayId, surface) }
+                taking?.let { (shown, surface) -> service.setDisplaySurface(shown.displayId, surface) }
+                lastError = null
+            } catch (problem: Throwable) {
+                report("select", problem)
+            }
+        }
+    }
+
+    /**
+     * Give one screen back, and with it whatever the system put on it
+     * @param screen the screen to close.
+     * @param byUser true when the phone's own menu asked for this, false when a tool did, which is
+     *   what lets a later call on this id say who closed it
+     */
+    fun release(screen: ScreenState, byUser: Boolean = false) {
+        screens = screens.filterNot { it.displayId == screen.displayId }
+        surfaces.remove(screen.displayId)
+        keepers.remove(screen.displayId)?.close()
+        if (selected?.displayId == screen.displayId) selected = null
+        remember(screen, byUser)
+        working = true
+        worker.execute {
+            try {
+                requireService().releaseDisplay(screen.displayId)
+                lastError = null
+            } catch (problem: Throwable) {
+                report("release", problem)
+            } finally {
+                working = false
+            }
+        }
+    }
+
+    /**
+     * Why one displayId points at nothing right now
+     *
+     * The three cases are told apart on purpose, because what to do about them differs:
+     *
+     * - it never existed (or was forgotten): a bad id, so go and list the screens
+     * - the user closed it from the phone: a person's decision, so stop and ask them
+     * - an agent closed it through `lw_screen_release`: screens are shared, so another session may
+     *   be the one that did it, and making a replacement is the user's call rather than the model's
+     */
+    fun missingScreenReason(displayId: Int): String {
+        val gone = closed[displayId]
+        return when {
+            gone == null ->
+                "no screen with displayId $displayId, ask screen for the ones that exist"
+
+            gone.byUser ->
+                "the user closed the virtual screen \"${gone.label}\" (displayId $displayId) from" +
+                    " the phone's menu, so it is gone - stop and ask them what they want before" +
+                    " acting again (lw_screen lists the ones that are left)"
+
+            else ->
+                "the virtual screen \"${gone.label}\" (displayId $displayId) was closed by an" +
+                    " agent calling lw_screen_release rather than by the user, and screens are" +
+                    " shared, so another session may be the one that closed it - the id is gone" +
+                    " either way, do not make a replacement without asking" +
+                    " (lw_screen lists the ones that are left)"
+        }
+    }
+
+    /** Remember one closed screen, keeping only the last few, for the sentence above */
+    private fun remember(screen: ScreenState, byUser: Boolean) {
+        closed[screen.displayId] = ClosedScreen(screen.label, byUser)
+        while (closed.size > CLOSED_REMEMBERED) {
+            closed.remove(closed.keys.first())
+        }
+    }
+
+    /**
+     * The surface one screen should be drawing into right now
+     *
+     * The preview's own surface when there is a preview, and the screen's keeper otherwise. Never
+     * null: a virtual screen with no output surface is not composed at all, and then it has no
+     * windows for the accessibility tree (`lw_ui`, `lw_tap`, `lw_type` all read that) and no valid
+     * display id for `screencap` (`lw_screenshot` runs it) - the screen is still there in this app's
+     * list and in the system's, but nothing can see or touch it. That is what "hide the preview"
+     * used to do, and it is the same state the app lands in when its window is torn down
+     */
+    private fun surfaceFor(screen: ScreenState): Surface =
+        surfaces[screen.displayId] ?: keeper(screen).surface
+
+    /** The keeper for one screen, made when it is missing and remade when the screen changed size */
+    private fun keeper(screen: ScreenState): ScreenKeeper {
+        val existing = keepers[screen.displayId]
+        if (existing != null && existing.matches(screen)) return existing
+        existing?.close()
+        return ScreenKeeper(screen.width, screen.height).also { keepers[screen.displayId] = it }
+    }
+
+    /**
+     * Follow the preview's surface for one screen
+     *
+     * A screen with no surface is a normal state rather than a broken one: the app goes to the
+     * background, its window is torn down, and the screen has to keep running without it
+     */
+    fun attach(screen: ScreenState, surface: Surface?) {
+        surfaces[screen.displayId] = surface
+        // Only the screen the preview is on is worth telling the device about; the other one is
+        // either on its way out or waiting for its turn, and it gets told when its turn comes
+        if (selected?.displayId != screen.displayId) return
+        // 与 select 同一个理由: 面在主线程取好, 下面那段在 worker 上跑
+        val attached = surfaceFor(screen)
+        worker.execute {
+            try {
+                // A preview that went away hands the screen back to its keeper rather than to
+                // null - the screen keeps being composed, so the tools keep having a screen
+                requireService().setDisplaySurface(screen.displayId, attached)
+                lastError = null
+            } catch (problem: Throwable) {
+                // A screen that was released while its preview was going away is not worth a line
+                Log.w(TAG, "attach to ${screen.displayId} failed", problem)
+            }
+        }
+    }
+
+    /** A finger touched the screen, at a point in the screen's own coordinates */
+    fun press(screen: ScreenState, x: Float, y: Float) = touch(screen.displayId, LwServiceProtocol.TOUCH_DOWN, x, y)
+
+    /** A finger moved across the screen */
+    fun move(screen: ScreenState, x: Float, y: Float) = touch(screen.displayId, LwServiceProtocol.TOUCH_MOVE, x, y)
+
+    /** A finger left the screen */
+    fun release(screen: ScreenState, x: Float, y: Float) = touch(screen.displayId, LwServiceProtocol.TOUCH_UP, x, y)
+
+    /**
+     * Press and lift at one point, waiting until the device has taken it
+     *
+     * Blocking, unlike the preview's own touches: the caller here is a tool that will look at the
+     * screen the moment this returns, and "queued" would be a lie it could not tell apart from
+     * "done". The screen is named by the caller rather than taken from the selection, which is the
+     * user's to change at any moment
+     *
+     * A press that is held is the one gesture here that can be taken away while it is happening on
+     * the phone's own screen: a real finger arriving lifts it where it stands, and the answer says
+     * how long it lasted, because a caller that thinks its press was held reads what follows as the
+     * result of something that never finished
+     *
+     * @param screen the screen to touch.
+     * @param x the point in the screen's own pixels.
+     * @param y the point in the screen's own pixels.
+     * @param holdMs how long the finger stays down, [LONG_PRESS_MS][LwServiceProtocol.LONG_PRESS_MS]
+     *   or more being what a long press is.
+     */
+    fun tap(screen: ScreenState, x: Float, y: Float, holdMs: Long = 0L) {
+        requireAcceptsControl(screen)
+        gesture(screen, "tap") { service ->
+            service.tap(screen.displayId, x, y, holdMs)
+        }
+    }
+
+    /**
+     * Drag from one point to another, waiting until the finger has been lifted again
+     */
+    fun swipe(screen: ScreenState, fromX: Float, fromY: Float, toX: Float, toY: Float, durationMs: Long) {
+        requireAcceptsControl(screen)
+        gesture(screen, "swipe") { service ->
+            service.swipe(screen.displayId, fromX, fromY, toX, toY, durationMs)
+        }
+    }
+
+    /**
+     * 多指手势: 每条路径一根手指, 一起走
+     *
+     * 与单指的拖同一条路 (队列 + 那道暂停闸), 只是"步"里所有手指一起动
+     */
+    fun multiGesture(screen: ScreenState, paths: List<LwInput.Path>, durationMs: Long) {
+        requireAcceptsControl(screen)
+        gesture(screen, "gesture") { service ->
+            service.gesture(screen.displayId, paths, durationMs)
+        }
+    }
+
+    /** 捏合: 两根手指在中心两侧分合, 是 [multiGesture] 的糖衣 */
+    fun pinch(screen: ScreenState, x: Float, y: Float, scale: Float, durationMs: Long) {
+        requireAcceptsControl(screen)
+        gesture(screen, "pinch") { service ->
+            service.pinch(screen.displayId, x, y, scale, durationMs)
+        }
+    }
+
+    /**
+     * Press one key on a screen, waiting until the device has taken it
+     *
+     * Pressing a key is acting on a screen like any other call here, so it goes through the same
+     * queue and past the same gate: the menu's pause on a screen of ours
+     *
+     * @param holdMs how long the key stays down, [LONG_PRESS_MS][LwServiceProtocol.LONG_PRESS_MS] or
+     *   more being what the platform reads as a long press
+     */
+    fun key(screen: ScreenState, keyCode: Int, holdMs: Long) {
+        requireAcceptsControl(screen)
+        if (screen.displayId != MAIN_DISPLAY && keyCode in KeyCodes.WHOLE_SCREEN) {
+            throw IllegalStateException(
+                "the key ${KeyCodes.nameOf(keyCode)} is about a whole screen rather than about" +
+                    " what is on it, and \"${screen.label}\" (displayId ${screen.displayId}) is a" +
+                    " screen of ours: it has no launcher and no system UI, so this key does nothing" +
+                    " useful there and can leave the display asleep with its last picture still" +
+                    " coming out of lw_screenshot - press it on the phone's own screen (displayId" +
+                    " 0), or give this screen back with lw_screen_release and make a new one",
+            )
+        }
+        gesture(screen, "key") { service ->
+            val accepted = service.key(screen.displayId, keyCode, holdMs)
+            if (!accepted) {
+                throw IllegalStateException(
+                    "the device refused the key press on displayId ${screen.displayId}" +
+                        " (\"${screen.label}\") - the screen may have gone or the key may not be" +
+                        " one it can take",
+                )
+            }
+        }
+    }
+
+    /**
+     * Type a string as key presses, answering how many characters went through
+     *
+     * The narrow half of typing: it is here for a screen that reports no field, because then the
+     * only thing left is the keys a keyboard would have pressed. It goes through the touch queue
+     * with everything else, so it cannot land in the middle of a gesture
+     */
+    fun text(screen: ScreenState, text: String): Int {
+        requireAcceptsControl(screen)
+        var typed = NOTHING_TYPED
+        gesture(screen, "type") { service -> typed = service.text(screen.displayId, text) }
+        return typed
+    }
+
+    /**
+     * Run one gesture on the touch queue and wait for the device to answer
+     *
+     * The queue is what keeps a gesture in order against the preview's own fingers, and waiting on
+     * it is what lets a caller report what happened instead of hoping. The pause is asked again
+     * inside the queued block: whatever is behind this one in the queue would otherwise still run
+     * after the user pressed pause
+     */
+    private fun gesture(screen: ScreenState, name: String, block: (LwServiceProxy) -> Unit) {
+        try {
+            touches.submit {
+                requireAcceptsControl(screen)
+                block(requireService())
+            }.get(GESTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            lastError = null
+        } catch (problem: Throwable) {
+            // The queue hands back what the transaction threw, which is the message worth keeping
+            val cause = problem.cause ?: problem
+            report(name, cause)
+            throw IllegalStateException(lastError ?: "$name failed", cause)
+        }
+    }
+
+    /**
+     * Capture one screen and leave the picture where the model and the user can both open it
+     *
+     * Blocking, because its callers are the ones that want the bytes: a tool call, or a check. The
+     * privileged side writes into the app's cache, which is a directory both uids can name, and the
+     * app then copies it into the workspace - the host's file tools resolve paths inside the
+     * workspace and nowhere else, so a picture left in the cache would be a path the model could be
+     * told about but never open
+     * @param screen the screen to capture, named rather than taken from the selection.
+     * @param maxPixels the pixel budget the picture is scaled to fit.
+     * @param maxBytes the byte budget the picture is scaled to fit.
+     * @param region the part of the screen to hand over, or null for all of it: 那一块仍然按整屏的坐标
+     *   量, 而答案里带它的左上角, 所以模型能把图上的点换算回屏幕上的点
+     * @param suffix 文件名后缀, 连拍时一个序号: `screen-2-1.png`
+     * @returns both files of the capture, or null with [lastError] set.
+     */
+    fun screenshot(
+        screen: ScreenState,
+        maxPixels: Int = Picture.DEFAULT_MAX_PIXELS,
+        maxBytes: Int = Picture.DEFAULT_MAX_BYTES,
+        region: Rect? = null,
+        suffix: String = "",
+    ): Shot? {
+        val staging = pictures ?: run {
+            lastError = "no directory to write a picture into"
+            return null
+        }
+        return try {
+            val stale = captureSettled(screen, staging)
+            if (stale != null) {
+                lastError = stale
+                return null
+            }
+            val picture = File(screens(), "screen-${screen.displayId}$suffix.png")
+            staging.copyTo(picture, overwrite = true)
+            lastError = null
+            // The scaling happens here rather than at the far end: once a picture is stored nothing
+            // on this device can re-encode it, so what the model will read has to be the right size
+            // by the time it is handed over
+            Shot(Picture.fit(picture, maxPixels, maxBytes, region), picture)
+        } catch (problem: Throwable) {
+            report("screenshot", problem)
+            null
+        }
+    }
+
+    /**
+     * 一次连拍的几张, 拼成一张网格
+     *
+     * 连拍要回答的是"这段过程里画面怎么走的", 而十二张图是十二份上下文; 拼成一张网格就把那件事变成
+     * 一次读图。**它是用来看动起来的, 不是用来量坐标或读小字的** —— 每一格都被缩过, 格上的点回不到
+     * 屏幕上任何地方, 所以它不进"图上的点乘多少回到屏幕"那一套, 小字留给那几张原图
+     *
+     * @param frames 交给模型的那几份 (各自都装得下预算了), 按拍的顺序, 至少两张
+     * @param name 文件名, 与那几张落在同一个目录
+     * @param maxPixels 拼出来这一张自己的像素预算
+     * @param maxBytes 拼出来这一张自己的字节预算
+     * @returns 拼好的那一张与它的行列数, 或 null 并设 [lastError]
+     */
+    fun contactSheet(frames: List<File>, name: String, maxPixels: Int, maxBytes: Int): Sheet? {
+        if (frames.size < 2) {
+            lastError = "a sheet needs at least two pictures"
+            return null
+        }
+        val cell = Picture.sizeOf(frames.first()) ?: run {
+            lastError = "could not read ${frames.first().name}, so there is nothing to lay out"
+            return null
+        }
+        val columns = ceil(sqrt(frames.size.toDouble())).toInt().coerceAtLeast(1)
+        val rows = (frames.size + columns - 1) / columns
+        // 拼出来这张自己在预算之内的做法是先把每一格缩到位, 而不是拼一张大的再整张缩一遍: 后者要在
+        // 内存里先开一张 12 倍大的图, 而交出去的是同一张缩小的
+        val natural = cell.first.toDouble() * cell.second * columns * rows
+        val shrink = min(1.0, sqrt(maxPixels.coerceAtLeast(1) / natural))
+        val tileWidth = (cell.first * shrink).toInt().coerceAtLeast(1)
+        val tileHeight = (cell.second * shrink).toInt().coerceAtLeast(1)
+        return try {
+            val sheet = Bitmap.createBitmap(
+                columns * tileWidth,
+                rows * tileHeight,
+                Bitmap.Config.ARGB_8888,
+            )
+            val canvas = Canvas(sheet)
+            // 空着的格子留黑, 这样"这里没有一张"与"这一格是一屏白的"分得开
+            canvas.drawColor(Color.BLACK)
+            val paint = Paint().apply { isFilterBitmap = true }
+            frames.forEachIndexed { index, file ->
+                val decoded = BitmapFactory.decodeFile(file.absolutePath) ?: return@forEachIndexed
+                val scaled = if (decoded.width == tileWidth && decoded.height == tileHeight) {
+                    decoded
+                } else {
+                    Bitmap.createScaledBitmap(decoded, tileWidth, tileHeight, true)
+                }
+                canvas.drawBitmap(
+                    scaled,
+                    ((index % columns) * tileWidth).toFloat(),
+                    ((index / columns) * tileHeight).toFloat(),
+                    paint,
+                )
+                if (scaled !== decoded) scaled.recycle()
+                decoded.recycle()
+            }
+            val target = File(screens(), "$name.png")
+            target.outputStream().use { sheet.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            sheet.recycle()
+            lastError = null
+            Sheet(Shot(Picture.fit(target, maxPixels, maxBytes), target), columns, rows)
+        } catch (problem: Throwable) {
+            report("sheet", problem)
+            null
+        }
+    }
+
+    /**
+     * Take a picture of the screen, and keep taking it while the device hands back the old frame
+     *
+     * A screen that has just been given another size has not drawn a frame at that size yet, and
+     * `screencap` answers with the last frame there was - the size before, without saying so. A
+     * caller that resized a screen and then looked would measure every coordinate on a picture of
+     * the screen as it used to be, so what came back is checked against the size the screen has and
+     * the capture is taken again until the two agree. The budget is short because the wait is one
+     * frame: measured on the device, the second attempt in a row is already the right size
+     *
+     * @returns why the picture never matched, or null once one did
+     */
+    private fun captureSettled(screen: ScreenState, staging: File): String? {
+        var last = "nothing"
+        repeat(CAPTURE_ATTEMPTS) { attempt ->
+            // 特权侧回的是"为什么没有图": 屏没了, 与屏在而应用还没画上去, 是两件事
+            val problem = requireService().screenshot(screen.displayId, staging.absolutePath)
+            if (problem.isNotEmpty()) return problem
+            val size = Picture.sizeOf(staging) ?: return null
+            if (size.first == screen.width && size.second == screen.height) return null
+            last = "${size.first}x${size.second}"
+            Log.i(TAG, "display ${screen.displayId} is ${screen.width}x${screen.height} but the" +
+                " capture came back $last, taking it again")
+            if (attempt < CAPTURE_ATTEMPTS - 1) Thread.sleep(CAPTURE_SETTLE_MS)
+        }
+        return "the device is still handing back a $last picture of a ${screen.width}x" +
+            "${screen.height} screen, which is the frame from before it changed size: take it again"
+    }
+
+    /** Where captured pictures are left: inside the workspace, under a directory of our own */
+    private fun screens(): File {
+        val context = application ?: throw IllegalStateException("the app has not been initialized")
+        return File(Workspace.resolve(context).directory, SCREENSHOTS).apply { mkdirs() }
+    }
+
+    /**
+     * Whether one screen is awake, because two things go wrong when it is not
+     *
+     * A sleeping display keeps showing the last frame it drew, so `screencap` hands back a picture
+     * of an interface that is no longer on the screen - reading it reports text that cannot be
+     * pressed. And an injected touch does not wake a display, so the press lands nowhere. Both are
+     * silent, which is why the answer carries this rather than a caller having to guess
+     */
+    fun displayPower(displayId: Int): String {
+        val context = application ?: throw IllegalStateException("the app has not been initialized")
+        val display = context.getSystemService(DisplayManager::class.java).getDisplay(displayId)
+            ?: return "gone"
+        return when (display.state) {
+            Display.STATE_OFF -> "off"
+            Display.STATE_DOZE, Display.STATE_DOZE_SUSPEND -> "dozing"
+            Display.STATE_UNKNOWN -> "unknown"
+            else -> "on"
+        }
+    }
+
+    /**
+     * One screen at its own resolution, for OCR
+     *
+     * Two differences from [screenshot], both deliberate: this one is **not** scaled to the pixel
+     * budget (that budget exists so the model can read a picture at all, and halving a 12sp glyph
+     * makes it unreadable), and nothing is left in the workspace - OCR wants pixels, not a file
+     * for the model to open
+     */
+    fun capture(screen: ScreenState): Bitmap? {
+        val staging = pictures ?: run {
+            lastError = "no directory to write a picture into"
+            return null
+        }
+        return try {
+            val stale = captureSettled(screen, staging)
+            if (stale != null) {
+                lastError = stale
+                return null
+            }
+            lastError = null
+            BitmapFactory.decodeFile(staging.absolutePath)
+        } catch (problem: Throwable) {
+            report("capture", problem)
+            null
+        }
+    }
+
+    /**
+     * Queue one moment of a finger
+     *
+     * Asynchronous, because its caller is the preview following a finger of its own: a frame that
+     * waited for a round trip would drop the next one, and the queue is what keeps the order right
+     * against whatever else is touching the same screen
+     */
+    private fun touch(displayId: Int, action: Int, x: Float, y: Float) {
+        touches.execute {
+            try {
+                requireService().touch(displayId, action, x, y)
+            } catch (problem: Throwable) {
+                // A touch that failed is not worth a line in the UI: the finger is still moving,
+                // and the next call will say the same thing
+                Log.w(TAG, "touch $action at $x,$y failed", problem)
+            }
+        }
+    }
+
+    /** The channel, connected if it was not, or the reason there is none */
+    private fun requireService(): LwServiceProxy = PrivilegedChannel.ensure()
+        ?: throw IllegalStateException(PrivilegedChannel.state().error ?: "no privileged process")
+
+    private fun report(name: String, problem: Throwable) {
+        Log.w(TAG, "$name failed", problem)
+        lastError = problem.message ?: problem.javaClass.simpleName
+    }
+
+    /** Where a non-root privileged process may write, which is the shell uid's own directory */
+    private const val SHELL_SCRATCH = "/data/local/tmp"
+
+    /** What a staged picture is called, around a random part that makes the name unguessable */
+    private const val PICTURE_PREFIX = "lw-screen-"
+
+    private const val PICTURE_SUFFIX = ".png"
+
+    /** Where in the workspace pictures are kept, which the model can read and the user can open */
+    private const val SCREENSHOTS = "screenshots"
+
+    /** A gesture is one transaction, so this only has to outlast the longest swipe asked for */
+    private const val GESTURE_TIMEOUT_MS = 30_000L
+
+    /** How many closed screens are remembered for [missingScreenReason] */
+    private const val CLOSED_REMEMBERED = 8
+
+    /** The phone's own screen, which is nobody's to create, to preview or to give back */
+    private const val MAIN_DISPLAY = LwServiceProtocol.MAIN_DISPLAY
+
+    /** What the phone's own screen is called, which is how a tool's answer shows it */
+    private const val MAIN_LABEL = "主屏"
+
+    /** What typing by key answers when the keyboard cannot produce the text */
+    private const val NOTHING_TYPED = -1
+
+    /**
+     * What a screen's side is allowed to be
+     *
+     * A side is a number a caller types, so this is a guard against a wrong one rather than a
+     * statement about displays: nothing is smaller than a few dozen pixels, and the largest phone
+     * or tablet panel is far below the ceiling, while a surface at a made-up size is a picture
+     * nobody can see and memory the device has to find
+     */
+    private const val MIN_DISPLAY_SIDE = 64
+    private const val MAX_DISPLAY_SIDE = 8192
+
+    /** How many times a capture is taken again while it is still the frame from before a resize */
+    private const val CAPTURE_ATTEMPTS = 5
+
+    /** How long to let the screen draw at its new size before looking again */
+    private const val CAPTURE_SETTLE_MS = 120L
+}
+
+/** A screen that is gone, and whether the person holding the phone closed it */
+private data class ClosedScreen(val label: String, val byUser: Boolean)

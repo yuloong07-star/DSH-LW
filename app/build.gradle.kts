@@ -48,7 +48,7 @@ val sherpaAarSha256 = "b22c3fc1b6a45666d28892bb2f7694beeb77a8362d7ebd77c1a5431ec
 // "cannot serialize Gradle script object references" 拒绝, 构建在 :app:compileDebugKotlin
 // **成功之后**才失败 (看着像编译错, 其实不是)。所以取哈希与打印都在动作内部就地写
 val fetchSherpaOnnxAar = tasks.register("fetchSherpaOnnxAar") {
-    group = "littlewhale"
+    group = "luwi"
     description = "Fetch the sherpa-onnx AAR the app links for on-device speech recognition"
     val target = sherpaAar.get().asFile
     val expected = sherpaAarSha256
@@ -103,7 +103,7 @@ val dshPin: Provider<String> = providers.exec {
 }.standardOutput.asText.map { it.trim().ifEmpty { "unknown" } }
 
 val packHostTree = tasks.register<Exec>("packHostTree") {
-    group = "littlewhale"
+    group = "luwi"
     description = "Rebuild dsh at the pinned commit and install the flat host tree the APK ships"
     workingDir = rootProject.projectDir
     // `--install` 是必须的: 子模块的 node_modules 里只有 workspace 链接, 各包自己的依赖没装, 而
@@ -130,7 +130,7 @@ val packHostTree = tasks.register<Exec>("packHostTree") {
 }
 
 val zipHostTree = tasks.register<Exec>("zipHostTree") {
-    group = "littlewhale"
+    group = "luwi"
     description = "Archive the host tree and stamp its version for the app to compare"
     workingDir = rootProject.projectDir
     commandLine(
@@ -153,7 +153,7 @@ val zipHostTree = tasks.register<Exec>("zipHostTree") {
  * 所以这里拷一次, 而不是在仓库里再放一份副本等着它漂开
  */
 val copySeedAssets = tasks.register<Copy>("copySeedAssets") {
-    group = "littlewhale"
+    group = "luwi"
     description = "Copy the shipped skills and sample quick commands into the apk's assets"
     val skills = rootProject.layout.projectDirectory.dir("skills")
     val commands = rootProject.layout.projectDirectory.dir("quick-commands")
@@ -163,11 +163,14 @@ val copySeedAssets = tasks.register<Copy>("copySeedAssets") {
     shippedQuickCommands.forEach { name ->
         from(commands.file("$name.md")) { into("quick-commands") }
     }
+    // 应用对应的那一份技能目录 (2.7.0 那一批): 整目录抄, 条数由 catalog.json 自己说了算 —— 加一条
+    // 只写两个文件 (catalog.json 一行 + 一个 SKILL.md), 不用回来动构建脚本
+    from(rootProject.layout.projectDirectory.dir("app-skills")) { into("app-skills") }
     into(seedAssets)
 }
 
 android {
-    namespace = "io.github.miuzarte.littlewhale"
+    namespace = "io.github.yuloong07star.luwi"
     compileSdk {
         version = release(37)
     }
@@ -198,7 +201,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "io.github.miuzarte.littlewhale"
+        applicationId = "io.github.yuloong07star.luwi"
         // 33 used to be forced by miuix-blur; the blur went away on 2026-09-22, so nothing in the
         // dependency graph demands it any more and this is now a choice. Lowering it is a separate
         // decision: the accessibility tree path needs API 30, and nothing here has been run below 33.

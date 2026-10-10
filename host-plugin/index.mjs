@@ -1,5 +1,5 @@
 /**
- * LittleWhale's dsh tools
+ * Luwi's dsh tools
  *
  * These run in the host process, which is the app's own Node child and shares its uid, so the
  * privileged channel is one loopback connection away: the app process serves it and holds the
@@ -60,7 +60,7 @@ const MAX_UI_NODES = 200
 /** How many queued sentences lw_voice prints: the tail is what a person is asking about */
 const MAX_VOICE_LINES = 20
 
-export const name = 'littlewhale-channel'
+export const name = 'luwi-channel'
 
 /** The tool registry has to exist before anything can be registered on it */
 export const inject = ['tools', 'agents', 'sessions']
@@ -105,7 +105,7 @@ export function apply(ctx) {
   //
   // 这一行是**故意的**: 队列在哪个文件、这条链起没起来, 是排查"说了话没进会话"的第一个问题,
   // 而它只靠日志才回答得了 (2026-10-05 就是在这里瞎猜了一轮)
-  console.log(`littlewhale-channel: voice inbox is ${voiceInboxPath() ?? 'unavailable (no DSH_HOME)'}`)
+  console.log(`luwi-channel: voice inbox is ${voiceInboxPath() ?? 'unavailable (no DSH_HOME)'}`)
   try {
     startVoiceInbox(ctx, (line) => voiceDeliver(ctx, line))
   } catch (error) {
@@ -156,7 +156,7 @@ export function apply(ctx) {
  * 把它吞得干干净净, 日志里一个字都没有, 只能在文件系统上一点点反推
  */
 function warn(ctx, message) {
-  console.warn(`littlewhale-channel: ${message}`)
+  console.warn(`luwi-channel: ${message}`)
   if (typeof ctx.logger?.warn === 'function') ctx.logger.warn(message)
 }
 
@@ -968,7 +968,7 @@ function applyPluginTools(ctx, snapshot) {
     }
   }
   const names = [...pluginRegistry.disposers.keys()]
-  console.log(`littlewhale-channel: plugin tools now ${names.length === 0 ? '(none)' : names.join(', ')}`)
+  console.log(`luwi-channel: plugin tools now ${names.length === 0 ? '(none)' : names.join(', ')}`)
 }
 
 /**
@@ -1046,7 +1046,7 @@ const TOOLS = [
   defineTool({
     name: 'lw_probe',
     description:
-      'Probe the LittleWhale privileged channel on the Android device this host runs on. '
+      'Probe the Luwi privileged channel on the Android device this host runs on. '
       + 'Reports the uid the privileged helper process runs as (0 means root), its pid, and the '
       + 'touchscreen ranges that getevent -p reports for it. Use this to check that the channel '
       + 'is up before anything relies on controlling the screen.',
@@ -1706,7 +1706,7 @@ const TOOLS = [
       + 'the phone. A cloned app (双开, a parallel space) is the same package in another user rather '
       + 'than a second package, so it appears in that user\'s list. This is the listing a shell '
       + 'cannot give you: pm refuses an app uid on this device, and with an explicit --user it '
-      + 'answers with LittleWhale alone, so call this instead of running pm or cmd package.',
+      + 'answers with Luwi alone, so call this instead of running pm or cmd package.',
     parameters: {
       user: {
         type: 'integer',
@@ -1855,7 +1855,7 @@ const TOOLS = [
     'Post a notification on the phone, optionally vibrating or coming up as a banner. Use it to tell'
     + ' the person holding the device something they should see outside this app - a job finished, a'
     + ' decision is waiting. The same notification id is reused, so a second call replaces the first'
-    + ' rather than stacking; tapping it brings DSH-LW to the front. Needs the notification'
+    + ' rather than stacking; tapping it brings Luwi to the front. Needs the notification'
     + ' permission, and says so if it is missing. **banner is a permission of its own**: since'
     + ' Android 14 a full-screen intent has to be granted by hand, so the answer says whether the'
     + ' banner will actually appear rather than assuming it. The channel is read back too - it is'
@@ -1887,7 +1887,7 @@ const TOOLS = [
     + ' the key that op=cancel takes - it names the app, the importance, whether it can be cleared'
     + ' at all, and the title and text. cancelling takes one key, or a package to clear everything'
     + ' that app posted. **Needs 通知使用权**, which no app can request at runtime: the answer says'
-    + ' so, and the switch for it is in DSH-LW\'s own Settings -> 通知. Ongoing notifications (a'
+    + ' so, and the switch for it is in Luwi\'s own Settings -> 通知. Ongoing notifications (a'
     + ' music player, a call) are left alone and reported as such rather than as a failure.',
     'notifications',
     {
@@ -1919,7 +1919,7 @@ const TOOLS = [
   simpleTool(
     'lw_clipboard',
     'Read or write the system clipboard. Writing works at any time and is the way to hand a long'
-    + ' piece of text to another app without typing it. Reading only works while DSH-LW is the'
+    + ' piece of text to another app without typing it. Reading only works while Luwi is the'
     + ' foreground app - that is an Android 10 rule, not this app\'s - and the answer says so when'
     + ' it cannot.',
     'clipboard',
@@ -3371,7 +3371,7 @@ const TOOLS = [
       + 'into something an image edit will accept, so this is the step between "look at this '
       + 'picture" and "change it". op=album takes a finished picture - the reference a generation '
       + "or an edit answered with, or a file - puts a copy in the phone's own album "
-      + '(Pictures/DSH-LW, where the gallery app lists it), and opens it so the person is looking '
+      + '(Pictures/Luwi, where the gallery app lists it), and opens it so the person is looking '
       + 'at the result; it answers with where the album copy landed. This tool does not change a '
       + 'picture itself: the configured image service does that, through the generation tools.',
     parameters: {
@@ -3439,15 +3439,18 @@ const TOOLS = [
 
   simpleTool(
     'lw_plugin',
-    'The LW plugins installed on this phone: packages that add device-side abilities to LittleWhale'
+    'The LW plugins installed on this phone: packages that add device-side abilities to Luwi'
     + ' without rebuilding it (one JSON manifest each, one package per plugin, living in'
     + ' DSH_HOME/plugins). Their tools are registered on this host under their own prefix -'
     + ' <toolPrefix>_<action> - so once a plugin is enabled they look like any lw_* tool. op=list'
     + ' says what is installed, its state and how many of its capabilities are allowed; op=read one'
     + ' plugin in full (它的工具、要的每一条能力、发布者与指纹); op=install takes a path to an'
     + ' unzipped package directory or a .lwp file and puts it in - **that does not enable it**,'
+    + ' or an https link to a .lwp (op=install with url: it downloads first and then goes through'
+    + ' exactly the same checks - signature, per-file hashes, version, tool prefix, declared'
+    + ' capabilities -, so a link is never a shortcut past anything),'
     + ' and a package whose capabilities the user has not allowed yet can do nothing; op=enable /'
-    + ' op=disable turn one on or off (a companion plugin is an installed APK that LittleWhale'
+    + ' op=disable turn one on or off (a companion plugin is an installed APK that Luwi'
     + ' binds); op=uninstall asks before it deletes anything (keepData keeps the plugin\'s own'
     + ' settings directory); op=audit prints the recent capability calls, refused ones included.'
     + ' **A plugin is somebody else\'s code**: tell the user what it wants before enabling it, and'
@@ -3471,6 +3474,11 @@ const TOOLS = [
         description: 'For op=install: an absolute path to an unzipped package directory (the one'
           + ' holding plugin.json) or to a .lwp file',
       },
+      url: {
+        type: 'string',
+        description: 'For op=install: an https link to a .lwp instead of a local path. Only https,'
+          + ' and a redirect to http aborts. Give either url or path, never both',
+      },
       keepData: {
         type: 'boolean',
         description: 'For op=uninstall: keep the plugin\'s own settings directory. Defaults to'
@@ -3491,7 +3499,7 @@ async function call(method, params = {}) {
   if (!endpoint || !token) {
     throw new Error(
       `no privileged channel: ${ENDPOINT_VARIABLE} and ${TOKEN_VARIABLE} are unset,`
-      + ' which means this host was not started by LittleWhale',
+      + ' which means this host was not started by Luwi',
     )
   }
   const answer = await request(endpoint, JSON.stringify({ method, token, ...params }))
@@ -3942,7 +3950,7 @@ function formatScreenshot(result) {
 function formatUi(result) {
   if (result.enabled !== true) {
     return 'the phone has the accessibility service off, so it will not report what is on a'
-      + ' screen. Turn it on in LittleWhale\'s settings, under 无障碍. Until then use lw_screenshot'
+      + ' screen. Turn it on in Luwi\'s settings, under 无障碍. Until then use lw_screenshot'
       + ' and read the picture.'
   }
   if (result.error) {
@@ -4571,7 +4579,7 @@ async function speechKeep(directory, wav, answer, engine) {
   } catch (error) {
     // 现场失败不该把这一次转写也带坏: 那一段录音本来就是要删的
     await rm(wav, { force: true }).catch(() => {})
-    console.warn(`littlewhale-channel: keeping the recording failed: ${error?.message ?? error}`)
+    console.warn(`luwi-channel: keeping the recording failed: ${error?.message ?? error}`)
   }
 }
 
@@ -4593,7 +4601,7 @@ async function speechKeep(directory, wav, answer, engine) {
  * 清单、下载与运行时就对同一份文件说话, 不留下"文件表说的不是盘上那份"这种说不清的状态
  */
 const WAKEWORD_RELEASE =
-  'https://github.com/yuloong07-star/DSH-LW/releases/download/models-kws-2024-01-01'
+  'https://github.com/yuloong07-star/Luwi/releases/download/models-kws-2024-01-01'
 
 /**
  * 镜像优先: 这台设备上 github.com 直连只回 302, 真正的字节在 objects.githubusercontent.com 那
@@ -5102,7 +5110,7 @@ function startVoiceInbox(ctx, deliver) {
       for (const line of await voiceReadNew(inbox)) {
         // 刚失败过的那一行要等一会儿再试: 后面的句子按顺序等它, 不许插队
         if (voiceRetry.seq === line.seq && Date.now() < voiceRetry.at) break
-        console.log(`littlewhale-channel: voice line #${line.seq} picked up from the queue`)
+        console.log(`luwi-channel: voice line #${line.seq} picked up from the queue`)
         try {
           await withTimeout(deliver(line), VOICE_DELIVER_TIMEOUT_MS)
           voiceAttempts.delete(line.seq)
@@ -5145,7 +5153,7 @@ function startVoiceInbox(ctx, deliver) {
         const timer = setInterval(() => void tick(), VOICE_POLL_MS)
         return () => clearInterval(timer)
       },
-      'littlewhale-channel: voice inbox',
+      'luwi-channel: voice inbox',
     )
   } catch (error) {
     warn(ctx, `the voice inbox timer could not be registered: ${error?.message ?? error}`)
@@ -5736,7 +5744,7 @@ async function voiceDeliver(ctx, line) {
       try {
         const outcome = await runVoiceInterrupt(ctx, line)
         console.log(
-          `littlewhale-channel: the ball was double-tapped -> ${outcome.cancelled ? 'cancelled' : 'nothing to cancel'}`,
+          `luwi-channel: the ball was double-tapped -> ${outcome.cancelled ? 'cancelled' : 'nothing to cancel'}`,
         )
         return outcome
       } catch (error) {
@@ -5744,7 +5752,7 @@ async function voiceDeliver(ctx, line) {
         voiceInterrupt.count += 1
         voiceInterrupt.error = `interrupting failed: ${reason}`
         voiceInterrupt.last = { at: Date.now(), said: line.text, sessionId: null, cancelled: false, detail: reason }
-        console.warn(`littlewhale-channel: the interrupt failed: ${reason}`)
+        console.warn(`luwi-channel: the interrupt failed: ${reason}`)
         // **这里不碰状态** (2026-10-08): 球上那三个字是 `ball-phase.json` 说了算, 而"打断没成"时那一轮
         // 多半还在跑 —— 把字清掉只会变成"字落了而任务还在跑"
         return { interrupt: true, cancelled: false, said: line.text, detail: reason }
@@ -5752,7 +5760,7 @@ async function voiceDeliver(ctx, line) {
     }
     const outcome = await runVoiceCommand(command, line)
     console.log(
-      `littlewhale-channel: voice line #${line.seq} was a command -> ${outcome.mode} (${outcome.switched ? 'switched' : 'not switched'})`,
+      `luwi-channel: voice line #${line.seq} was a command -> ${outcome.mode} (${outcome.switched ? 'switched' : 'not switched'})`,
     )
     return outcome
   }
@@ -5860,10 +5868,10 @@ async function voiceDeliver(ctx, line) {
   )
   // 预设被换过的那一档单独说一句: 它不是正常的选预设, 而是"选中的那个用不了"
   if (opened && typeof voiceDelivery.presetWhy === 'string' && voiceDelivery.presetWhy.includes('fell back')) {
-    console.warn(`littlewhale-channel: line #${line.seq} opened its conversation on a fallback preset - ${voiceDelivery.presetWhy}`)
+    console.warn(`luwi-channel: line #${line.seq} opened its conversation on a fallback preset - ${voiceDelivery.presetWhy}`)
   }
   if (auto.tried && auto.images.length === 0) {
-    console.warn(`littlewhale-channel: line #${line.seq} went in without its screenshot: ${auto.why}`)
+    console.warn(`luwi-channel: line #${line.seq} went in without its screenshot: ${auto.why}`)
   }
   return outcome
 }
@@ -6109,7 +6117,7 @@ async function writeBallPhase() {
     await writeFile(temporary, `${JSON.stringify(payload)}\n`)
     await rename(temporary, path)
   } catch (error) {
-    console.warn(`littlewhale-channel: the ball phase file was not written: ${error?.message ?? error}`)
+    console.warn(`luwi-channel: the ball phase file was not written: ${error?.message ?? error}`)
   }
 }
 

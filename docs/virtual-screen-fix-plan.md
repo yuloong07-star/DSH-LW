@@ -70,11 +70,11 @@ private boolean validatePackageName(int uid, String packageName) {
 ### 3.3 为什么撞上
 
 ```
-LittleWhale (uid 10384) → Shizuku → IShizukuService.newProcess() → 特权进程 (uid 2000 = SHELL)
+Luwi (uid 10384) → Shizuku → IShizukuService.newProcess() → 特权进程 (uid 2000 = SHELL)
                                                                           ↓
-                                                        createVirtualDisplay(packageName = "io.github.miuzarte.littlewhale")
+                                                        createVirtualDisplay(packageName = "io.github.yuloong07star.luwi")
                                                                           ↓
-                              getPackagesForUid(2000) = ["com.android.shell"] ≠ "io.github.miuzarte.littlewhale"
+                              getPackagesForUid(2000) = ["com.android.shell"] ≠ "io.github.yuloong07star.luwi"
                                                                           ↓
                                                                    SecurityException
 ```
@@ -211,7 +211,7 @@ A 若失败 (比如 `DisplayManager` 的包名来源改不动), 再评估 B。
 **构建**:
 ```powershell
 . D:\apk\env.ps1
-cd D:\apk\LittleWhale
+cd D:\apk\Luwi
 .\gradlew.bat :app:compileDebugKotlin     # 先过编译
 .\gradlew.bat :app:assembleDebug          # 提交前必跑 (manifest merger)
 ```
@@ -247,10 +247,10 @@ cd D:\apk\LittleWhale
 ## 八、备份与回退
 
 **动手前先做**: 拷出 app 沙盒里的 `files/dsh-home` (含 `credentials` 与 `sessions`)。
-LittleWhale 的 host 能起来是前面若干轮才拿到的状态, 别弄丢。
+Luwi 的 host 能起来是前面若干轮才拿到的状态, 别弄丢。
 
 **回退**: 本计划只改 `LwVirtualDisplay.kt` (必要时加一个新文件)。
-`git -C D:\apk\LittleWhale status` 应当只有预期内的改动; 不对就 `git checkout -- <file>`。
+`git -C D:\apk\Luwi status` 应当只有预期内的改动; 不对就 `git checkout -- <file>`。
 
 **不要动**:
 - `third_party/deepseek-harness` 的 pin (仍是 `e79ffe35e1`)

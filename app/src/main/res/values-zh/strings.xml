@@ -1,8 +1,8 @@
 <resources>
-    <string name="app_name">DSH-LW</string>
+    <string name="app_name">Luwi</string>
     <string name="a11y_description">允许 DSH 读取屏幕上文本及其精确位置以减少端侧 OCR 调用</string>
-    <string name="permission_plugin_label">连接 DSH-LW 插件</string>
-    <string name="permission_plugin_description">允许一个伴侣应用作为 DSH-LW 插件: 应用会绑定它的服务, 并把你在插件页勾过的那几条能力交给它</string>
+    <string name="permission_plugin_label">连接 Luwi 插件</string>
+    <string name="permission_plugin_description">允许一个伴侣应用作为 Luwi 插件: 应用会绑定它的服务, 并把你在插件页勾过的那几条能力交给它</string>
 
     <string name="button_cancel">取消</string>
     <string name="button_confirm">确定</string>
@@ -14,7 +14,7 @@
     <string name="host_status_failed">host 启动失败: %1$s</string>
     <string name="host_channel_name">DSH host</string>
     <string name="host_channel_description">应用退到后台后继续保活 DSH host</string>
-    <string name="host_notification_title">DSH-LW</string>
+    <string name="host_notification_title">Luwi</string>
     <string name="host_notification_text">DSH host</string>
 
     <string name="settings_title">设置</string>
@@ -38,7 +38,7 @@
     <string name="settings_section_power_summary">省电的时候关掉什么</string>
     <string name="settings_power_state_idle">没在省电: 唤醒词按「唤醒词」那一段的许可守着</string>
 
-    <string name="settings_about_title">关于 LittleWhale</string>
+    <string name="settings_about_title">关于 Luwi</string>
     <string name="settings_about_version">版本 %1$s (%2$d)</string>
     <string name="settings_about_update">检测更新</string>
     <string name="settings_about_update_summary">读 GitHub 上最新那条 Release 的版本号比一比</string>
@@ -438,11 +438,29 @@
     <string name="settings_quick_delete_failed">「%1$s」没删掉: 文件不在或者删不动</string>
     <string name="settings_quick_note">点一条 = 投进会话; 队列文件与语音那条链是同一个, 所以"没有会话就新建、20 分钟内接同一场"照旧</string>
 
+    <string name="settings_section_skills">技能</string>
+    <string name="settings_section_skills_summary">把这台手机上的应用对应的技能交给 dsh</string>
+    <string name="settings_skills_empty">随包目录里的应用这台机器上一个都没装, 所以没有技能要加</string>
+    <string name="settings_skills_have">已经装了 —— 命中 %1$s</string>
+    <string name="settings_skills_missing">还没装 —— 命中 %1$s</string>
+    <string name="settings_skills_install">把装了那些应用的技能一次装上</string>
+    <string name="settings_skills_busy">正在装…</string>
+    <string name="settings_skills_install_summary">照随包那份「应用 → 技能」目录扫一遍; 已经在的那几份一个字节都不动</string>
+    <string name="settings_skills_done">装了 %1$d 条; 命中的 %2$d 条现在都在了。dsh 下一轮就看得见</string>
+    <string name="settings_skills_note">技能只是提示词材料: 它落在 dsh 家里那份 SKILL.md, 不动任何权限。改它是正常的 —— 这个按钮从不覆盖已经在的那一份</string>
+
     <string name="settings_section_plugin">插件</string>
     <string name="settings_section_plugin_summary">装上别人写的包, 给这台手机加能力</string>
     <string name="settings_plugin_empty">一个插件都没有装。插件落在 %1$s —— 点下面的「装入插件包」收一份进来</string>
     <string name="settings_plugin_install">装入插件包</string>
     <string name="settings_plugin_install_summary">.lwp 文件, 或者一份解开的目录 (里面有 plugin.json); 装完还要勾能力才启得来</string>
+    <string name="settings_plugin_link">从链接装入</string>
+    <string name="settings_plugin_link_summary">一个 .lwp 的 https 链接; 验与装跟本地那份走的是完全同一条链</string>
+    <string name="settings_plugin_link_title">从链接装入</string>
+    <string name="settings_plugin_link_dialog_summary">只收 https。签名、逐文件哈希、版本、工具前缀与声明的能力全过之前, 一个字都不落地</string>
+    <string name="settings_plugin_link_hint">https://…/something.lwp</string>
+    <string name="settings_plugin_link_install">下载并装入</string>
+    <string name="settings_plugin_link_busy">正在下…</string>
     <string name="settings_plugin_developer">开发者模式</string>
     <string name="settings_plugin_developer_summary">允许装入没有发布者签名的本地包。装一个插件就是信任它, 平时不要开</string>
     <string name="settings_plugin_note">装一个插件就是信任它: 它拿到的能力就是你在这一页勾给它的那些; 启用那一步会去绑伴侣应用的服务</string>
@@ -471,7 +489,7 @@
 
     <string name="settings_section_permissions">权限</string>
     <string name="settings_section_permissions_summary">每条能力现在能不能用</string>
-    <string name="settings_permissions_summary">此权限由用户自行开关，可供DSH-LW自由开发。</string>
+    <string name="settings_permissions_summary">此权限由用户自行开关，可供 Luwi 自由开发。</string>
     <string name="settings_permission_granted">已允许</string>
     <string name="settings_permission_denied">未允许</string>
     <string name="settings_permission_ask">授权</string>

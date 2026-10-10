@@ -1,6 +1,6 @@
 {
   "protocol": "lw-plugin/1",
-  "id": "io.github.miuzarte.littlewhale.sample.companion",
+  "id": "io.github.yuloong07star.luwi.sample.companion",
   "name": "你好伴侣",
   "version": "1.0.0",
   "minLw": "2.5.0",
@@ -8,8 +8,8 @@
   "kind": "companion",
   "toolPrefix": "hello",
   "entry": {
-    "package": "io.github.miuzarte.littlewhale.sample.companion",
-    "service": "io.github.miuzarte.littlewhale.sample.companion.CompanionPluginService"
+    "package": "io.github.yuloong07star.luwi.sample.companion",
+    "service": "io.github.yuloong07star.luwi.sample.companion.CompanionPluginService"
   },
   "capabilities": {
     "requested": ["device.read", "notify.post"],

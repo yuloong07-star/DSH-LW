@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      主人导进来的那一份走内容 URI, 而 provider 是 exported=false: 读权限得我们自己放给"谁的桌面"。
+      桌面是谁要问 PackageManager, 而 targetSdk 33 起**不声明就看不见别的包** —— 这一条就是把
+      "现在正在当桌面的那几个应用"放进可见范围, 别的包一个都不多要
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true">
+
+        <!-- 伴侣自带的界面 (协议 10.3): 三套动作的预览与切换都在这一页 -->
+        <activity
+            android:name=".WhaleScreen"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 桌面上那一只 (协议 10.4): 组件只能进伴侣的清单, 这是 companion 这一档存在的第一个理由 -->
+        <receiver
+            android:name=".WhaleWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_title">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/whale_widget_info" />
+        </receiver>
+
+        <!-- 主人导进来的那一份: 逐帧图认这个只读的 provider 交给桌面 (图不过 binder, 见协议那一份的
+             WhaleFramesProvider); `grantUriPermissions` 是让小组件宿主拿到那一条一次性的读权限 -->
+        <provider
+            android:name=".WhaleFramesProvider"
+            android:authorities="io.github.yuloong07star.luwi.sample.whalewidget.frames"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <!-- 被 LW 绑的那一个 (协议 8.1 / 9) -->
+        <service
+            android:name=".WhalePluginService"
+            android:exported="true"
+            android:permission="io.github.yuloong07star.luwi.permission.PLUGIN">
+            <intent-filter>
+                <action android:name="io.github.yuloong07star.luwi.plugin.BIND" />
+            </intent-filter>
+        </service>
+    </application>
+
+</manifest>

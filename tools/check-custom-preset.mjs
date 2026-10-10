@@ -61,7 +61,7 @@ check('它没有安装脚本 (pnpm 也拦, 我们不靠它)', manifest.scripts?.
 
 /* ── 二、助手那五个文件与 Kotlin 那一份表一致 ─────────────────────────── */
 
-const kotlin = await read('app/src/main/java/io/github/miuzarte/littlewhale/host/CustomPresets.kt')
+const kotlin = await read('app/src/main/java/io/github/yuloong07star/luwi/host/CustomPresets.kt')
 const listed = /val PRESET_FILES = listOf\(([^)]*)\)/.exec(kotlin)
 if (listed === null) throw new Error('CustomPresets.kt 里找不到 PRESET_FILES')
 const names = [...listed[1].matchAll(/"([^"]+)"/g)].map((one) => one[1])
@@ -134,8 +134,8 @@ check(
 
 /* ── 五、两处调用都在 (缺一处这一条链就是半截) ────────────────────────── */
 
-const service = await read('app/src/main/java/io/github/miuzarte/littlewhale/host/DshHostService.kt')
-const host = await read('app/src/main/java/io/github/miuzarte/littlewhale/host/DshHost.kt')
+const service = await read('app/src/main/java/io/github/yuloong07star/luwi/host/DshHostService.kt')
+const host = await read('app/src/main/java/io/github/yuloong07star/luwi/host/DshHost.kt')
 check(
   '两处调用都在 (服务起时落文件 / spawn 前改 profile)',
   [service.includes('CustomPresets.ensure(this)'), host.includes('CustomPresets.ensureProfile(application)')],

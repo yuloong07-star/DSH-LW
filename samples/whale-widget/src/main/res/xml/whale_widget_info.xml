@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 协议的 10.4 那一条: 桌面组件只能由伴侣 APK 声明, 这一份就是它的登记表 -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_description"
+    android:initialLayout="@layout/whale_widget"
+    android:minWidth="110dp"
+    android:minHeight="130dp"
+    android:previewImage="@drawable/whale_preview"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellHeight="2"
+    android:targetCellWidth="2"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen" />

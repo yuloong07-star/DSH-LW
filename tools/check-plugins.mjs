@@ -48,21 +48,21 @@ async function optional(path) {
   }
 }
 
-const api = await read('lwplugin-api/src/main/java/io/github/miuzarte/littlewhale/plugin/api/LwPluginApi.kt')
-const pluginIface = await read('lwplugin-api/src/main/java/io/github/miuzarte/littlewhale/plugin/api/ILwPlugin.kt')
-const contextIface = await read('lwplugin-api/src/main/java/io/github/miuzarte/littlewhale/plugin/api/ILwPluginContext.kt')
-const capabilities = await read('app/src/main/java/io/github/miuzarte/littlewhale/plugin/PluginCapabilities.kt')
-const manifestRules = await read('app/src/main/java/io/github/miuzarte/littlewhale/plugin/PluginManifest.kt')
-const lwPlugin = await read('app/src/main/java/io/github/miuzarte/littlewhale/tool/LwPlugin.kt')
-const bridge = await read('app/src/main/java/io/github/miuzarte/littlewhale/channel/PrivilegedBridge.kt')
+const api = await read('lwplugin-api/src/main/java/io/github/yuloong07star/luwi/plugin/api/LwPluginApi.kt')
+const pluginIface = await read('lwplugin-api/src/main/java/io/github/yuloong07star/luwi/plugin/api/ILwPlugin.kt')
+const contextIface = await read('lwplugin-api/src/main/java/io/github/yuloong07star/luwi/plugin/api/ILwPluginContext.kt')
+const capabilities = await read('app/src/main/java/io/github/yuloong07star/luwi/plugin/PluginCapabilities.kt')
+const manifestRules = await read('app/src/main/java/io/github/yuloong07star/luwi/plugin/PluginManifest.kt')
+const lwPlugin = await read('app/src/main/java/io/github/yuloong07star/luwi/tool/LwPlugin.kt')
+const bridge = await read('app/src/main/java/io/github/yuloong07star/luwi/channel/PrivilegedBridge.kt')
 const manifest = await read('app/src/main/AndroidManifest.xml')
 const host = await read('host-plugin/index.mjs')
 const hostCheck = await read('tools/check-host-plugin.mjs')
-const settings = await read('app/src/main/java/io/github/miuzarte/littlewhale/ui/SettingsScreen.kt')
+const settings = await read('app/src/main/java/io/github/yuloong07star/luwi/ui/SettingsScreen.kt')
 const appGradle = await read('app/build.gradle.kts')
 const sampleGradle = await read('samples/companion/build.gradle.kts')
 const sampleManifest = await read('samples/companion/src/main/AndroidManifest.xml')
-const sampleService = await read('samples/companion/src/main/java/io/github/miuzarte/littlewhale/sample/companion/CompanionPluginService.kt')
+const sampleService = await read('samples/companion/src/main/java/io/github/yuloong07star/luwi/sample/companion/CompanionPluginService.kt')
 const samplePlugin = JSON.parse(await read('samples/companion/plugin/plugin.json'))
 const rootGradle = await read('settings.gradle.kts')
 const stringsZh = await read('app/src/main/res/values-zh/strings.xml')
@@ -143,8 +143,8 @@ check(
   '描述符两个 (与协议第 9 节同名)',
   [kotlinConst(api, 'DESCRIPTOR_PLUGIN'), kotlinConst(api, 'DESCRIPTOR_CONTEXT')],
   [
-    'io.github.miuzarte.littlewhale.plugin.ILwPlugin',
-    'io.github.miuzarte.littlewhale.plugin.ILwPluginContext',
+    'io.github.yuloong07star.luwi.plugin.ILwPlugin',
+    'io.github.yuloong07star.luwi.plugin.ILwPluginContext',
   ],
 )
 const descriptors = [kotlinConst(api, 'DESCRIPTOR_PLUGIN'), kotlinConst(api, 'DESCRIPTOR_CONTEXT')]
@@ -252,14 +252,87 @@ check(`样例的 minLw (${samplePlugin.minLw}) 不比这一版 (${appVersion}) �
 
 /* ── 五、模块与那条"不许有 AIDL" ────────────────────────────────────────── */
 
-check('两个新模块都在 settings.gradle.kts 里', [rootGradle.includes('include(":lwplugin-api")'), rootGradle.includes('include(":sample-companion")')], [true, true])
+/* ── 四之二、鲸鱼娘桌面小组件那一份包 (2.7.0) ───────────────────────────── */
+
+// 第二条伴侣: 协议 10.4 说"桌面组件只能由伴侣 APK 声明", 这一份就是那条路的实物。上面那批判据
+// 它一条都不能少, 另加两条它自己特有的 (组件登记在清单里 + 它一条能力都不要)
+const whaleGradle = await read('samples/whale-widget/build.gradle.kts')
+const whaleManifest = await read('samples/whale-widget/src/main/AndroidManifest.xml')
+const whaleService = await read(
+  'samples/whale-widget/src/main/java/io/github/yuloong07star/luwi/sample/whalewidget/WhalePluginService.kt',
+)
+const whalePlugin = JSON.parse(await read('samples/whale-widget/plugin/plugin.json'))
+
+check('鲸鱼娘的 protocol', whalePlugin.protocol, 'lw-plugin/1')
+check('鲸鱼娘的 kind 是这一版收的那一个', whalePlugin.kind, 'companion')
+check(
+  '鲸鱼娘的前缀合规且不是保留字',
+  /^[a-z][a-z0-9_]{1,15}$/.test(whalePlugin.toolPrefix) && !reserved.includes(whalePlugin.toolPrefix),
+  true,
+)
+check(
+  '鲸鱼娘的工具名都带自己的前缀',
+  whalePlugin.tools.every((one) => one.name.startsWith(`${whalePlugin.toolPrefix}_`)),
+  true,
+)
+check(
+  '鲸鱼娘声明的能力都在表里',
+  [...whalePlugin.capabilities.requested, ...whalePlugin.capabilities.dangerous].every((one) => byName[one] !== undefined),
+  true,
+)
+check(
+  '鲸鱼娘把敏感档写在 dangerous 里',
+  whalePlugin.capabilities.dangerous.every((one) => byName[one].level === 'DANGEROUS'),
+  true,
+)
+check('鲸鱼娘一条能力都不要 (零能力伴侣那一档)', [whalePlugin.capabilities.requested, whalePlugin.capabilities.dangerous], [[], []])
+check('鲸鱼娘的 api 与这一版一致', whalePlugin.api, String(kotlinNumber(api, 'API_VERSION')))
+check('鲸鱼娘的 plugin.json 里一个浮点都没有', floatsIn(whalePlugin), [])
+const whaleTools = [...whaleService.matchAll(/const val TOOL_[A-Z]+ = "([^"]+)"/g)].map((one) => one[1]).sort()
+check('鲸鱼娘包里的工具名与它 describe() 里那三个常量一致', whalePlugin.tools.map((one) => one.name).sort(), whaleTools)
+check(
+  '鲸鱼娘的服务组件与包里 entry 对得上',
+  whalePlugin.entry.service === `${whalePlugin.entry.package}.WhalePluginService`
+    && whaleManifest.includes('android:name=".WhalePluginService"')
+    && whaleGradle.includes(`namespace = "${whalePlugin.entry.package}"`),
+  true,
+)
+const [whaleMajor, whaleMinor, whalePatch] = whalePlugin.minLw.split('.').map(Number)
+const [appMajorW, appMinorW, appPatchW] = appVersion.split('.').map(Number)
+const whaleNewer = whaleMajor - appMajorW || whaleMinor - appMinorW || whalePatch - appPatchW
+check(`鲸鱼娘的 minLw (${whalePlugin.minLw}) 不比这一版 (${appVersion}) 高`, whaleNewer <= 0, true)
+check(
+  '鲸鱼娘把桌面组件登记在自己清单里 (协议 10.4)',
+  [
+    whaleManifest.includes('android.appwidget.action.APPWIDGET_UPDATE'),
+    whaleManifest.includes('android.appwidget.provider'),
+    whaleManifest.includes(`android:permission="${permission}"`),
+  ],
+  [true, true, true],
+)
+
+/* ── 五、模块与那条"不许有 AIDL" ────────────────────────────────────────── */
+
+check(
+  '三个新模块都在 settings.gradle.kts 里',
+  [
+    rootGradle.includes('include(":lwplugin-api")'),
+    rootGradle.includes('include(":sample-companion")'),
+    rootGradle.includes('include(":sample-whale-widget")'),
+  ],
+  [true, true, true],
+)
 check('app 引了接口那一份', appGradle.includes('implementation(project(":lwplugin-api"))'), true)
 check('样例也引了同一份', sampleGradle.includes('implementation(project(":lwplugin-api"))'), true)
 
 async function aidlFiles(directory) {
   const found = []
   async function walk(current) {
-    for (const entry of await readdir(current, { withFileTypes: true })) {
+    // 走的是整棵仓库, 而 submodule 的 node_modules 里有断掉的软链 (2026-10-10 实测:
+    // `packages/boot/cmdline/node_modules/.bin/` 是一个指向不存在的目录): 读不到就跳过那一级,
+    // 这一条判的是"仓库里有没有 .aidl", 不是"每个目录都读得动"
+    const entries = await readdir(current, { withFileTypes: true }).catch(() => [])
+    for (const entry of entries) {
       if (entry.name === 'build' || entry.name === '.git') continue
       const full = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, current)
       if (entry.isDirectory()) await walk(full)

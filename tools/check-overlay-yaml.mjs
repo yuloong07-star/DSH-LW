@@ -44,10 +44,10 @@ if (yaml === null) {
 const parse = (text) => (typeof yaml.load === 'function' ? yaml.load(text) : yaml.parse(text))
 
 /** 与 PluginOverlay.write 拼出来的东西逐字对应: 两种形态各一份 */
-const bundleOff = `# Written by LittleWhale on every host start, edits are overwritten
+const bundleOff = `# Written by Luwi on every host start, edits are overwritten
 - insert:
-    - id: littlewhale-channel
-      name: '/data/user/0/pkg/files/host/node_modules/littlewhale-channel/index.mjs'
+    - id: luwi-channel
+      name: '/data/user/0/pkg/files/host/node_modules/luwi-channel/index.mjs'
     - id: dsh-web-mobile
       name: '/data/user/0/pkg/files/host/node_modules/dsh-web-mobile/lib/index.js'
     - id: imagegen
@@ -63,7 +63,7 @@ const bundleOff = `# Written by LittleWhale on every host start, edits are overw
       name: '/data/user/0/pkg/files/host/node_modules/@deepseek-ai/dsh-experimental-client-ui-voice-input/lib/index.js'
 `
 
-const bundleOn = `# Written by LittleWhale on every host start, edits are overwritten
+const bundleOn = `# Written by Luwi on every host start, edits are overwritten
 # The official voice-input bundle is on, so its rows already exist:
 # this only points that provider at this app's own engine
 - id: speech-to-text
@@ -72,8 +72,8 @@ const bundleOn = `# Written by LittleWhale on every host start, edits are overwr
     defaultProvider: lw-native
     language: auto
 - insert:
-    - id: littlewhale-channel
-      name: '/data/user/0/pkg/files/host/node_modules/littlewhale-channel/index.mjs'
+    - id: luwi-channel
+      name: '/data/user/0/pkg/files/host/node_modules/luwi-channel/index.mjs'
     - id: dsh-web-mobile
       name: '/data/user/0/pkg/files/host/node_modules/dsh-web-mobile/lib/index.js'
     - id: imagegen

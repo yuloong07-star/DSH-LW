@@ -12,7 +12,7 @@
 
 import { readFileSync } from 'node:fs'
 
-const HOST = '/data/data/io.github.miuzarte.littlewhale/files/host'
+const HOST = '/data/data/io.github.yuloong07star.luwi/files/host'
 
 const readText = (path, fallback) => {
   try {
@@ -49,7 +49,7 @@ const ctx = {
   logger: { warn: (...args) => console.error('[warn]', ...args) },
 }
 
-const plugin = await import(`${HOST}/node_modules/littlewhale-channel/index.mjs`)
+const plugin = await import(`${HOST}/node_modules/luwi-channel/index.mjs`)
 plugin.apply(ctx)
 console.log(`tools registered: ${registered.length}`)
 

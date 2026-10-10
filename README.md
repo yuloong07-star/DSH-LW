@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD033 -->
 
-# DSH-LW
+# Luwi
 
 **DSH** for Android —— 把 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）装进手机的一个应用
 
@@ -14,10 +14,10 @@
 
 | 项 | 说明 |
 | :-- | :-- |
-| **地基** | [LittleWhale](https://github.com/Miuzarte/LittleWhale)。把 dsh 移植到安卓的架构、特权通道、自建虚拟屏、原生工具、无障碍读屏与端侧 OCR 都是它的工作；DSH-LW 是在它之上做的应用发行版 |
+| **地基** | [LittleWhale](https://github.com/Miuzarte/LittleWhale)。把 dsh 移植到安卓的架构、特权通道、自建虚拟屏、原生工具、无障碍读屏与端侧 OCR 都是它的工作；Luwi 是在它之上做的应用发行版 |
 | **灵感与参考** | [DSHA](https://github.com/DSH-APP/DSHA)（MIT）。部分功能与特点取自它 |
-| **权限** | DSH-LW 可以获取手机几乎所有权限，没有沙盒限制 |
-| **不联网** | DSH-LW 自身不收集、不上传任何数据。会联网的只有三处：① dsh 调用你自己配置的模型 API；② 你亲手触发的模型下载（语音识别、唤醒词）；③ 你自愿启用的 Edge-TTS / API-TTS |
+| **权限** | Luwi 可以获取手机几乎所有权限，没有沙盒限制 |
+| **不联网** | Luwi 自身不收集、不上传任何数据。会联网的只有三处：① dsh 调用你自己配置的模型 API；② 你亲手触发的模型下载（语音识别、唤醒词）；③ 你自愿启用的 Edge-TTS / API-TTS |
 | **安全** | 安全性由用户自行判断（见文末「开源 / 安全声明」） |
 
 > [!WARNING]
@@ -105,7 +105,7 @@
 
 ### 10. p 图：把屏幕上那张图改掉
 
-说一句「帮我把这张图的背景改为海边」，它会**截下你正看着的那块屏**，交给生图模型（图生图）改完，把成图放进相册的 `Pictures/DSH-LW` 并直接打开给你看。主人自己发的那张图、工作区里的文件也能当源图；改完不满意就接着说"再改成…"，每一版都留一份。
+说一句「帮我把这张图的背景改为海边」，它会**截下你正看着的那块屏**，交给生图模型（图生图）改完，把成图放进相册的 `Pictures/Luwi` 并直接打开给你看。主人自己发的那张图、工作区里的文件也能当源图；改完不满意就接着说"再改成…"，每一版都留一份。
 
 生图那一半是随包发的第三方插件 [`@dickpy/dsh-imagegen`](https://github.com/dickpy/dsh-imagegen)（Apache-2.0，作者 dickpy），渠道与密钥在「设置 → 生图配置」里自己配（OpenAI 兼容接口，以及 grok-imagine / nano-banana / seedream / qwen-image / glm-image / MiniMax 等预置渠道）；它自己还带一整套界面：画廊、无限画布、提示词模板库、电商套图、文生图（不带源图时用「生图」面板或让模型调 `generate_image`）。**改图会走你配的那条 API 并花钱，图也会发给那个服务**——模型被要求如实说明这一点。
 
@@ -146,15 +146,15 @@ app 进程 —— Kotlin / Compose
 
 ## 开源 / 安全声明
 
-DSH-LW 完全开源，允许开发者自由开发。
+Luwi 完全开源，允许开发者自由开发。
 
-DSH-LW 完全暴露在手机环境，**没有沙盒限制**，安全性由用户自行判断；**不建议安装在主力机 / 有重要数据的手机中**。
+Luwi 完全暴露在手机环境，**没有沙盒限制**，安全性由用户自行判断；**不建议安装在主力机 / 有重要数据的手机中**。
 
 ## 和 LittleWhale 的关系
 
-本项目的**全部基础来自 [LittleWhale](https://github.com/Miuzarte/LittleWhale)** —— 把 dsh 移植到安卓这件事是它做的。DSH-LW 是在它之上做的**应用发行版**，目前相对上游多了：
+本项目的**全部基础来自 [LittleWhale](https://github.com/Miuzarte/LittleWhale)** —— 把 dsh 移植到安卓这件事是它做的。Luwi 是在它之上做的**应用发行版**，目前相对上游多了：
 
-- **应用名改为 DSH-LW**，图标换成 DSH 自己那只鲸鱼（桌面与通知栏都是）
+- **应用名改为 Luwi**，图标换成 DSH 自己那只鲸鱼（桌面与通知栏都是）
 - **常驻浮标**取代原来的顶栏菜单按钮（见功能 3）
 - **虚拟屏小窗** —— 屏在后台跑着，一边看它一边用 dsh 界面
 - **dsh 升到 0.2 系列**（`release/2.0.0` 现在跟到 `0.2.1-alpha.1`），并把在安卓上缺预编译的那个原生件换成 `--expose-internals` 的回退路径
@@ -167,7 +167,7 @@ DSH-LW 完全暴露在手机环境，**没有沙盒限制**，安全性由用户
 
 见 [Releases](../../releases)。
 
-- **`DSH-LW-2.6.0.apk`（约 215.5 MiB）** —— 当前版本：插件、手势防误触档、输入框与回复那两处修订、语音输入缺省统一。
+- **2.6.0 那一版的 APK（约 215.5 MiB）** —— 当前版本：插件、手势防误触档、输入框与回复那两处修订、语音输入缺省统一。
 - 历史版本（2.5.0 / 2.0.0 / 1.3.0 / 1.0.3 / 1.0.2）都在 Releases 列表里。
 - 语音识别与唤醒词模型不在 APK 里，第一次使用时由应用自己下载。
 
@@ -178,8 +178,8 @@ APK 自带 host 树（3.26 万个文件 / 约 322 MB，打包成 93 MB 的 zip�
 需要 JDK 21、Android SDK（`compileSdk 37` / `build-tools 37.0.0`）、NDK `29.0.14206865`，以及 Node + pnpm。
 
 ```bash
-git clone --recursive https://github.com/yuloong07-star/DSH-LW.git
-cd DSH-LW
+git clone --recursive https://github.com/yuloong07-star/Luwi.git
+cd Luwi
 ./gradlew assembleDebug
 ```
 

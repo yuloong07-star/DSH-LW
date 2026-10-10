@@ -127,11 +127,11 @@
          signature|dangerous 的语义是"满足任一即授予" —— 同签名的伴侣自动拿到, 第三方伴侣要人
          在系统弹窗里点一次同意。我们自己也要 uses-permission 这一条, 否则绑不上护住了的 Service -->
     <permission
-        android:name="io.github.miuzarte.littlewhale.permission.PLUGIN"
+        android:name="io.github.yuloong07star.luwi.permission.PLUGIN"
         android:label="@string/permission_plugin_label"
         android:description="@string/permission_plugin_description"
         android:protectionLevel="signature|dangerous" />
-    <uses-permission android:name="io.github.miuzarte.littlewhale.permission.PLUGIN" />
+    <uses-permission android:name="io.github.yuloong07star.luwi.permission.PLUGIN" />
 
     <application
         android:allowBackup="true"
@@ -141,7 +141,7 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.LittleWhale"
+        android:theme="@style/Theme.Luwi"
         android:usesCleartextTraffic="true">
 
         <!-- The QNN runtime talks to the DSP through fastrpc, and libQnnHtpV73Stub.so names
@@ -159,7 +159,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:theme="@style/Theme.LittleWhale"
+            android:theme="@style/Theme.Luwi"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -280,7 +280,7 @@ fork 的定位是「部署在远程服务器上, 从任意浏览器访问」, �
 **真机实测 (2026-09-19)**:
 
 - 开关关着时同一行只有回环 URL, GUI 照常渲染 —— 也就是没有回归
-- 点上开关后 `run-as … cat shared_prefs/littlewhale.xml` 里出现 `<boolean name="lan-access" value="true" />`, 说明开关真的落了盘
+- 点上开关后 `run-as … cat shared_prefs/luwi.xml` 里出现 `<boolean name="lan-access" value="true" />`, 说明开关真的落了盘
 - 重启后 `netstat` 里 `31201/libnode.so` 是 `0.0.0.0:3080 LISTEN`, 就绪行变成
   `dsh web: http://127.0.0.1:3080/?token=… (LAN: http://192.168.1.103:3080/?token=…)`
 - **从开发机 (另一台设备)** `curl` 该 URL: `status=200 bytes=28580` 且正文带 `__DSH_BOOT__`

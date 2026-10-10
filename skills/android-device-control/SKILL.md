@@ -1,13 +1,13 @@
 ---
 name: android-device-control
-description: 本机（LittleWhale 构建）Android 设备操作的唯一规范：虚拟屏建屏/回收、无障碍树与 OCR 观察、截图、点按/滑动/输入/按键、启动应用、锁屏等待与安全红线。任何手机 / UI / 屏幕类操作开始前先加载本技能。
+description: 本机（Luwi 构建）Android 设备操作的唯一规范：虚拟屏建屏/回收、无障碍树与 OCR 观察、截图、点按/滑动/输入/按键、启动应用、锁屏等待与安全红线。任何手机 / UI / 屏幕类操作开始前先加载本技能。
 ---
 
 # Android 设备操作（本机 lw_* 版）
 
 > 由旧机四个技能合并改写而来：`android-phone-control` + `dsha-vscreen-automation` + `dsha-screen-lock-recovery` + `device-shell`。
 > 旧版全文保存在 `<DSH_HOME>/skills/README-migration.md` 所列的迁移记录与 `.migration/skills-before-localize/`。
-> 通道已从旧机的 DSHA `/app/*` HTTP 接口换成 LittleWhale 原生 `lw_*` 工具——**旧记忆里的 `/app/…`、`.bridge_token`、`wait-screen.sh` 在本机一律无效**。
+> 通道已从旧机的 DSHA `/app/*` HTTP 接口换成 Luwi 原生 `lw_*` 工具——**旧记忆里的 `/app/…`、`.bridge_token`、`wait-screen.sh` 在本机一律无效**。
 
 ## 何时使用
 
@@ -58,7 +58,7 @@ description: 本机（LittleWhale 构建）Android 设备操作的唯一规范�
 | 滑动 / 多指手势（纯 MOVE） | **本机无效**：`lw_swipe` 与 `lw_gesture` 都返回成功，界面却一动不动——时钟闹钟列表、日历日程列表、日历新建表单、日历与时钟的滚轮全部试过 |
 | 系统键与菜单 | BACK 可用；弹出菜单里 **`DPAD_DOWN` + `ENTER` 能激活菜单项**（时钟「更多 → 编辑」就是这么进的） |
 
-**为什么不缺工具**（已核到本机 APK 源码仓库 `yuloong07-star/DSH-LW`）：`lw_swipe` 由插件 `littlewhale-channel/index.mjs` 转发到原生方法 `swipe`，参数名 `fromX/fromY/toX/toY` 与 `PrivilegedBridge.kt:636-643` 完全对得上；实现（`LwInput.swipe`）是 DOWN + 12 步分帧 MOVE（每步 `SystemClock.sleep`）+ UP，注释里写明「同一毫秒的一串 MOVE 会被平台合并成一次跳」这个坑也已修。真正缺的是**另外两条机制**：本机无障碍层 `LwAccessibility.kt` 只做 `ACTION_CLICK / ACTION_LONG_CLICK / ACTION_SET_TEXT / ACTION_SET_SELECTION`，**既没有 `ACTION_SCROLL_FORWARD/BACKWARD`，也没有 `dispatchGesture`**——节点树里 `scrollable` 标了，却只被 `lw_ui` 显示出来。旧机 DSHA 的 `/app/ui/*` 正是走无障碍作用于前台窗口，所以那时能滚。
+**为什么不缺工具**（已核到本机 APK 源码仓库 `yuloong07-star/Luwi`）：`lw_swipe` 由插件 `luwi-channel/index.mjs` 转发到原生方法 `swipe`，参数名 `fromX/fromY/toX/toY` 与 `PrivilegedBridge.kt:636-643` 完全对得上；实现（`LwInput.swipe`）是 DOWN + 12 步分帧 MOVE（每步 `SystemClock.sleep`）+ UP，注释里写明「同一毫秒的一串 MOVE 会被平台合并成一次跳」这个坑也已修。真正缺的是**另外两条机制**：本机无障碍层 `LwAccessibility.kt` 只做 `ACTION_CLICK / ACTION_LONG_CLICK / ACTION_SET_TEXT / ACTION_SET_SELECTION`，**既没有 `ACTION_SCROLL_FORWARD/BACKWARD`，也没有 `dispatchGesture`**——节点树里 `scrollable` 标了，却只被 `lw_ui` 显示出来。旧机 DSHA 的 `/app/ui/*` 正是走无障碍作用于前台窗口，所以那时能滚。
 
 **绕行（按可靠度排序）**：
 1. 用应用内的**搜索 / 直达入口**代替滚动：日历用「搜索日程」把条目搜出来、地点用搜索框选 POI；有搜索框就优先搜索。
@@ -152,7 +152,7 @@ description: 本机（LittleWhale 构建）Android 设备操作的唯一规范�
 | 应用缩在屏幕中间一条带里 | 该应用声明了自己的方向，屏的方向不对 → `lw_screen_rotate`/`resize` 或重建屏 |
 | 探针不可用 | `lw_probe` 不通不影响任务，继续做 |
 | `lw_screen_create` 报 `root was not granted` | **设备能力未授权**（不是屏被关）：`lw_probe` 会同时显示 privileged channel 未连接。这是本机**已实测**的失败模式——同一台设备上换个时间就可能出现。处置：如实告知主人「需要在手机 App 里授予设备能力（root/特权通道）」并停下等待；**不要**反复重建、不要改用 display 0 硬做 |
-| `lw_launch` 报 ok（WARM）但 `lw_ui` 报 `no window is on display N` | **该应用的单实例窗口已经活在别的屏上**（本机 2026-10-04 实测：`io.github.miuzarte.littlewhale` 自身已驻主屏时，在虚拟屏 launch 只是把它唤到主屏，虚拟屏始终空白、截图仅几 KB）。处置：不要重复 launch、不要换屏重试——要操作它只能上 display 0（属「虚拟屏做不到」的例外，且主人手指在屏上时会被拒），或改用文件/配置/会话记录等非屏幕通道取证 |
+| `lw_launch` 报 ok（WARM）但 `lw_ui` 报 `no window is on display N` | **该应用的单实例窗口已经活在别的屏上**（本机 2026-10-04 实测：`io.github.yuloong07star.luwi` 自身已驻主屏时，在虚拟屏 launch 只是把它唤到主屏，虚拟屏始终空白、截图仅几 KB）。处置：不要重复 launch、不要换屏重试——要操作它只能上 display 0（属「虚拟屏做不到」的例外，且主人手指在屏上时会被拒），或改用文件/配置/会话记录等非屏幕通道取证 |
 
 ## 九、只读冒烟（验证通道是否可用）
 

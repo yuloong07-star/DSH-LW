@@ -200,7 +200,7 @@ pwsh -File tools/ocr/build-models.ps1
 # 装机 (app 必须先起来一次, 桥的 context 是 MainActivity 挂上去的)
 .\gradlew.bat :app:assembleDebug
 adb install -r -t app\build\outputs\apk\debug\app-debug.apk
-adb shell am start -S -W -n io.github.miuzarte.littlewhale/.MainActivity
+adb shell am start -S -W -n io.github.yuloong07star.luwi/.MainActivity
 $env:ANDROID_SERIAL='192.168.1.103:5555'
 
 # 认字 (主屏)

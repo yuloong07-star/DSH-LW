@@ -8,7 +8,7 @@ param([string]$Serial = 'emulator-5554')
 
 $ErrorActionPreference = 'Stop'
 $adb = "$env:ANDROID_HOME\platform-tools\adb.exe"
-$pkg = 'io.github.miuzarte.littlewhale'
+$pkg = 'io.github.yuloong07star.luwi'
 $caller = Join-Path $PSScriptRoot 'lw-channel-call.mjs'
 $probe = 'for d in /proc/[0-9]*; do if [ -r "$d/environ" ]; then e=$(tr "\0" "\n" < "$d/environ" 2>/dev/null | grep -m1 "^LW_CHANNEL_ENDPOINT="); if [ -n "$e" ]; then echo "${e#LW_CHANNEL_ENDPOINT=}"; tr "\0" "\n" < "$d/environ" | grep -m1 "^LW_CHANNEL_TOKEN="; break; fi; fi; done'
 
@@ -42,7 +42,7 @@ function Restart-App {
 
 function Importance {
     # $PID 是 PowerShell 的自动变量 (只读), 所以下面那个进程号不能叫 pid
-    return (Invoke-Adb @('shell', "dumpsys activity processes | grep -A 14 'ProcessRecord.*littlewhale' | grep -m1 -i importance")).Trim()
+    return (Invoke-Adb @('shell', "dumpsys activity processes | grep -A 14 'ProcessRecord.*luwi' | grep -m1 -i importance")).Trim()
 }
 
 Write-Host '### (a) 权限缺失: 先撤销 CAMERA, 再冷启动应用'

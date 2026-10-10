@@ -15,7 +15,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $adb = if ($env:LW_ADB) { $env:LW_ADB } else { 'D:\apk\Sdk\platform-tools\adb.exe' }
-$package = 'io.github.miuzarte.littlewhale'
+$package = 'io.github.yuloong07star.luwi'
 $forward = if ($Serial -eq 'emulator-5554') { 29997 } else { 29996 }
 
 function Sh($command) { & $adb -s $Serial shell $command }
@@ -47,7 +47,7 @@ function BallFrame {
     $hit = ($out | Select-String 'ty=APPLICATION_OVERLAY') |
         Where-Object {
             $block = $out[($_.LineNumber - 3)..($_.LineNumber + 1)]
-            ($block -join ' ') -match 'littlewhale' -and
+            ($block -join ' ') -match 'luwi' -and
             ($block -join ' ') -match 'NOT_FOCUSABLE' -and
             ($block -join ' ') -notmatch 'NOT_TOUCHABLE'
         } |
@@ -70,7 +70,7 @@ function ChannelFrame {
     $hit = ($out | Select-String 'ty=APPLICATION_OVERLAY') |
         Where-Object {
             $block = $out[($_.LineNumber - 3)..($_.LineNumber + 1)]
-            ($block -join ' ') -match 'littlewhale' -and ($block -join ' ') -notmatch 'NOT_FOCUSABLE'
+            ($block -join ' ') -match 'luwi' -and ($block -join ' ') -notmatch 'NOT_FOCUSABLE'
         } |
         Select-Object -First 1
     if (-not $hit) { return $null }
@@ -214,8 +214,8 @@ if (-not $NoTap) {
 Write-Output ''
 Write-Output '-- 关于球的操作不许弹提示 (Toast 是另一块窗)'
 $windows = Sh 'dumpsys window windows'
-$toast = ($windows | Select-String 'Toast' | Where-Object { $_ -match 'littlewhale' }).Count
-Judge "球上那几下没留下 Toast" ($toast -eq 0) "dumpsys 里 littlewhale 的 Toast 窗 $toast 个"
+$toast = ($windows | Select-String 'Toast' | Where-Object { $_ -match 'luwi' }).Count
+Judge "球上那几下没留下 Toast" ($toast -eq 0) "dumpsys 里 luwi 的 Toast 窗 $toast 个"
 
 # 6. 掐断播报: 正在念的时候再点一下球
 Write-Output ''

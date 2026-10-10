@@ -12,6 +12,9 @@ local.properties
 # 就没法干净地拿掉 (2026-10-09 收 2.6.0 时发现的)
 /lwplugin-api/build
 /samples/companion/build
+# 第三份模块 (鲸鱼娘小组件) 的构建产物: 它是 2026-10-10 那一批加的, 上面那几条按路径锚定的规则
+# 一样盖不到它 —— 而它里面躺着 16 MB 的伴侣 APK
+/samples/whale-widget/build
 /captures
 .externalNativeBuild
 .cxx

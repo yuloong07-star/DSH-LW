@@ -49,7 +49,7 @@ lw_replace(
 
 lw_replace(
         [[        int64_t stage_1_pad = params.sample_rate * 30;]]
-        [[        // LittleWhale: 30 秒静音垫是"每句话都按 30 秒算"的根源, 调用方可以要一个短的
+        [[        // Luwi: 30 秒静音垫是"每句话都按 30 秒算"的根源, 调用方可以要一个短的
         int pad_seconds = 30;
         if (const char * asked = std::getenv("LW_ASR_PAD_SECONDS")) {
             const int value = std::atoi(asked);
@@ -82,7 +82,7 @@ lw_replace(
 
         output.push_back(std::move(out_chunk));
     }]]
-        [[    // LittleWhale: 图里向上取整而 token 数预估向下取整, 两边只在 8 的倍数上相等,
+        [[    // Luwi: 图里向上取整而 token 数预估向下取整, 两边只在 8 的倍数上相等,
     // 所以短窗口要先对齐, 否则 clip_encode 会以 "Invalid number of output tokens" 中止
     const int64_t align = 8;
     const int64_t n_len_aligned = (out_full.n_len + align - 1) / align * align;

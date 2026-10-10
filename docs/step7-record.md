@@ -151,7 +151,7 @@ am start -W --display <id> -n <that component>
 
 写入顺序也换成 gkd 那个: **先写 `accessibility_enabled=1`, 再写组件列表** (系统先读那个总开关)。设置页那条「在系统设置里打开」留着, 但改成兜底 (summary 是 `自动开启不成功时再用这一条`, 出错时换成真实原因), 不再像是必经之路
 
-真机实测 (小米 13 / Android 16): 装完 APK 后 `enabled_accessibility_services` 只剩 Scene 那一个 (我们的被系统踢掉了), 在设置页拨一下开关 → 列表里出现我们的组件、`accessibility_enabled=1`、`dumpsys accessibility` 的 `Bound services` 里出现 `Service[label=LittleWhale …]`, 开关随即停在打开的样子, **全程没有离开设置页**。logcat 里两行挨着: `LwPermission: allowed ACCESS_RESTRICTED_SETTINGS for io.github.miuzarte.littlewhale` 与 `LwPermission: accessibility enabled: …:io.github.miuzarte.littlewhale/…LwAccessibility`
+真机实测 (小米 13 / Android 16): 装完 APK 后 `enabled_accessibility_services` 只剩 Scene 那一个 (我们的被系统踢掉了), 在设置页拨一下开关 → 列表里出现我们的组件、`accessibility_enabled=1`、`dumpsys accessibility` 的 `Bound services` 里出现 `Service[label=Luwi …]`, 开关随即停在打开的样子, **全程没有离开设置页**。logcat 里两行挨着: `LwPermission: allowed ACCESS_RESTRICTED_SETTINGS for io.github.yuloong07star.luwi` 与 `LwPermission: accessibility enabled: …:io.github.yuloong07star.luwi/…LwAccessibility`
 
 ## 还没做的
 

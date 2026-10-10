@@ -29,7 +29,7 @@ SurfaceView 的 surface → DISPLAY_SURFACE → VirtualDisplay.setSurface(surfac
 
 1. 预览里出现的是**缩小的真实设置页** (截图见下), 不是镜像、不是录屏回放
 2. 全程没有 `MediaCodec` / `MediaProjection` / `EGL`, 代码里也没有 native 调用, 图片路径只有这一条
-3. `dumpsys display` 里那块屏的 `type VIRTUAL`、`owner io.github.miuzarte.littlewhale (uid 0)`, 而画面确实出现在 app 的窗口里
+3. `dumpsys display` 里那块屏的 `type VIRTUAL`、`owner io.github.yuloong07star.luwi (uid 0)`, 而画面确实出现在 app 的窗口里
 
 代价是**它跟着窗口走**: 退出 app / 锁屏后 `SurfaceView` 的 surface 会销毁, 那时屏就成了"没有输出面的屏"。所以 detach 是一等状态 (见下), 而截图**不依赖预览** (走 `screencap`), 无头也能拍
 
@@ -61,9 +61,9 @@ flag 表 (公开 SDK 只给了前两个, 其余是平台自己的位):
 实测落下来的 `DisplayDeviceInfo`:
 
 ```
-DisplayDeviceInfo{"LittleWhale": uniqueId="virtual:io.github.miuzarte.littlewhale,0,LittleWhale,6",
+DisplayDeviceInfo{"Luwi": uniqueId="virtual:io.github.yuloong07star.luwi,0,Luwi,6",
   1080 x 2400, density 450, touch VIRTUAL, rotation 0, type VIRTUAL,
-  owner io.github.miuzarte.littlewhale (uid 0),
+  owner io.github.yuloong07star.luwi (uid 0),
   FLAG_SECURE, FLAG_OWN_CONTENT_ONLY, FLAG_DESTROY_CONTENT_ON_REMOVAL, FLAG_TRUSTED,
   FLAG_OWN_DISPLAY_GROUP, FLAG_ALWAYS_UNLOCKED, FLAG_TOUCH_FEEDBACK_DISABLED,
   FLAG_OWN_FOCUS, FLAG_STEAL_TOP_FOCUS_DISABLED, canHostTasks false}
@@ -125,10 +125,10 @@ Failed to take take screenshot. Display Id '9' is not valid.
 
 ```
 Display 4630947006070067843 (HWC display 0): port=131 pnpId=QCM displayName=""
-Display 11529215048785374281 (Virtual display): displayName="LittleWhale"
+Display 11529215048785374281 (Virtual display): displayName="Luwi"
 ```
 
-名字是我们造屏时给的 (`LittleWhale`), 所以这条对应关系是我们自己控制住的; 找到后缓存, 拍失败就丢掉重新找 (屏重建会换 id)
+名字是我们造屏时给的 (`Luwi`), 所以这条对应关系是我们自己控制住的; 找到后缓存, 拍失败就丢掉重新找 (屏重建会换 id)
 
 ## 界面
 
@@ -215,7 +215,7 @@ Scaffold
 
 两个只有多屏才会暴露的坑:
 
-1. **屏名必须唯一** 截图靠"屏名 → compositor id"这条对应关系找人, 而 `createVirtualDisplay` 的名字就是 `dumpsys SurfaceFlinger --display-id` 里的 `displayName`, 所以屏是 `LittleWhale 1` / `LittleWhale 2` 这样编号的
+1. **屏名必须唯一** 截图靠"屏名 → compositor id"这条对应关系找人, 而 `createVirtualDisplay` 的名字就是 `dumpsys SurfaceFlinger --display-id` 里的 `displayName`, 所以屏是 `Luwi 1` / `Luwi 2` 这样编号的
 2. **换屏必须换 SurfaceView** 复用同一个 surface 时, 旧 buffer 里还留着上一块屏的最后一帧, 而**空屏不会产生新帧把它顶掉**, 于是切到一块空屏后画面还是上一块屏的 —— 用 `key(displayId)` 让每块屏有自己的 SurfaceView 才对
 
 **顶栏菜单**: 从"一排文字"改成 `OverlayIconCascadingDropdownMenu`, 第一层两项 —— `虚拟屏` (自己带当前选中的是哪块) 与 `设置`; `虚拟屏` 的第二层是: 展开/收起画面, 屏列表 (带 √ 与尺寸), 关闭这块虚拟屏 (新建那一项见下一轮, 后来删了)
@@ -247,7 +247,7 @@ Scaffold
 两个细节:
 
 - **`create` 是阻塞的**, 因为它的调用方只有工具 (在桥的工作线程上); 以前那次异步是为了不卡 UI, 现在界面不建屏了
-- **屏的显示名与 compositor 名是两回事**: 截图靠"compositor 名 → id"找人, 所以 privileged 侧的名字仍是内部唯一的 `LittleWhale 1` / `2` (工具给的名字里可能有引号, 塞进 `displayName="…"` 会把解析弄坏), 工具给的名字只用作界面与工具之间的称呼
+- **屏的显示名与 compositor 名是两回事**: 截图靠"compositor 名 → id"找人, 所以 privileged 侧的名字仍是内部唯一的 `Luwi 1` / `2` (工具给的名字里可能有引号, 塞进 `displayName="…"` 会把解析弄坏), 工具给的名字只用作界面与工具之间的称呼
 
 实测 (经桥调用): 连建四块 —— `微信` → 标签 `微信`; 再来一块 `微信` → `微信 2`; 不带名字 → `虚拟屏 3`; `横屏 720p` 1280x720@240 → 标签原样。菜单里四项都列出来, 横屏那块选中时预览盒子按 720/1280 收成约 608px 高。`release` 按 id 关掉 `微信`, 关掉选中的 `横屏 720p`, 列表剩两块且 `selected` 变 `-1`; 不带 id 则报错、id 不存在则 `released:false` 并说明是哪一块
 

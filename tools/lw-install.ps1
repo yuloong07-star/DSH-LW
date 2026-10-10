@@ -1,4 +1,4 @@
-# DSH-LW 装机: 装 APK, 顺手把能给的权限给掉
+# Luwi 装机: 装 APK, 顺手把能给的权限给掉
 #
 # 从真机上手工做这件事有两个坑, 这个脚本就是为了绕开它们:
 #
@@ -22,7 +22,7 @@
 param(
     [string]$Serial = '10CEB40568000ZB',
     [string]$Apk = "$PSScriptRoot\..\app\build\outputs\apk\debug\app-debug.apk",
-    [string]$Package = 'io.github.miuzarte.littlewhale',
+    [string]$Package = 'io.github.yuloong07star.luwi',
     [switch]$Perms,
     [switch]$SkipInstall
 )
@@ -253,7 +253,7 @@ Write-Host "  写入窗口里写得动 —— 本脚本也只在**条目缺失**
 
 Write-Host ""
 Write-Host "剩下这些只能人去系统页里点 (脚本给不了):" -ForegroundColor Cyan
-Write-Host "  - 全屏通知 (横幅): 设置 -> 应用 -> DSH-LW -> 特殊应用权限里那一条, lw_notify 的 banner 靠它"
+Write-Host "  - 全屏通知 (横幅): 设置 -> 应用 -> Luwi -> 特殊应用权限里那一条, lw_notify 的 banner 靠它"
 Write-Host "  - 录屏授权 (以后要用到时再说)"
 Write-Host "  - 桌面图标与通知栏图标现在是 DSH 自己的那只鲸鱼 (见 tools/make-icons.py)"
 

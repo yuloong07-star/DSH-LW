@@ -1,0 +1,11 @@
+{
+  "note": "应用对应的技能目录: 装了左边那个应用, 右边那个技能才值得装",
+  "entries": [
+    { "skill": "wechat", "title": "微信", "apps": ["com.tencent.mm"] },
+    { "skill": "alipay", "title": "支付宝", "apps": ["com.eg.android.AlipayGphone"] },
+    { "skill": "taobao", "title": "淘宝", "apps": ["com.taobao.taobao"] },
+    { "skill": "amap", "title": "高德地图", "apps": ["com.autonavi.minimap", "com.baidu.BaiduMap"] },
+    { "skill": "douyin", "title": "抖音", "apps": ["com.ss.android.ugc.aweme", "com.ss.android.ugc.aweme.lite"] },
+    { "skill": "bilibili", "title": "哔哩哔哩", "apps": ["tv.danmaku.bili"] }
+  ]
+}

@@ -4,9 +4,9 @@
 # 这类问题落在另一半 (设备上的悬浮窗 / 无障碍 / 通知监听 / 麦克风 / 特权通道)。这两半以前要问三个
 # 脚本, 于是排查的第一步常常是"先想想该问谁"
 #
-# 用法: pwsh -File D:\apk\LittleWhale\tools\lw-doctor.ps1
-#       pwsh -File D:\apk\LittleWhale\tools\lw-doctor.ps1 -Serial emulator-5554
-#       pwsh -File D:\apk\LittleWhale\tools\lw-doctor.ps1 -EnvOnly      # 只看工具链
+# 用法: pwsh -File D:\apk\Luwi\tools\lw-doctor.ps1
+#       pwsh -File D:\apk\Luwi\tools\lw-doctor.ps1 -Serial emulator-5554
+#       pwsh -File D:\apk\Luwi\tools\lw-doctor.ps1 -EnvOnly      # 只看工具链
 #
 # 它是**只读**的: 一个字节都不往设备上写 (要改是 lw-install.ps1 的事), 所以随时可以跑
 # 退出码: 0 = 工具链齐 (设备那半缺什么都不算失败, 它只是如实报); 1 = 工具链缺东西
@@ -21,11 +21,11 @@ if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
     $PSNativeCommandUseErrorActionPreference = $false
 }
 
-# 本脚本在 LittleWhale\tools\ 下, 而工具链与 env.ps1 在它上面两层 (D:\apk)
+# 本脚本在 Luwi\tools\ 下, 而工具链与 env.ps1 在它上面两层 (D:\apk)
 $Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$Package = 'io.github.miuzarte.littlewhale'
-$AccessibilityComponent = "$Package/io.github.miuzarte.littlewhale.channel.LwAccessibility"
-$ListenerComponent = "$Package/io.github.miuzarte.littlewhale.channel.LwNotificationListener"
+$Package = 'io.github.yuloong07star.luwi'
+$AccessibilityComponent = "$Package/io.github.yuloong07star.luwi.channel.LwAccessibility"
+$ListenerComponent = "$Package/io.github.yuloong07star.luwi.channel.LwNotificationListener"
 
 function Line {
     param([string]$Mark, [string]$Text, [string]$Color = 'Gray')
@@ -47,9 +47,9 @@ $items = [ordered]@{
     'Sdk\platform-tools\adb.exe'   = "$Root\Sdk\platform-tools\adb.exe"
     'Sdk\emulator\emulator.exe'    = "$Root\Sdk\emulator\emulator.exe"
     'gradle-home\wrapper\dists'    = "$Root\gradle-home\wrapper\dists"
-    '.android\avd\LittleWhale_API36.ini' = "$Root\.android\avd\LittleWhale_API36.ini"
-    'LittleWhale\gradlew.bat'      = "$Root\LittleWhale\gradlew.bat"
-    'LittleWhale\third_party\deepseek-harness' = "$Root\LittleWhale\third_party\deepseek-harness"
+    '.android\avd\Luwi_API36.ini' = "$Root\.android\avd\Luwi_API36.ini"
+    'Luwi\gradlew.bat'      = "$Root\Luwi\gradlew.bat"
+    'Luwi\third_party\deepseek-harness' = "$Root\Luwi\third_party\deepseek-harness"
 }
 
 $missing = 0

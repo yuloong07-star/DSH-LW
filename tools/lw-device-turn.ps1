@@ -12,7 +12,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Task,
     [string]$SessionDirectory,
-    [string]$Package = 'io.github.miuzarte.littlewhale'
+    [string]$Package = 'io.github.yuloong07star.luwi'
 )
 
 $ErrorActionPreference = 'Stop'

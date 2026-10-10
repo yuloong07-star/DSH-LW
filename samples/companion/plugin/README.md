@@ -16,11 +16,11 @@
 # 1. 先装伴侣 APK (同签名那一档, 系统会自动给 signature 级权限)
 pwsh -File D:\apk\dev.ps1 gradle -Task ':sample-companion:assembleDebug'
 D:\apk\Sdk\platform-tools\adb.exe -s emulator-5554 install -r `
-  D:\apk\LittleWhale\samples\companion\build\outputs\apk\debug\sample-companion-debug.apk
+  D:\apk\Luwi\samples\companion\build\outputs\apk\debug\sample-companion-debug.apk
 
 # 2. 签一份包出来 (私钥落在 .lwtmp 里, 不进仓库)
-node D:\apk\LittleWhale\tools\lw-plugin-sign.mjs keygen --out D:\apk\.lwtmp\plugins9\sample.key
-node D:\apk\LittleWhale\tools\lw-plugin-sign.mjs sign --dir D:\apk\LittleWhale\samples\companion\plugin `
+node D:\apk\Luwi\tools\lw-plugin-sign.mjs keygen --out D:\apk\.lwtmp\plugins9\sample.key
+node D:\apk\Luwi\tools\lw-plugin-sign.mjs sign --dir D:\apk\Luwi\samples\companion\plugin `
   --key D:\apk\.lwtmp\plugins9\sample.key --name 样例发布者 `
   --out D:\apk\.lwtmp\plugins9\sample-hello --zip D:\apk\.lwtmp\plugins9\hello.lwp
 
@@ -29,8 +29,8 @@ D:\apk\Sdk\platform-tools\adb.exe -s emulator-5554 push D:\apk\.lwtmp\plugins9\s
 pwsh -File D:\apk\dev.ps1 bridge -Method plugin -Params '{"op":"install","path":"/sdcard/DSH/plugins-hello"}'
 
 # 4. 勾能力 (设置页「插件」那一段逐条勾, 或者桥上这一条), 再启用
-pwsh -File D:\apk\dev.ps1 bridge -Method plugin -Params '{"op":"grant","id":"io.github.miuzarte.littlewhale.sample.companion","capability":"device.read","allowed":true}'
-pwsh -File D:\apk\dev.ps1 bridge -Method plugin -Params '{"op":"enable","id":"io.github.miuzarte.littlewhale.sample.companion"}'
+pwsh -File D:\apk\dev.ps1 bridge -Method plugin -Params '{"op":"grant","id":"io.github.yuloong07star.luwi.sample.companion","capability":"device.read","allowed":true}'
+pwsh -File D:\apk\dev.ps1 bridge -Method plugin -Params '{"op":"enable","id":"io.github.yuloong07star.luwi.sample.companion"}'
 ```
 
 `minLw` 写的是 `2.5.0`: 这一批开发期的 `versionName` 还是 2.5.0, 正式发版那一步会把它抬到 2.5.1 ——

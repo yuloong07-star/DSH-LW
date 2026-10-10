@@ -30,7 +30,7 @@ const { values } = parseArgs({
   options: {
     to: {
       type: 'string',
-      default: 'app/src/main/java/io/github/miuzarte/littlewhale/channel/KeyCodes.kt',
+      default: 'app/src/main/java/io/github/yuloong07star/luwi/channel/KeyCodes.kt',
     },
   },
 })

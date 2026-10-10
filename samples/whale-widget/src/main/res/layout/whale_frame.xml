@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ViewFlipper 里的一张: 一帧图 (整张画满, 外面那台 flipper 负责一张一张翻) -->
+<ImageView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/whale_frame_image"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:contentDescription="@string/widget_title"
+    android:scaleType="fitCenter" />

@@ -35,7 +35,7 @@ if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
 }
 
 $adb = if ($env:LW_ADB) { $env:LW_ADB } else { 'D:\apk\Sdk\platform-tools\adb.exe' }
-$package = 'io.github.miuzarte.littlewhale'
+$package = 'io.github.yuloong07star.luwi'
 $forward = if ($Serial -eq 'emulator-5554') { 29994 } else { 29993 }
 $touchNode = $TouchNode
 

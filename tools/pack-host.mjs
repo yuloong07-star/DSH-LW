@@ -337,7 +337,7 @@ const packed = new Map([...packs.vendor, ...packs.dsh])
 rmSync(out, { recursive: true, force: true })
 mkdirSync(out, { recursive: true })
 writeFileSync(join(out, 'package.json'), `${JSON.stringify({
-  name: 'littlewhale-host',
+  name: 'luwi-host',
   version: '0.0.0',
   private: true,
   dependencies: {
@@ -513,13 +513,13 @@ console.log(
   `pack-host: installed ${imagePlugin.name}@${imagePlugin.version} from ${npmRegistry}`,
 )
 
-// LittleWhale's own host plugin is copied in rather than packed: it is a few hundred lines of
+// Luwi's own host plugin is copied in rather than packed: it is a few hundred lines of
 // plain ESM with no build step, and it has to sit under node_modules so that its import of
 // @deepseek-ai/dsh-tools resolves to the same copy the host itself uses
 const plugin = fileURLToPath(new URL('../host-plugin', import.meta.url))
-const installed = join(out, 'node_modules', 'littlewhale-channel')
+const installed = join(out, 'node_modules', 'luwi-channel')
 cpSync(plugin, installed, { recursive: true })
-console.log(`pack-host: installed the LittleWhale plugin from ${plugin}`)
+console.log(`pack-host: installed the Luwi plugin from ${plugin}`)
 
 // 真把这个包 import 一次, 数一数注册出来几个工具
 //
@@ -534,7 +534,7 @@ execFileSync(process.execPath, [
 /**
  * 内置的 dsh-custom-mode: 让新机开箱就有那个 `custom` 预设 (2026-10-09 主人报的那条)
  *
- * 与 littlewhale-channel 同一条路 —— 拷进 node_modules; 而"它是不是这一棵树的一个 bundle"由
+ * 与 luwi-channel 同一条路 —— 拷进 node_modules; 而"它是不是这一棵树的一个 bundle"由
  * profile 的 `dsh.profile.bundles` 说了算, 那一步在应用那一侧 ([host/CustomPresets.kt])。只拷不读:
  * 这个包没有构建步骤, 也没有外部依赖 (见 presets/custom-mode/README.md)
  */

@@ -104,10 +104,10 @@
 
 ```powershell
 # 环境与设备一次读完 (新会话第一件事)
-pwsh -File D:\apk\LittleWhale\tools\lw-doctor.ps1 -Serial emulator-5554
+pwsh -File D:\apk\Luwi\tools\lw-doctor.ps1 -Serial emulator-5554
 
 # 改完插件或字符串之后, 提交前跑这一组 (不需要设备)
-cd D:\apk\LittleWhale
+cd D:\apk\Luwi
 node tools/check-host-plugin.mjs
 node tools/check-voice-commands.mjs
 node tools/check-auto-shot.mjs

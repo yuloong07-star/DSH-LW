@@ -21,11 +21,11 @@ import { readFile } from 'node:fs/promises'
 
 const plugin = await readFile(new URL('../host-plugin/index.mjs', import.meta.url), 'utf8')
 const budget = await readFile(
-  new URL('../app/src/main/java/io/github/miuzarte/littlewhale/channel/ScreenshotBudget.kt', import.meta.url),
+  new URL('../app/src/main/java/io/github/yuloong07star/luwi/channel/ScreenshotBudget.kt', import.meta.url),
   'utf8',
 )
 const bridge = await readFile(
-  new URL('../app/src/main/java/io/github/miuzarte/littlewhale/channel/PrivilegedBridge.kt', import.meta.url),
+  new URL('../app/src/main/java/io/github/yuloong07star/luwi/channel/PrivilegedBridge.kt', import.meta.url),
   'utf8',
 )
 

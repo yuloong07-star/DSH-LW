@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Luwi Whale Dance</string>
+    <string name="widget_title">Whale Dance</string>
+    <string name="widget_description">A dancing whale girl on your home screen. Tap her to switch to the next dance.</string>
+    <string name="screen_title">Whale dance</string>
+    <string name="screen_body">The dances for the home screen widget. Pick one here and the widget on your home screen follows right away; tapping the widget itself also moves to the next dance. You can also bring in a GIF of your own.</string>
+    <string name="dance_1">Blowing a dandelion</string>
+    <string name="use_this">Use this</string>
+    <string name="in_use">In use</string>
+    <string name="current_mark">%1$s (current)</string>
+    <string name="refresh_widget">Refresh the home screen widget</string>
+    <string name="import_gif">Bring in a GIF</string>
+    <string name="import_note">The three built-in dances live in this app; anything you bring in is a copy kept in %1$s. Deleting a copy never touches the file you picked</string>
+    <string name="import_done">Brought in "%1$s" (%2$d frames) - she is on the home screen now</string>
+    <string name="import_failed">That one did not come in: %1$s</string>
+    <string name="forget">Delete</string>
+    <string name="forget_done">Deleted "%1$s"</string>
+    <string name="forget_failed">"%1$s" could not be deleted</string>
+    <string name="add_hint">To place her: long press an empty spot on the home screen, open widgets, find Luwi Whale Dance, then drag Whale Dance onto the screen.</string>
+</resources>

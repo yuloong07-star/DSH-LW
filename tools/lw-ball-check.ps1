@@ -12,7 +12,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $adb = if ($env:LW_ADB) { $env:LW_ADB } else { 'D:\apk\Sdk\platform-tools\adb.exe' }
-$package = 'io.github.miuzarte.littlewhale'
+$package = 'io.github.yuloong07star.luwi'
 $forward = if ($Serial -eq 'emulator-5554') { 29997 } else { 29996 }
 
 function Sh($command) { & $adb -s $Serial shell $command }
@@ -44,7 +44,7 @@ function BallAttrs {
     $hit = ($out | Select-String 'ty=APPLICATION_OVERLAY') |
         Where-Object {
             $block = $out[($_.LineNumber - 3)..($_.LineNumber + 1)]
-            ($block -join ' ') -match 'littlewhale' -and
+            ($block -join ' ') -match 'luwi' -and
             ($block -join ' ') -match 'NOT_FOCUSABLE' -and
             ($block -join ' ') -notmatch 'NOT_TOUCHABLE'
         } |

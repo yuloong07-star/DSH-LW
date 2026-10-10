@@ -17,7 +17,7 @@
 #   traverse but not open. Calls that act on the screen are unaffected; reading a picture back has to
 #   happen in the app's own host, whose workspace paths are ordinary shared storage
 
-PKG=io.github.miuzarte.littlewhale
+PKG=io.github.yuloong07star.luwi
 FILES=/data/user/0/$PKG/files
 CACHE=/data/user/0/$PKG/cache
 TASK=$1

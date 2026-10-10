@@ -96,7 +96,7 @@ require sharp: FAILED  Could not load the "sharp" module using the android-arm64
 
 模型 (设备自己的 host 树与 home, `tools/lw-device-turn.ps1`):
 
-- `lw_screen` 被模型调用并原样报回 JSON (插件确实被设备上那份树加载; `--dump-config` 里也看得到 `id: littlewhale-channel` → `files/host/node_modules/littlewhale-channel/index.mjs`)
+- `lw_screen` 被模型调用并原样报回 JSON (插件确实被设备上那份树加载; `--dump-config` 里也看得到 `id: luwi-channel` → `files/host/node_modules/luwi-channel/index.mjs`)
 - 本机 headless 对**手机上的桥** (adb forward + `LW_CHANNEL_ENDPOINT`): 模型连调五个工具, 结果与上手点的一致
 - 本机 headless + 替身 `sharp`: `read_image` 那张缩过的截图, 模型描述正确 (见上)
 
@@ -133,7 +133,7 @@ su -c 'am start -W --display 44 -a android.intent.action.MAIN -c android.intent.
 模型要按 BACK / HOME / 音量这种**平台自己处理**的键, 而它们不在任何屏幕的树里: `lw_ui` 看不到, `lw_tap` 也无处可点。shell 那条路与 `am` 撞的是同一堵墙:
 
 ```
-run-as io.github.miuzarte.littlewhale /system/bin/input keyevent 0
+run-as io.github.yuloong07star.luwi /system/bin/input keyevent 0
 → java.lang.SecurityException: Injecting input events requires the caller (or the source of the
   instrumentation, if any) to have the INJECT_EVENTS permission.
 ```
@@ -171,7 +171,7 @@ run-as io.github.miuzarte.littlewhale /system/bin/input keyevent 0
 | 打字: 中文进字段 | 设置搜索框里写 "蓝牙" → `via: field`, `written: 2`, 字段读出 `蓝牙`, 搜索结果随即出现在树上 |
 | 打字: 续写与覆盖 | 再写 "开关" → 字段变 `蓝牙开关`; `replace: true` 写 "wlan" → 字段变 `wlan` |
 | 打字: 没有字段的屏 | 设置主页 (只有一列行, 没有可输入节点) → `via: keys`, `written: 4`; 同一块屏上写中文被拒 ("the keyboard cannot produce 蓝牙") |
-| 打字只落在指名的屏 | 在 display 74 的搜索框写 "显示" → 那块屏的字段与结果都变了, 主屏 (LittleWhale) 一个字没动 |
+| 打字只落在指名的屏 | 在 display 74 的搜索框写 "显示" → 那块屏的字段与结果都变了, 主屏 (Luwi) 一个字没动 |
 | 打字也受刹车管 | 真手指按着时 display 0 的 `type` 被拒, 同一刻 display 74 上的正常写入 |
 
 三个坑:

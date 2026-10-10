@@ -2,7 +2,7 @@
 #
 # 2026-10-05 加, 起因是 1.2.0 一开 R8, 特权通道整条断掉 —— 现象是 `:lw_shizuku` 进程在
 # `AndroidRuntime::startReg` 之后直接 SIGABRT, tombstone 里那句是:
-#   ClassNotFoundException: io.github.miuzarte.littlewhale.channel.LwServiceStarter
+#   ClassNotFoundException: io.github.yuloong07star.luwi.channel.LwServiceStarter
 # 也就是说这个类**必须按原名留着**, 而不是"能跑到就行"
 
 # 1) 特权进程的两个类都是**按名字**拿到的, 名字写在字符串常量里
@@ -12,8 +12,8 @@
 #      - 服务类被改名 → 入口能进 (日志 "starter entered"), 但 loadClass 失败 → "the service
 #        could not be created, exiting" → 特权通道永远连不上
 #    两条都实测过 (2026-10-05), 所以这里整包保名字, 不再逐个列
--keep class io.github.miuzarte.littlewhale.channel.** { *; }
--keepclassmembers class io.github.miuzarte.littlewhale.channel.LwServiceStarter {
+-keep class io.github.yuloong07star.luwi.channel.** { *; }
+-keepclassmembers class io.github.yuloong07star.luwi.channel.LwServiceStarter {
     public static void main(java.lang.String[]);
 }
 

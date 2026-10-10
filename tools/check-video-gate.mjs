@@ -41,7 +41,7 @@ plugin.apply(ctx)
 
 const source = readFileSync(new URL('../host-plugin/index.mjs', import.meta.url), 'utf8')
 const ownerSource = readFileSync(
-  new URL('../app/src/main/java/io/github/miuzarte/littlewhale/channel/CameraOwner.kt', import.meta.url),
+  new URL('../app/src/main/java/io/github/yuloong07star/luwi/channel/CameraOwner.kt', import.meta.url),
   'utf8',
 )
 

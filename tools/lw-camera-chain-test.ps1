@@ -12,7 +12,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $adb = "$env:ANDROID_HOME\platform-tools\adb.exe"
-$pkg = 'io.github.miuzarte.littlewhale'
+$pkg = 'io.github.yuloong07star.luwi'
 $caller = Join-Path $PSScriptRoot 'lw-channel-call.mjs'
 
 if (-not (Test-Path $adb)) { throw "adb not found at $adb (dot-source D:\apk\env.ps1 first)" }

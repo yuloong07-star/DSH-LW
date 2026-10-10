@@ -18,12 +18,12 @@ import { readFile } from 'node:fs/promises'
 
 const plugin = await readFile(new URL('../host-plugin/index.mjs', import.meta.url), 'utf8')
 const test = await readFile(
-  new URL('../app/src/test/java/io/github/miuzarte/littlewhale/wake/WakeWordWordsTest.kt', import.meta.url),
+  new URL('../app/src/test/java/io/github/yuloong07star/luwi/wake/WakeWordWordsTest.kt', import.meta.url),
   'utf8',
 )
 // 常量 (声母表 / 调号表) 在实现那一份里, 判据表在测试那一份里
 const impl = await readFile(
-  new URL('../app/src/main/java/io/github/miuzarte/littlewhale/wake/WakeWordWords.kt', import.meta.url),
+  new URL('../app/src/main/java/io/github/yuloong07star/luwi/wake/WakeWordWords.kt', import.meta.url),
   'utf8',
 )
 

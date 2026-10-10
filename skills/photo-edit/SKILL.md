@@ -1,6 +1,6 @@
 ---
 name: photo-edit
-description: 本机 (LittleWhale) 的 p 图规范: lw_image 把主人正看着的那张图变成生图插件认的图像引用, edit_image 用它图生图, lw_image op=album 再把成图放进相册并打开。主人说 p图 / 修图 / 改图 / 抠图 / 去水印 / 换背景 / 把这张图的某个地方改成什么 / 用这张照片做个什么 时先加载本技能。
+description: 本机 (Luwi) 的 p 图规范: lw_image 把主人正看着的那张图变成生图插件认的图像引用, edit_image 用它图生图, lw_image op=album 再把成图放进相册并打开。主人说 p图 / 修图 / 改图 / 抠图 / 去水印 / 换背景 / 把这张图的某个地方改成什么 / 用这张照片做个什么 时先加载本技能。
 ---
 
 # p 图 (lw_image + edit_image 版)
@@ -28,7 +28,7 @@ description: 本机 (LittleWhale) 的 p 图规范: lw_image 把主人正看着�
    - 一次只改一处: 主人说了两处就分两次改, 或者先改最要紧的那一处并说清还有一处没动
    - 它默认等到任务出结果 (最多 5 分钟) 才返回, 所以这一句不用你轮询
 
-3. **成图进相册** —— 上一步的答案里每一张都有 `attachment_id` / `media_type` / `bytes` / `width` / `height`。取第一张 (主人点名要几张就几张), `lw_image {op:"album", image:<那一整个对象>}`: 它拷一份进相册 `Pictures/DSH-LW` 并顺手在屏上打开
+3. **成图进相册** —— 上一步的答案里每一张都有 `attachment_id` / `media_type` / `bytes` / `width` / `height`。取第一张 (主人点名要几张就几张), `lw_image {op:"album", image:<那一整个对象>}`: 它拷一份进相册 `Pictures/Luwi` 并顺手在屏上打开
 
    - 还要接着改 (迭代): 把上一张的引用原样当 `source_image` 再调一次 `edit_image`, 改完照旧进相册 —— 每一版都留一份, 不覆盖上一版
 

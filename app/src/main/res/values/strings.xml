@@ -1,8 +1,8 @@
 <resources>
-    <string name="app_name">DSH-LW</string>
+    <string name="app_name">Luwi</string>
     <string name="a11y_description">Lets DSH read the text on a screen and exactly where it is, which means fewer on-device OCR calls</string>
-    <string name="permission_plugin_label">Connect to a DSH-LW plugin</string>
-    <string name="permission_plugin_description">Lets a companion app act as a DSH-LW plugin: LittleWhale binds its service and hands it the capabilities you allowed</string>
+    <string name="permission_plugin_label">Connect to a Luwi plugin</string>
+    <string name="permission_plugin_description">Lets a companion app act as a Luwi plugin: Luwi binds its service and hands it the capabilities you allowed</string>
 
     <string name="button_cancel">Cancel</string>
     <string name="button_confirm">OK</string>
@@ -14,7 +14,7 @@
     <string name="host_status_failed">Host failed: %1$s</string>
     <string name="host_channel_name">DSH host</string>
     <string name="host_channel_description">Keeps the DSH host reachable while the app is in the background</string>
-    <string name="host_notification_title">DSH-LW</string>
+    <string name="host_notification_title">Luwi</string>
     <string name="host_notification_text">DSH host</string>
 
     <string name="settings_title">Settings</string>
@@ -38,7 +38,7 @@
     <string name="settings_section_power_summary">What gets switched off to save power</string>
     <string name="settings_power_state_idle">Not saving power: the wake word listens as the Wake word section allows</string>
 
-    <string name="settings_about_title">About LittleWhale</string>
+    <string name="settings_about_title">About Luwi</string>
     <string name="settings_about_version">Version %1$s (%2$d)</string>
     <string name="settings_about_update">Check for updates</string>
     <string name="settings_about_update_summary">Reads the tag of the newest release on GitHub and compares it</string>
@@ -438,11 +438,29 @@
     <string name="settings_quick_delete_failed">"%1$s" was not deleted: the file is gone or could not be removed</string>
     <string name="settings_quick_note">A tap hands the command to the conversation; the queue is the voice one, so "no conversation means a new one, and twenty minutes stays in the same one" still holds</string>
 
+    <string name="settings_section_skills">Skills</string>
+    <string name="settings_section_skills_summary">Hand the skills for the apps on this phone to dsh</string>
+    <string name="settings_skills_empty">None of the apps in the bundled catalog is on this phone, so there is nothing to add</string>
+    <string name="settings_skills_have">already installed - matched %1$s</string>
+    <string name="settings_skills_missing">not installed yet - matched %1$s</string>
+    <string name="settings_skills_install">Add the skills for the apps that are here</string>
+    <string name="settings_skills_busy">Adding…</string>
+    <string name="settings_skills_install_summary">One pass over the bundled app-to-skill catalog; anything already there is left untouched</string>
+    <string name="settings_skills_done">Added %1$d skill(s); all %2$d matches are in place now. dsh sees them from the next turn on</string>
+    <string name="settings_skills_note">Skills are plain prompt material: they land in the dsh home as SKILL.md files and change nothing about permissions. Editing one is expected - this button never overwrites an existing one</string>
+
     <string name="settings_section_plugin">Plugins</string>
     <string name="settings_section_plugin_summary">Packages other people wrote, adding abilities to this phone</string>
     <string name="settings_plugin_empty">No plugin is installed. Plugins live in %1$s - tap \"Load a plugin package\" below to put one there</string>
     <string name="settings_plugin_install">Load a plugin package</string>
     <string name="settings_plugin_install_summary">A .lwp file or an unzipped directory holding plugin.json. Loading one does not enable it</string>
+    <string name="settings_plugin_link">Install from a link</string>
+    <string name="settings_plugin_link_summary">An https link to a .lwp. It goes through exactly the same checks as a local package</string>
+    <string name="settings_plugin_link_title">Install from a link</string>
+    <string name="settings_plugin_link_dialog_summary">Only https. Nothing lands until the signature, the per-file hashes, the version, the tool prefix and the declared capabilities all pass</string>
+    <string name="settings_plugin_link_hint">https://…/something.lwp</string>
+    <string name="settings_plugin_link_install">Download and install</string>
+    <string name="settings_plugin_link_busy">Downloading…</string>
     <string name="settings_plugin_developer">Developer mode</string>
     <string name="settings_plugin_developer_summary">Accept local packages with no publisher signature. Installing a plugin is trusting it - leave this off</string>
     <string name="settings_plugin_note">Installing a plugin is trusting it: it gets exactly the capabilities you switch on here, and enabling one binds that companion app\'s service</string>
@@ -471,7 +489,7 @@
 
     <string name="settings_section_permissions">Permissions</string>
     <string name="settings_section_permissions_summary">Whether each ability works right now</string>
-    <string name="settings_permissions_summary">These permissions are switched on and off by the user, and DSH-LW is free to build on them.</string>
+    <string name="settings_permissions_summary">These permissions are switched on and off by the user, and Luwi is free to build on them.</string>
     <string name="settings_permission_granted">Granted</string>
     <string name="settings_permission_denied">Not granted</string>
     <string name="settings_permission_ask">Grant</string>

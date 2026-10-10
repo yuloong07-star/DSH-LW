@@ -37,7 +37,7 @@ function adb(args) {
 
 const { values, positionals } = parseArgs({
   options: {
-    package: { type: 'string', default: 'io.github.miuzarte.littlewhale' },
+    package: { type: 'string', default: 'io.github.yuloong07star.luwi' },
     serial: { type: 'string', default: '192.168.1.103:5555' },
     stamp: { type: 'string', default: 'app/build/generated/host-assets/host-version.txt' },
   },

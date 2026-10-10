@@ -2,7 +2,7 @@
 # Fake a real finger on the phone's own touchscreen, for testing the brake without a person
 #
 # Writing to an evdev node goes into the kernel's input core, so the events reach every reader of
-# that node - LittleWhale's touch watch included - while an injected touch never appears there at
+# that node - Luwi's touch watch included - while an injected touch never appears there at
 # all. That difference is exactly what the brake is built on, so this is the only way to exercise
 # it from a machine
 #

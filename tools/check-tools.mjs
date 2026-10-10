@@ -44,7 +44,7 @@ const ALLOWED_ROOT_NAMES = new Set([
   // 工具链 (不要动)
   'Sdk', 'AndroidStudio', 'android-studio-data', 'gradle-home', '.android', 'tools', 'downloads',
   // 项目与产物
-  'LittleWhale', 'logs', 'shots', 'backups', '.lwtmp', 'docs', 'archive',
+  'Luwi', 'logs', 'shots', 'backups', '.lwtmp', 'docs', 'archive',
   // 历次专题留下的 (归档计划见 archive/README.md)
   'lw-build-alt', 'verify', 'dsha-recon', 'build-jniLibs', 'node_modules', 'dsh-020.git',
   'shizuku',

@@ -32,7 +32,7 @@
 - `channel/LwPrivilegedProcess.kt` / `LwContext.kt` / `LwServiceStarter.kt` — 反射起 `ActivityThread` + system context, 建服务, 交 binder
 - `channel/LwBootstrapProvider.kt` / `LwBootstrapRegistry.kt` — app 侧收 binder 的 ContentProvider, 校验 `callingUid == SHELL_UID || ROOT_UID` + 一次性 token
 - `channel/PrivilegedBridge.kt` — 给 host 用的 loopback socket 服务 (JSON 行协议)
-- `host-plugin/` — dsh 侧插件 (`lw_probe`), 由 `tools/pack-host.mjs` 拷进 host 树的 `node_modules/littlewhale-channel/`
+- `host-plugin/` — dsh 侧插件 (`lw_probe`), 由 `tools/pack-host.mjs` 拷进 host 树的 `node_modules/luwi-channel/`
 - `host/PluginOverlay.kt` — 每次启动 host 写一份 `--patch` 覆盖层, 指向上面那个插件
 
 ## 真机验证 (2026-09-20)
@@ -42,11 +42,11 @@
 ```
 LwBridge  : listening on 127.0.0.1:37617
 DshHost   : dsh web: http://127.0.0.1:3080/?token=… (LAN: http://192.168.1.103:3080/?token=…)
-LwConnector: starting io.github.miuzarte.littlewhale:lw_root as root
-LwLauncher : launcher start: uid=0 process=io.github.miuzarte.littlewhale:lw_root
+LwConnector: starting io.github.yuloong07star.luwi:lw_root as root
+LwLauncher : launcher start: uid=0 process=io.github.yuloong07star.luwi:lw_root
 LwLauncher : exec /system/bin/app_process with CLASSPATH=/data/app/…/base.apk as uid 0
-LwProcess  : created io.github.miuzarte.littlewhale.channel.LwPrivilegedService as uid 0
-LwConnector: io.github.miuzarte.littlewhale:lw_root is up over root
+LwProcess  : created io.github.yuloong07star.luwi.channel.LwPrivilegedService as uid 0
+LwConnector: io.github.yuloong07star.luwi:lw_root is up over root
 LwChannel  : root connected
 ```
 
@@ -82,7 +82,7 @@ touchscreen: /dev/input/event7 "fts" x=[0,10799] y=[0,23999] protocolB=true dire
 ```
 java.lang.SecurityException: Unable to find app for caller
 android.app.IApplicationThread$Stub$Proxy@d946dc9 (pid=654) when getting content provider
-io.github.miuzarte.littlewhale.lw.bootstrap
+io.github.yuloong07star.luwi.lw.bootstrap
   at com.android.server.am.ContentProviderHelper.getContentProviderImpl(ContentProviderHelper.java:199)
 ```
 
@@ -97,7 +97,7 @@ app_process 起的进程**没有 IApplicationThread**, 在 AMS 眼里不是一�
 原来 `RootAccessBackend.isAvailable()` 是查 `/system/bin/su` 存在 —— 在 app 的 uid 下**永远为假**:
 
 ```
-$ adb shell "run-as io.github.miuzarte.littlewhale sh -c 'ls -l /system/bin/su'"
+$ adb shell "run-as io.github.yuloong07star.luwi sh -c 'ls -l /system/bin/su'"
 ls: /system/bin/su: No such file or directory
 ```
 
@@ -105,7 +105,7 @@ ls: /system/bin/su: No such file or directory
 
 结论: **「有没有 root」这件事 app 侧没有任何东西可以查**, 只能试。现在的实现是 `isAvailable()` 恒真、`isGranted()` 用 libsu 的 `Shell.isAppGrantedRoot()` (只读缓存不弹框)、`requestPermission()` 用 `Shell.getShell().isRoot` (这一步才会让 root manager 弹框 / 或直接失败)
 
-首次授权需要**用户在 KernelSU 里给 LittleWhale 开一次** (这台设备上 sucompat 没开, 所以 app 自己的尝试不会弹框)。授权之后本轮所有验证都过了
+首次授权需要**用户在 KernelSU 里给 Luwi 开一次** (这台设备上 sucompat 没开, 所以 app 自己的尝试不会弹框)。授权之后本轮所有验证都过了
 
 ### 3 `--patch` 必须排在 web app 自己的旗标前面
 

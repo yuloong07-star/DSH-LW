@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22.1)
 
 # C++ 是给 glmasr 那一份: 它把 llama.cpp 与 mtmd 静态链进来 (见 glmasr/CMakeLists.txt)
-project(littlewhale_native C CXX)
+project(luwi_native C CXX)
 
 # The launcher is an executable that ships as a native library: Android 10 refuses to execute a
 # file in the app's data directory, while anything unpacked into nativeLibraryDir is executable

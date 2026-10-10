@@ -26,11 +26,11 @@ import { readFile } from 'node:fs/promises'
 
 const plugin = await readFile(new URL('../host-plugin/index.mjs', import.meta.url), 'utf8')
 const commands = await readFile(
-  new URL('../app/src/main/java/io/github/miuzarte/littlewhale/voice/VoiceCommands.kt', import.meta.url),
+  new URL('../app/src/main/java/io/github/yuloong07star/luwi/voice/VoiceCommands.kt', import.meta.url),
   'utf8',
 )
 const modes = await readFile(
-  new URL('../app/src/main/java/io/github/miuzarte/littlewhale/channel/LwModes.kt', import.meta.url),
+  new URL('../app/src/main/java/io/github/yuloong07star/luwi/channel/LwModes.kt', import.meta.url),
   'utf8',
 )
 

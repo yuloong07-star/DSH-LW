@@ -1,4 +1,4 @@
-# LittleWhale 改造总计划
+# Luwi 改造总计划
 
 本文是**本次会话涉及的全部改动**的合并计划, 分四部分, 每部分可独立执行、独立验证、独立回退
 
@@ -87,9 +87,9 @@ private boolean validatePackageName(int uid, String packageName) {
 链路:
 
 ```
-LittleWhale (uid 10384) → Shizuku → newProcess() → 特权进程 (uid 2000 = SHELL)
+Luwi (uid 10384) → Shizuku → newProcess() → 特权进程 (uid 2000 = SHELL)
                                                         ↓
-                              createVirtualDisplay(packageName = "io.github.miuzarte.littlewhale")
+                              createVirtualDisplay(packageName = "io.github.yuloong07star.luwi")
                                                         ↓
               getPackagesForUid(2000) = ["com.android.shell"] ≠ 那个包名 → SecurityException
 ```
@@ -196,7 +196,7 @@ $ adb shell dumpsys package com.android.shell | grep -i CAPTURE_VIDEO
 
 | 项 | 结果 |
 | :-- | :-- |
-| 顶栏 | **整条去掉**。`Scaffold` 不再传 `topBar`, 原来那条写 `LittleWhale` 的 `SmallTopAppBar` 连同 `actions` 一起没了 |
+| 顶栏 | **整条去掉**。`Scaffold` 不再传 `topBar`, 原来那条写 `Luwi` 的 `SmallTopAppBar` 连同 `actions` 一起没了 |
 | 菜单入口 | 一枚浮标 (`FloatingBall`), 常驻 |
 | 浮标底色 | `colorScheme.surface` —— **跟着主题走, 不写死白色** |
 | 浮标尺寸 | `BALL_SIZE = 44.dp`, `CircleShape` 裁剪, 2dp 投影 |
@@ -294,7 +294,7 @@ SurfaceFlinger 单独摆一层、**不跟着父节点的变换走**; 给外层�
 
 ## 2.5 验收
 
-- 顶栏不再有 `Tune` 图标, `LittleWhale` 标题也不在了
+- 顶栏不再有 `Tune` 图标, `Luwi` 标题也不在了
 - 浮标可见、可拖、拖到边缘停住
 - 点浮标 → 菜单出来 → 点「设置」→ **能进设置页**
 
@@ -368,7 +368,7 @@ Box(modifier = modifier.fillMaxSize().onSizeChanged { viewport = it }) { … }
 # 第三部分 · 预装 webui 插件 (dsh-web-mobile) (**已落地**)
 
 > **落地方式与原计划不同, 差异记在这里**: 计划写的是"加进依赖声明让它跟其它包一起被 npm 装",
-> 实际做成了**隔离取包 + 拷进树** (与 `littlewhale-channel` / `sharp` 同一个模式)。
+> 实际做成了**隔离取包 + 拷进树** (与 `luwi-channel` / `sharp` 同一个模式)。
 > 原因是依赖声明会把 npm 的 peer 解析拉到**整棵树**上: `dsh-web-mobile` 的 peer 范围接受已发布的
 > 0.1.x 与 0.2.0-rc.1+, 但**不接受本树所基于的那个预发布版 `0.1.5-rc.2`**, 于是整个 install 只能
 > 靠 `--legacy-peer-deps` 才过 —— 为了一个对它毫无需求的包, 去改**整个 dsh 闭包**的解析方式, 不值。
@@ -400,22 +400,22 @@ Box(modifier = modifier.fillMaxSize().onSizeChanged { viewport = it }) { … }
 run('npm', ['install', '--no-audit', '--no-fund', '--package-lock=false', '--omit=optional'], out)
 
 // 然后 cpSync 两个东西进去
-const installed = join(out, 'node_modules', 'littlewhale-channel')
+const installed = join(out, 'node_modules', 'luwi-channel')
 cpSync(plugin, installed, { recursive: true })
 
 const sharpened = join(out, 'node_modules', 'sharp')
 cpSync(imageBackend, sharpened, { recursive: true })
 ```
 
-**关键区别**: `littlewhale-channel` 与 `sharp` 都是**install 之后 cpSync 进去的** (前者不是 npm 依赖, 后者要替换)。
+**关键区别**: `luwi-channel` 与 `sharp` 都是**install 之后 cpSync 进去的** (前者不是 npm 依赖, 后者要替换)。
 而 `dsh-web-mobile` **是 npm 上的正式包**, 应该**加进依赖声明** (上面第 146 行那个 `package.json` 的
 `dependencies`), 让它跟其它包一起被 npm 装。**不要用 cpSync**
 
 **装完还要改 `host/PluginOverlay.kt`**: 它现在只写一行 `insert`:
 
 ```kotlin
-private const val ENTRY = "node_modules/littlewhale-channel/index.mjs"
-private const val ID = "littlewhale-channel"
+private const val ENTRY = "node_modules/luwi-channel/index.mjs"
+private const val ID = "luwi-channel"
 
 fun write(context: Context): File? {
     val entry = File(DshHost.hostRoot(context), ENTRY)
@@ -456,7 +456,7 @@ fun write(context: Context): File? {
 {"title":"升级要面对的事实","gap":12,"items":[{"type":"table","columns":["项","值"],"rows":[["npm latest (目标)","0.2.0-rc.2"],["npm alpha","0.2.1-alpha.1 (更靠前, 但是 alpha)"],["当前 pin (fork)","0.1.5-rc.2"],["fork 落后上游","约 4225 个提交"],["fork 的 sync-upstream workflow","disabled_manually, 最近 10 次定时同步全失败"],["session format","fork 是 V3, 上游是 V4"]]}]}
 ```
 
-**LittleWhale 用的不是官方 npm 包, 是 fork 的源码树。** fork 上有为安卓做的补丁, **上游一条都没合**。
+**Luwi 用的不是官方 npm 包, 是 fork 的源码树。** fork 上有为安卓做的补丁, **上游一条都没合**。
 已知至少两处 (都是安卓 FUSE 上硬链接会失败的地方, fork 加了 `copyFile(..., COPYFILE_EXCL)` 兜底):
 
 - `packages/session-persistence-jsonl/src/index.ts` 的 `await link(tmp, finalPath)`
@@ -518,7 +518,7 @@ fun write(context: Context): File? {
 ## 4.3 怎么做 rebase (可复现)
 
 ```powershell
-cd D:\apk\LittleWhale\third_party\deepseek-harness
+cd D:\apk\Luwi\third_party\deepseek-harness
 git switch -c lw-sync
 git fetch --no-tags --depth=1 https://github.com/deepseek-ai/deepseek-harness.git refs/tags/dsh-v0.2.0-rc.2   # 5 秒
 git rebase --onto FETCH_HEAD c291e7961a
@@ -708,7 +708,7 @@ secure settings** —— 写入只在带 `-i` 重装之后很短的一段窗口�
 
 | 应用 | 包名 | 安装者 | op | 结果 |
 | :-- | :-- | :-- | :-- | :-- |
-| DSH-LW | `io.github.miuzarte.littlewhale` | `com.android.packageinstaller` | `allow` | 留下 |
+| Luwi | `io.github.yuloong07star.luwi` | `com.android.packageinstaller` | `allow` | 留下 |
 | DSHA | `com.dsh.client` | `com.android.packageinstaller` | `allow` | 留下 |
 | UU 远程 | `com.netease.uuremote` | `com.bbk.appstore` | `default` | 被剥 |
 
@@ -720,7 +720,7 @@ secure settings** —— 写入只在带 `-i` 重装之后很短的一段窗口�
 **装机走一条命令, 顺序不能变, 而且要在窗口内跑完**:
 
 ```
-pwsh -File D:\apk\LittleWhale\tools\lw-install.ps1 [-Serial <设备>] [-Perms]
+pwsh -File D:\apk\Luwi\tools\lw-install.ps1 [-Serial <设备>] [-Perms]
 ```
 
 它做六件事: ① 读出现有列表 (设备上还有别人的无障碍服务, 必须读出来改) ② `install -i … -r -t`
@@ -759,7 +759,7 @@ pwsh -File D:\apk\LittleWhale\tools\lw-install.ps1 [-Serial <设备>] [-Perms]
 
 - [ ] `. D:\apk\env.ps1` 已 dot-source
 - [ ] `files/dsh-home` 已备份 (含 credentials 与 sessions)
-- [ ] `git -C D:\apk\LittleWhale status` 干净 (当前 HEAD `cf45649` + 1.0.2 未提交的那批)
+- [ ] `git -C D:\apk\Luwi status` 干净 (当前 HEAD `cf45649` + 1.0.2 未提交的那批)
 - [ ] 确认 submodule pin 仍是 `03745c4c2f`
 - [ ] 确认 Shizuku 在跑 (`ps -A | grep shizuku`)
 - [ ] 确认 DSHA (`com.dsh.client`) **已停**, 否则它占 3080 端口

@@ -20,8 +20,8 @@ const root = new URL('../', import.meta.url)
 const read = (path) => readFile(new URL(path, root), 'utf8')
 
 const plugin = await read('host-plugin/index.mjs')
-const calendar = await read('app/src/main/java/io/github/miuzarte/littlewhale/tool/LwCalendar.kt')
-const quick = await read('app/src/main/java/io/github/miuzarte/littlewhale/tool/LwQuick.kt')
+const calendar = await read('app/src/main/java/io/github/yuloong07star/luwi/tool/LwCalendar.kt')
+const quick = await read('app/src/main/java/io/github/yuloong07star/luwi/tool/LwQuick.kt')
 const gradle = await read('app/build.gradle.kts')
 
 let failures = 0
@@ -88,9 +88,9 @@ check(
 check(
   '两个新工具都挂在桥上 (PrivilegedBridge 有 calendar 与 quick 两条分支)',
   [
-    (await read('app/src/main/java/io/github/miuzarte/littlewhale/channel/PrivilegedBridge.kt'))
+    (await read('app/src/main/java/io/github/yuloong07star/luwi/channel/PrivilegedBridge.kt'))
       .includes('"calendar" -> appContext'),
-    (await read('app/src/main/java/io/github/miuzarte/littlewhale/channel/PrivilegedBridge.kt'))
+    (await read('app/src/main/java/io/github/yuloong07star/luwi/channel/PrivilegedBridge.kt'))
       .includes('"quick" -> appContext'),
   ],
   [true, true],

@@ -1,6 +1,6 @@
 ---
 name: web-search
-description: 本机 (LittleWhale) 的联网查证规范: 什么时候该搜、什么时候别搜、用 dsh 自带的 web_search / web_fetch 怎么取信源、怎么引用。任何"现在怎么样 / 多少钱 / 谁说的 / 有没有这件事"类的问题, 答案不在本机也不在你的记忆里时, 先加载本技能。
+description: 本机 (Luwi) 的联网查证规范: 什么时候该搜、什么时候别搜、用 dsh 自带的 web_search / web_fetch 怎么取信源、怎么引用。任何"现在怎么样 / 多少钱 / 谁说的 / 有没有这件事"类的问题, 答案不在本机也不在你的记忆里时, 先加载本技能。
 ---
 
 # 联网查证 (本机 web_search / web_fetch 版)

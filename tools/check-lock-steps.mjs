@@ -15,18 +15,18 @@ const read = (path) => readFile(new URL(path, root), 'utf8')
 
 const plugin = await read('host-plugin/index.mjs')
 const manifest = await read('app/src/main/AndroidManifest.xml')
-const steps = await read('app/src/main/java/io/github/miuzarte/littlewhale/lock/LockSteps.kt')
-const touch = await read('app/src/main/java/io/github/miuzarte/littlewhale/lock/LockTouch.kt')
-const secret = await read('app/src/main/java/io/github/miuzarte/littlewhale/lock/LockSecret.kt')
-const setting = await read('app/src/main/java/io/github/miuzarte/littlewhale/lock/LockSetting.kt')
-const replay = await read('app/src/main/java/io/github/miuzarte/littlewhale/lock/LockReplay.kt')
-const record = await read('app/src/main/java/io/github/miuzarte/littlewhale/lock/LockRecord.kt')
-const tool = await read('app/src/main/java/io/github/miuzarte/littlewhale/lock/LwLock.kt')
-const recorder = await read('app/src/main/java/io/github/miuzarte/littlewhale/channel/LwTouchRecord.kt')
-const bridge = await read('app/src/main/java/io/github/miuzarte/littlewhale/channel/PrivilegedBridge.kt')
-const service = await read('app/src/main/java/io/github/miuzarte/littlewhale/wake/WakeWordService.kt')
-const script = await read('app/src/main/java/io/github/miuzarte/littlewhale/lock/LockScript.kt')
-const screen = await read('app/src/main/java/io/github/miuzarte/littlewhale/ui/SettingsScreen.kt')
+const steps = await read('app/src/main/java/io/github/yuloong07star/luwi/lock/LockSteps.kt')
+const touch = await read('app/src/main/java/io/github/yuloong07star/luwi/lock/LockTouch.kt')
+const secret = await read('app/src/main/java/io/github/yuloong07star/luwi/lock/LockSecret.kt')
+const setting = await read('app/src/main/java/io/github/yuloong07star/luwi/lock/LockSetting.kt')
+const replay = await read('app/src/main/java/io/github/yuloong07star/luwi/lock/LockReplay.kt')
+const record = await read('app/src/main/java/io/github/yuloong07star/luwi/lock/LockRecord.kt')
+const tool = await read('app/src/main/java/io/github/yuloong07star/luwi/lock/LwLock.kt')
+const recorder = await read('app/src/main/java/io/github/yuloong07star/luwi/channel/LwTouchRecord.kt')
+const bridge = await read('app/src/main/java/io/github/yuloong07star/luwi/channel/PrivilegedBridge.kt')
+const service = await read('app/src/main/java/io/github/yuloong07star/luwi/wake/WakeWordService.kt')
+const script = await read('app/src/main/java/io/github/yuloong07star/luwi/lock/LockScript.kt')
+const screen = await read('app/src/main/java/io/github/yuloong07star/luwi/ui/SettingsScreen.kt')
 const scriptDoc = await readFile(new URL('../docs/lock-script.md', root), 'utf8')
 
 let failures = 0
@@ -179,7 +179,7 @@ check(
 
 check(
   '第三条路要真的能亮: 提到前台那一页带 setTurnScreenOn',
-  (await read('app/src/main/java/io/github/miuzarte/littlewhale/MainActivity.kt')).includes(
+  (await read('app/src/main/java/io/github/yuloong07star/luwi/MainActivity.kt')).includes(
     'setTurnScreenOn(true)',
   ),
   true,

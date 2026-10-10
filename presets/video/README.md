@@ -14,7 +14,7 @@
 
 ## 运行期载体与安装
 
-- 预设声明落在 `<DSH_HOME>/profiles/web/cordis.patch.yml`（`<DSH_HOME>` = `/data/data/io.github.miuzarte.littlewhale/files/dsh-home`），行 id `preset-video`，`config.id = video`，显示名「视频模式」，`order: 6`。
+- 预设声明落在 `<DSH_HOME>/profiles/web/cordis.patch.yml`（`<DSH_HOME>` = `/data/data/io.github.yuloong07star.luwi/files/dsh-home`），行 id `preset-video`，`config.id = video`，显示名「视频模式」，`order: 6`。
 - **2026-10-09 起这一步由应用自己做**（`app/src/main/java/.../host/CustomPresets.kt`）：host spawn 之前把本目录 `cordis.patch.yml` 那段 `- insert:` 按行 id 追加进 profile patch（随 host 树走的那一份在 `lw-presets/video.patch.yml`）；`dsh-hmr` 监听该文件，保存即 reconcile 热生效，不必重启 dsh web（GUI 的预设选择器刷新页面后可见）。手工装仍然可行，但先按行 id 看一眼有没有。
 - 也支持作为 bundle 安装（`dsh.bundle.patch` 已声明）；本机 `plugin_manager install_bundle` 被 `DSHA_NATIVE_PLUGIN_MANAGER` 策略拦截，走既定直改安装范式。
 

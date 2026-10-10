@@ -24,9 +24,9 @@
         <service
             android:name=".CompanionPluginService"
             android:exported="true"
-            android:permission="io.github.miuzarte.littlewhale.permission.PLUGIN">
+            android:permission="io.github.yuloong07star.luwi.permission.PLUGIN">
             <intent-filter>
-                <action android:name="io.github.miuzarte.littlewhale.plugin.BIND" />
+                <action android:name="io.github.yuloong07star.luwi.plugin.BIND" />
             </intent-filter>
         </service>
     </application>

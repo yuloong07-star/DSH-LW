@@ -1,6 +1,6 @@
 # dsh-preset-mobile-use-local（本机版「手机模式」预设）
 
-本目录是 [AcidGr/dsh-preset-mobile-use](https://github.com/AcidGr/dsh-preset-mobile-use)（MIT）设计意图的**本机（LittleWhale Android 构建）适配副本**：同样是一个让 DSH 在**后台虚拟屏静默操机**的 Agent 预设，但后端从上游的 KSU 内核模块 `vd_server@127.0.0.1:3070` 换成 **LittleWhale 原生 `lw_*` 通道**（本机无 root，3070 实测 `ECONNREFUSED`），规则正文换成本机工作区 `AGENTS.md` 的操作规范 + 技能 `android-device-control` + 主人 2026-10-04 的授权。
+本目录是 [AcidGr/dsh-preset-mobile-use](https://github.com/AcidGr/dsh-preset-mobile-use)（MIT）设计意图的**本机（Luwi Android 构建）适配副本**：同样是一个让 DSH 在**后台虚拟屏静默操机**的 Agent 预设，但后端从上游的 KSU 内核模块 `vd_server@127.0.0.1:3070` 换成 **Luwi 原生 `lw_*` 通道**（本机无 root，3070 实测 `ECONNREFUSED`），规则正文换成本机工作区 `AGENTS.md` 的操作规范 + 技能 `android-device-control` + 主人 2026-10-04 的授权。
 
 ## 与上游的差异
 
@@ -8,7 +8,7 @@
 |---|---|---|
 | 后端 | KSU/APatch/Magisk 模块 `agent-mobile-use`，`vd_server@127.0.0.1:3070` | 原生 `lw_*`：`lw_probe / lw_apps / lw_screen* / lw_launch / lw_ui / lw_ocr / lw_screenshot / lw_tap / lw_swipe / lw_type / lw_key` |
 | 前提 | Root + Xposed/LSPosed，Android 15/16 | 无需 root；只需在手机 App 内授予设备能力（特权通道） |
-| 工具 | 自研统一工具 `mobile`（observe/click/swipe/set_value/key/wait/launch_app/list_apps/switch_mode） | 无自研插件；能力由 host 层 `littlewhale-channel` 的 `lw_*` 提供，任何预设都可见 |
+| 工具 | 自研统一工具 `mobile`（observe/click/swipe/set_value/key/wait/launch_app/list_apps/switch_mode） | 无自研插件；能力由 host 层 `luwi-channel` 的 `lw_*` 提供，任何预设都可见 |
 | 安装 | `./install.sh` → `${DSH_HOME}/.agent-presets/mobile-use/` | 本版 DSH 已不读 `.agent-presets/`；改由 profile patch 的 preset 声明行挂载（见下） |
 | 模式 | Foreground / Background / Idle 三态（含触控光标） | 虚拟屏优先、display 0 例外条款；不设三态切换 |
 | 感知 | 扁平控件元素列表 + JPEG 快照双模 | `lw_ui` 优先（精确文本+坐标），`lw_ocr` 兜底，**`lw_screenshot` 作验证** |
@@ -18,7 +18,7 @@
 
 运行期以 **profile patch** 为准，本目录只是可分享副本，两者需同步：
 
-- 预设声明落在 `<DSH_HOME>/profiles/web/cordis.patch.yml`（`<DSH_HOME>` = `/data/data/io.github.miuzarte.littlewhale/files/dsh-home`）末尾的 `- insert:` 段，行 id `preset-mobile-use`，`config.id = mobile-use`，显示名「手机模式」，`order: 5`。
+- 预设声明落在 `<DSH_HOME>/profiles/web/cordis.patch.yml`（`<DSH_HOME>` = `/data/data/io.github.yuloong07star.luwi/files/dsh-home`）末尾的 `- insert:` 段，行 id `preset-mobile-use`，`config.id = mobile-use`，显示名「手机模式」，`order: 5`。
 - **2026-10-09 起这一步由应用自己做**（`app/src/main/java/.../host/CustomPresets.kt`）：host spawn 之前把本目录 `cordis.patch.yml` 开头那段 `- insert:` 按行 id 追加进 profile patch（随 host 树走的那一份在 `lw-presets/mobile-use.patch.yml`），`dsh-hmr` 监听该文件，保存即 `reconcileProfilePatches` 热生效，**不必重启 dsh web**。手工装仍然可行，但先按行 id 看一眼有没有，免得重复追加。
 - 也支持作为 bundle 安装（`dsh.bundle.patch` 已声明）：本机 `plugin_manager install_bundle` 被 `DSHA_NATIVE_PLUGIN_MANAGER` 策略拦截，走既定直改安装范式（拷包 → `profiles/web/node_modules` 软链 → `package.json` 的 dependencies 与 `dsh.profile.bundles`）。
 

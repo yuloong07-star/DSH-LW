@@ -1,4 +1,4 @@
-# LittleWhale
+# Luwi
 
 把 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) 搬到安卓上的项目, 用 Miuix 界面库, 自建虚拟屏来控制应用, 把屏幕能力做成 dsh 原生工具交给模型
 
@@ -28,7 +28,7 @@ dsh 以 **git submodule** 挂在 `third_party/deepseek-harness/`, 指向 `https:
 
 ## 架构
 
-LittleWhale 自己是一台**远程 dsh 服务器 + 一个安卓控制端**, 两件事共用一个进程:
+Luwi 自己是一台**远程 dsh 服务器 + 一个安卓控制端**, 两件事共用一个进程:
 
 1. **dsh host** — APK 里的 Node 跑 dsh, 监听回环地址, 界面是它的 Web GUI (装进 WebView)
 2. **安卓控制端** — Miuix 界面 + Shizuku / root 特权通道 + 自建虚拟屏, 把屏幕与输入能力做成 dsh 原生工具交给模型
@@ -39,7 +39,7 @@ LittleWhale 自己是一台**远程 dsh 服务器 + 一个安卓控制端**, 两
 
 dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器访问** (主题与字号存浏览器 `localStorage`, 手机与 PC 各一套), 移植时**不要把这些改动弄丢**
 
-**监听地址没有写死 `127.0.0.1`**: 局域网开关 (`HostSettings.lanAccess`) 让 host 以 `--host 0.0.0.0 --allow-lan` 启动 (fork 加的第二个旗标, 安全默认一个字没变), 别的设备用浏览器打开 LAN URL; `DshHost.remoteUrl` 从就绪行的 `(LAN: …)` 后缀里取 URL, **不自己枚举网卡**, 这样显示的地址与 host 认的 browser-trust 栅栏是同一个 (**2026-10-06 起设置页没有那个开关了**, 改它要写 `littlewhale.xml` 再重启 host, 见下面「界面」那一条)
+**监听地址没有写死 `127.0.0.1`**: 局域网开关 (`HostSettings.lanAccess`) 让 host 以 `--host 0.0.0.0 --allow-lan` 启动 (fork 加的第二个旗标, 安全默认一个字没变), 别的设备用浏览器打开 LAN URL; `DshHost.remoteUrl` 从就绪行的 `(LAN: …)` 后缀里取 URL, **不自己枚举网卡**, 这样显示的地址与 host 认的 browser-trust 栅栏是同一个 (**2026-10-06 起设置页没有那个开关了**, 改它要写 `luwi.xml` 再重启 host, 见下面「界面」那一条)
 
 **安卓侧两个已知的坑**: `os.cpus().length` 返回 **0**, dsh 里任何按 CPU 数并行的地方都要能容忍 0; 随包发的 node 有一批**写死的 Termux 路径**, `OPENSSL_CONF` / `SHELL` / `TMPDIR` 三个少一个都起不来 (见 `docs/host-build.md`)
 
@@ -156,7 +156,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 - **buffer 要等于屏的尺寸** (`holder.setFixedSize(w, h)`): 合成器不缩放, buffer 小一圈就是**裁掉左上角**; 视图再按屏的宽高比撑高, 缩放是 surface 的事。盒子高度 = `min(宽度 * 0.75, 宽度 * 屏高 / 屏宽)` (竖屏最多 4:3, 横屏按短边收)
 - **换屏要换 SurfaceView** (`key(displayId)`): 复用同一个 surface 时旧 buffer 留着上一块屏的最后一帧, 而**空屏不产生新帧把它顶掉**
-- **`screencap -d` 要 compositor 的 64 位 id, 不是逻辑 displayId**, 只能按**屏名**从 `dumpsys SurfaceFlinger --display-id` 里找 (所以屏名唯一: `LittleWhale 1` / `2`), 而且它是无符号 64 位, **别进整数**
+- **`screencap -d` 要 compositor 的 64 位 id, 不是逻辑 displayId**, 只能按**屏名**从 `dumpsys SurfaceFlinger --display-id` 里找 (所以屏名唯一: `Luwi 1` / `2`), 而且它是无符号 64 位, **别进整数**
 - 屏的 `ownerUid` 是 **0** 而 `ownerPackageName` 是我们的包名, `canHostTasks` 报 `false`, 但 `am start --display <id>` 照样起 activity 并正常渲染
 - **触摸要排队**: 手比跨进程快, 同步注入会让 move 超过它所属的 down 被平台丢掉, 用一条单线程队列串起来
 - **一块屏可以被换成别的形状**: `lw_screen_resize` 与它的别名 `lw_screen_rotate` (宽高对调) → `DISPLAY_RESIZE` → `VirtualDisplay.resize`。**尺寸就是应用拿到的那份配置** —— 只会横屏的游戏要的是一块横屏的屏, 转画面是转不出来的; 应用**不会因为屏换了形状就重排** (跟着屏走的铺满, 声明了方向的原样留一条带子居中), 所以"建屏时就把形状定对"对锁方向的应用是真要紧的。两个实现细节: 预览要按新尺寸重新 `setFixedSize` (buffer 不跟着换就挨裁); **换完尺寸再拍的第一张图是换之前那一帧**, 所以 app 侧按 PNG 宽高重拍到对上为止 (实测第二次就对)
@@ -239,7 +239,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 
 **这块还没做完的**: 设置页没有引擎开关 (现在只有插件常量与 `engine=` 参数); 1.6 GB 的下载不能续传, 而且**没从零下过一次** (测试那次是两个 GGUF 直接从 adb push 进 `speech-models/glm-asr/` 的, 手机侧的通路另验过: 同一个 URL 4 MB/1.5 s、16 MB/1.9 s); GUI 那个录音按钮的整链还要人按一次才算验过 —— **2026-10-09 那个按钮改成 SenseVoice 之后这一条要在真机上重验** (下 240 MB 那一份, 然后按一次按钮出字)
 
-**另外**: `:app:packHostTree` 在 2026-10-06 升级到 dsh 0.2.1-alpha.1 时坏过一次, 报 `[@deepseek-ai/dsh-root] Cannot find entry: ["lib/types/{index,startup}.js"]` —— **真因不在根包**: 0.2.1 删掉了 `packages/experimental/schedule-bundle` 与 `packages/runtime-diagnostics/invariants` 两个包, 而升级只删文件、留下带 `node_modules` 的空目录; tsdown 的工作区 glob (`packages/*/*` / `vendor/*`) 会把**没有 `package.json` 的目录**当成成员, 读不到 manifest 就向上读到**仓库根**的 manifest, 于是拿根包的名字与根包的入口去解析, 才找不到。两条修法都已落地: 删掉那两个空壳目录 (里面只有被忽略的 `node_modules`), 以及 `tools/pack-host.mjs` 现在会在官方构建之前 `dropOrphanPackages()` 把这类没有 manifest 的包目录清掉。**只换插件、不重打树的绕法** (把 `host-plugin/index.mjs` 直接换进 `app/build/host-tree/node_modules/littlewhale-channel/`, 再用 `-x packHostTree` 出包) 只够插件改动: **升 dsh 本体必须让 `packHostTree` 真的跑通**, 否则 APK 里带的还是上一次打出来的旧树
+**另外**: `:app:packHostTree` 在 2026-10-06 升级到 dsh 0.2.1-alpha.1 时坏过一次, 报 `[@deepseek-ai/dsh-root] Cannot find entry: ["lib/types/{index,startup}.js"]` —— **真因不在根包**: 0.2.1 删掉了 `packages/experimental/schedule-bundle` 与 `packages/runtime-diagnostics/invariants` 两个包, 而升级只删文件、留下带 `node_modules` 的空目录; tsdown 的工作区 glob (`packages/*/*` / `vendor/*`) 会把**没有 `package.json` 的目录**当成成员, 读不到 manifest 就向上读到**仓库根**的 manifest, 于是拿根包的名字与根包的入口去解析, 才找不到。两条修法都已落地: 删掉那两个空壳目录 (里面只有被忽略的 `node_modules`), 以及 `tools/pack-host.mjs` 现在会在官方构建之前 `dropOrphanPackages()` 把这类没有 manifest 的包目录清掉。**只换插件、不重打树的绕法** (把 `host-plugin/index.mjs` 直接换进 `app/build/host-tree/node_modules/luwi-channel/`, 再用 `-x packHostTree` 出包) 只够插件改动: **升 dsh 本体必须让 `packHostTree` 真的跑通**, 否则 APK 里带的还是上一次打出来的旧树
 
 ## 无障碍读屏
 
@@ -285,7 +285,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
   **所以 `LwPermission.setNotificationListener` 先走那条命令, 直写名单只当退路** (没有那条命令的
   设备), 而两者都以名单读回为准
 - **首次授权要系统那个确认框**: 一个从没被允许过的应用, 命令/直写都可能不被采纳 —— 那时正解是在
-  设置页「通知」那一段的入口里打开 DSH-LW 并点「允许」。这一段有两个 `ArrowPreference` (通知使用权 /
+  设置页「通知」那一段的入口里打开 Luwi 并点「允许」。这一段有两个 `ArrowPreference` (通知使用权 /
   全屏通知), 它们的 `startActivity` 都带**退到应用详情页**的回退 —— 那一页在个别 ROM 上没有接收者,
   而点击换来的崩溃最不该有
 - **读写都要读出来改**: 那个名单是与别的应用共用的 (模拟器上本来就有 Google 的 AiAi 与 Launcher3
@@ -395,7 +395,7 @@ dsh 这个 fork 的定位也是**部署在远程服务器上, 从任意浏览器
 ctx.on('approval/request', (_request, _next) => Promise.resolve('allowed-once'), { prepend: true })
 ```
 
-理由: 要控制主屏时 LittleWhale 自己在后台, 用户看不到也点不了审批框, 走 `ask` 的结果不是"更安全", 而是**每次点击都卡在那直到超时/取消**。**`prepend: true` 是必须的**: 覆盖层是最后挂上去的, 不加就是链尾, 而浏览器侧那个 `ui-approval` 面板只要有人开着网页端就会先答 —— 于是"全放行"静默变成"每次都问人"。**审批面板就在 app 内的 WebView 里**, 所以 `prepend` 等于放弃了"人在的时候问人"这条路 (要恢复就把 `prepend: true` 去掉)
+理由: 要控制主屏时 Luwi 自己在后台, 用户看不到也点不了审批框, 走 `ask` 的结果不是"更安全", 而是**每次点击都卡在那直到超时/取消**。**`prepend: true` 是必须的**: 覆盖层是最后挂上去的, 不加就是链尾, 而浏览器侧那个 `ui-approval` 面板只要有人开着网页端就会先答 —— 于是"全放行"静默变成"每次都问人"。**审批面板就在 app 内的 WebView 里**, 所以 `prepend` 等于放弃了"人在的时候问人"这条路 (要恢复就把 `prepend: true` 去掉)
 
 要记住的两个:
 
@@ -406,12 +406,12 @@ ctx.on('approval/request', (_request, _next) => Promise.resolve('allowed-once'),
 
 **先写 dsh 原生工具, 不要先写 MCP**: dsh 仓库里只有 `packages/mcp/mcp-client` —— 它是 MCP **客户端**, 自己写 server 等于新造一套协议再设法接进来; 而原生工具直接就有审批 / UI 呈现 / PTC 模式
 
-**加载路径是 `--patch` 覆盖层**: 插件源在 `host-plugin/index.mjs` (纯 ESM, 用 `@deepseek-ai/dsh-tools` 的 `defineTool`), 由 `tools/pack-host.mjs` 装进 host 树的 `node_modules/littlewhale-channel`, app 每次启动 host 时写一份 overlay 指过去 (`host/PluginOverlay.kt`) —— profile 目录因此仍是用户自己的
+**加载路径是 `--patch` 覆盖层**: 插件源在 `host-plugin/index.mjs` (纯 ESM, 用 `@deepseek-ai/dsh-tools` 的 `defineTool`), 由 `tools/pack-host.mjs` 装进 host 树的 `node_modules/luwi-channel`, app 每次启动 host 时写一份 overlay 指过去 (`host/PluginOverlay.kt`) —— profile 目录因此仍是用户自己的
 
 一个插件就是一个 ESM 模块, 导出 `name` / `inject` / `apply`:
 
 ```js
-export const name = 'littlewhale-channel'
+export const name = 'luwi-channel'
 export const inject = ['tools']            // 等 tools 服务就绪再 apply
 export function apply(ctx) {
   ctx.tools.register(defineTool({
@@ -552,8 +552,8 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
   `$DSH_HOME/dsh-imagegen/templates/`; 客户端那一半的名字出现在首页那份模块表里:
   `plugins/??…@dickpy/dsh-imagegen/client.js…`)、没有任何 `did not activate`。应用那一侧单独验过:
   一条 `gallery` 桥调用把 `/sdcard/DSH/screenshots/screen-0.png` 放进相册 —— 文件落在
-  `/sdcard/Pictures/DSH-LW/`, 媒体库读出 `_display_name=lw-gallery-test.png` 带
-  `relative_path=Pictures/DSH-LW/`, 而且**真的弹起来了** (`Displayed
+  `/sdcard/Pictures/Luwi/`, 媒体库读出 `_display_name=lw-gallery-test.png` 带
+  `relative_path=Pictures/Luwi/`, 而且**真的弹起来了** (`Displayed
   com.google.android.apps.photos/.pager.HostPhotoPagerActivity`); 大预算的 `screenshot` 回的
   `fullPath` 是 1080x2400、`scale 1.0` 那一份 (没走"给模型看的预算"), 正是 `op=ref` 要的
 - **没验的**: 真机上从"说一句话"到"相册里多一张图"的**整链** (要一个配好渠道与密钥的 image API);
@@ -561,7 +561,7 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
   "在模块表里、首页能起来")
 - **这一批随 2.5.0 一起发了** (2026-10-08): `versionCode 7 / versionName "2.5.0"`, 干净构建
   225,777,526 字节 (215.3 MiB), `tools/apk-bytes.py` 量出最大无归属区间 4,098 字节; 发在
-  `yuloong07-star/DSH-LW` 的 `v2.5.0` (Release 正文在 `docs/DSH-LW-2.5.0-release-notes.md`)
+  `yuloong07-star/Luwi` 的 `v2.5.0` (Release 正文在 `docs/DSH-LW-2.5.0-release-notes.md`)
 - **挂插件要往两张表里各加一行** (2026-10-08 在真机上踩的): `PluginOverlay` 里 `PLUGINS` 与
   `OWN_PLUGINS` 是并列的两张表 —— 官方语音 bundle 关着走前者, 开着走后者。`imagegen` 只加进前者时,
   在这台**开着 bundle 的手机**上它根本不挂 (`lw_image` 在、`edit_image` 不在), 而模拟器上 bundle 关着,
@@ -569,7 +569,7 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
 
 ## LW 插件 (2026-10-08, 批次 9 的 P0 / P1 → 2.5.1)
 
-让第三方 (包括只做美术的人) **不重编 LittleWhale** 就给这台手机加能力那一层。协议正文在
+让第三方 (包括只做美术的人) **不重编 Luwi** 就给这台手机加能力那一层。协议正文在
 `D:\apk\docs\LW-软件插件协议.md` (冻结版; 决策记录是同一目录的 `-讨论稿`), 施工单在
 `D:\apk\docs\DSH-LW-2.5.0-批次9-开发计划.md`
 
@@ -623,7 +623,7 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
   (`:app:clean` 之后全量 `assembleDebug`) 225,980,634 字节 (215.5 MiB), sha256
   `659902c6052d7e273c1c1ed353c13f3255466f598c9151cf0ad56a80938117be`; `tools/apk-bytes.py` 量出最大
   无归属区间 4,098 字节 (同一份源码增量构建是 308.2 MB, 差出来的 90 MB 全是没人认领的字节); 发在
-  `yuloong07-star/DSH-LW` 的 `v2.6.0` (Release 正文在工作区 `docs\DSH-LW-2.6.0-release-notes.md`)。
+  `yuloong07-star/Luwi` 的 `v2.6.0` (Release 正文在工作区 `docs\DSH-LW-2.6.0-release-notes.md`)。
   同一批里还有: **「正在想」那份文件说了算** (`lw/ball-phase.json` + inotify)、**球上手势的防误触档**、
   **输入框幂等** (三击两次不再叠两块)、**双击回复回到"你发话的那一场"**、**语音输入缺省统一到 SenseVoice**
   (GUI 那个录音按钮不再替人下 1.6 GB 的 GLM, 官方 bundle 那个在安卓上永远失败的 provider 被按 id 关掉)、
@@ -633,8 +633,8 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
   通知使用权 listed+running+granted+banners, 悬浮窗已允许, GUI `rootChildren: 1` (htmlLength 930,168),
   系统 TTS 一条 14 字念完 (`spoken: true` "the engine finished") —— 而**这一版最要紧的一条是插件整链**:
   宿主起来时自己报 `plugin tools now hello_ping, hello_battery, hello_ask`, `lw_plugin op=list` 回
-  "你好伴侣 1.0.0 [io.github.miuzarte.littlewhale.sample.companion] —— 在岗, 前缀 hello_, 授权 1/3",
-  调 `hello_ping` 由**伴侣 APK 自己回话** ("我住在 …plugins/io.github.miuzarte.littlewhale.sample.companion/1.0.0,
+  "你好伴侣 1.0.0 [io.github.yuloong07star.luwi.sample.companion] —— 在岗, 前缀 hello_, 授权 1/3",
+  调 `hello_ping` 由**伴侣 APK 自己回话** ("我住在 …plugins/io.github.yuloong07star.luwi.sample.companion/1.0.0,
   对面的 LW 是 2.6.0, 拿到的授权有 device.read") —— 也就是 host 插件 → 通道 → binder → 伴侣这一条全通。
   **这一轮没验的**: 特权通道在模拟器上没起来 (Shizuku 13.6 装了但没跑, 模拟器没有 root, 而它的 starter
   要在界面里点一次), 所以 OCR / 虚拟屏 / 输入那几条这一轮没跑; 真机 `OJZD5D6TMNSKFYHM` 这一轮掉线了,
@@ -642,7 +642,7 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
 - **2.6.5 (2026-10-09 收口): 唤醒那一摊整批** —— `versionCode 9 / versionName "2.6.5"`, 干净构建
   (`:app:clean` 之后全量 `assembleDebug`) 226,243,234 字节 (215.8 MiB), sha256
   `2b89e2c8d870d8b33bad724fedfce564fbe3b6d0af88acaa48bede907e8569e7`; `tools/apk-bytes.py` 最大无归属
-  区间 4,098 字节 (与 2.6.0 那份干净包同一个量级); 发在 `yuloong07-star/DSH-LW` 的 `v2.6.5`
+  区间 4,098 字节 (与 2.6.0 那份干净包同一个量级); 发在 `yuloong07-star/Luwi` 的 `v2.6.5`
   (Release 正文在工作区 `docs\DSH-LW-2.6.5-release-notes.md`)。内容: **内置 custom 预设随包安装**
   (`presets/custom-mode/` vendored + `host/CustomPresets.kt`, 新机开箱就有「自定义模式」) 与
   **语音开新会话的预设回退** (`chooseVoicePreset`); **唤醒召回** (`wake/WakeTuning.kt` 四个参数
@@ -652,6 +652,23 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
   修的是"她自己的回答被录回去又投成一句话"); **球的状态优先级改成「在想 > 在念 > 在听 > 失败」**
   (互相打断, 只改显示与双击打断打谁, 不动任务); **说完一句就收窗** (投出去之后上限 0.3 s、不挂起、
   人声照旧续期, 看门狗节拍 2 s → 0.5 s); **自动指令的冷却由主人自己定** (新建时选 + 管理里直改)
+
+**插件第二批 (2026-10-10, 未发版)**: 两件事一起落的, 协议一个字没动
+
+- **鲸鱼娘桌面小组件** (`samples/whale-widget/`, 模块 `:sample-whale-widget`): 协议第 10.4 节那条
+  "桌面组件只能由伴侣 APK 声明"的实物。**动的是启动器那一侧** —— 交出去的是一台
+  `ViewFlipper` (`android:autoStart`), 里面一张一帧, 伴侣不常驻任何进程。三条读数定下了这条路:
+  动态 GIF 交给 `setImageResource` **不解** (`AnimatedImageDrawable` 那条链没走通),
+  `<animation-list>` 也不动 (`gfxinfo` 三秒停在 56 帧), 只有 `ViewFlipper` 那条在动 (56 → 364)。
+  **导入一份 GIF** 落在 `filesDir/whale-imports/<键>/` (原始文件 + 解出来的逐帧图), 帧走内容 URI
+  交给宿主 (位图过 binder 会撞 1 MB 上限), 读权限由 `grantFramesToHosts` 放给"现在正在当桌面"的
+  那几个应用 —— 少放一次桌面那格就是「Can't load widget」, 而**找"谁是桌面"那一步还需要清单里
+  一段 `<queries>`** (targetSdk 33 起不声明就看不见别的包, 那一段没了是静默失败)。随包只留主人给的
+  那一套 (`art/dance-1.gif` → `tools/build-assets.py` 抽 32 帧), 新动作由用户自己导
+- **应用对应的技能**: 随包那份目录在 `app-skills/` (`catalog.json` 一行 + 每个技能一份 `SKILL.md`),
+  设置页多了「技能」一段, 桥多了 `skill` 方法 (`op=scan` / `op=install`)。落点是
+  `$DSH_HOME/skills/`, **只加不改** (已经在的那一份一个字节都不动); 点名装 (`skills:[…]`) 时
+  **不要求那个应用在场**, 不带点名才是"按这台机器上装了的应用来"
 
 ## 工作区与存储
 
@@ -707,7 +724,7 @@ node --import tsx/esm apps/cli/src/bin.ts --profile headless --patch <overlay.ym
 | 出 APK (**提交前必跑**) | `.\gradlew.bat :app:assembleDebug` |
 | 装到设备 | `.\gradlew.bat :app:installDebug` |
 | 看当前引擎解析出的版本 | `.\gradlew.bat :app:dependencies --configuration debugRuntimeClasspath` |
-| 拉日志 | `adb logcat --pid=$(adb shell pidof -s io.github.miuzarte.littlewhale)` |
+| 拉日志 | `adb logcat --pid=$(adb shell pidof -s io.github.yuloong07star.luwi)` |
 
 真机: `adb connect 192.168.1.103:5555`; submodule: `git submodule update --init --recursive` (新克隆后) / `git submodule update --remote third_party/deepseek-harness` (升级 dsh)
 
@@ -728,7 +745,7 @@ git -C third_party\deepseek-harness apply (Resolve-Path build\lw-dsh-patches.dif
 node tools\pack-host.mjs --dsh third_party\deepseek-harness --out build\host-tree
 # 3. 推进 app 沙盒, 重启 app, 看两个 tag
 node tools\push-host.mjs build\host-tree
-adb shell am start -S -W -n io.github.miuzarte.littlewhale/.MainActivity
+adb shell am start -S -W -n io.github.yuloong07star.luwi/.MainActivity
 adb logcat -d -s DshHost -s DshWebView
 ```
 
@@ -753,8 +770,8 @@ adb logcat -d -s DshHost -s DshWebView
 (2026-10-04 实测: 五个 github.com 的 IP 全部超时, 换 HTTP/1.1 一样, 没有 IPv6, 本机也没有代理端口)。
 三条路:
 
-1. **SSH 走 443 是通的** (`ssh://git@ssh.github.com:443/yuloong07-star/DSH-LW.git`), 但本机那把
-   `id_rsa` 属于**另一个账号** (`Yuloong07`), 对 `yuloong07-star/DSH-LW` 没有写权限; 而 GitHub 的 SSH
+1. **SSH 走 443 是通的** (`ssh://git@ssh.github.com:443/yuloong07-star/Luwi.git`), 但本机那把
+   `id_rsa` 属于**另一个账号** (`Yuloong07`), 对 `yuloong07-star/Luwi` 没有写权限; 而 GitHub 的 SSH
    **不允许端口转发** (`-L` / `-D` 一起来就关), 所以拿它当隧道也不行
 2. **用 API 重放提交** (这次用的就是这条): `tools/lw-api-push.ps1` 上传 blob → 按 `base_tree` 建 tree →
    建 commit → **最后才移动 ref**, 而且**每一个对象都与本地算出的 SHA 逐个比对**, 全对才动 ref
@@ -773,7 +790,7 @@ SHA 就变 —— 所以脚本先按原样送, 不一致再去掉一个换行重
 ```sh
 adb push app/build/outputs/apk/debug/app-debug.apk /data/local/tmp/lw.apk
 adb shell "su -c 'pm install -r /data/local/tmp/lw.apk'"   # root 的 pm 绕过 adb 安装那套授权交互
-adb shell "pm list packages | grep littlewhale"            # 确认
+adb shell "pm list packages | grep luwi"            # 确认
 adb shell "su -c 'rm -f /data/local/tmp/lw.apk'"           # 清理
 ```
 

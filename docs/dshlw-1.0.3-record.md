@@ -1,11 +1,11 @@
-DSH-LW 1.0.3 开发计划
+Luwi 1.0.3 开发计划
 =====================
 
-基线: `dshlw/main` = `e81cfde` (1.0.2 发布点 `a431c77` + 那条通知修复), versionCode 2 / versionName "1.0.2"
+基线: `luwi/main` = `e81cfde` (1.0.2 发布点 `a431c77` + 那条通知修复), versionCode 2 / versionName "1.0.2"
 目标: versionCode 3 / versionName "1.0.3" (D1 已定)
 主体: 先把「跑得起来」变成「用得下去」(草稿里那几处硬伤), 再补齐 1.0.2 欠下的四/五级能力
 
-**补丁已经上传到远端** (D5 已定): `dshlw/main` 到 `e81cfde`, 另有一条 `dshlw/patch/scroll-and-shell` = `cf5db194`, 六个提交 (scroll 三个 + shell 三个)。所以批次 0.3 是**落地**而不是重写
+**补丁已经上传到远端** (D5 已定): `luwi/main` 到 `e81cfde`, 另有一条 `luwi/patch/scroll-and-shell` = `cf5db194`, 六个提交 (scroll 三个 + shell 三个)。所以批次 0.3 是**落地**而不是重写
 
 **这份是计划, 也是执行回执**。每一批独立提交、独立验证、独立回退
 
@@ -107,10 +107,10 @@ DSH-LW 1.0.3 开发计划
 
 | 项 | 结果 |
 | :-- | :-- |
-| 没授权时 `lw_notifications op=list` | 被拒: "this app is not in the device's list of notification listeners. Turn it on in DSH-LW's own Settings -> 通知…" |
+| 没授权时 `lw_notifications op=list` | 被拒: "this app is not in the device's list of notification listeners. Turn it on in Luwi's own Settings -> 通知…" |
 | `lw_probe` 的 notifications 块 | 授权前 `listed/running/granted` 三个都 false 且理由是"不在名单里"; 授权后三个都 true 且理由带横幅那一句 |
 | 直写名单 (读出来改, 保留别人的两条) | 名单里有了, **而系统不认** —— `running: false`, 页面把它列在 Not allowed |
-| 系统那页走一遍 (打开 DSH-LW → 开关 → 确认框 Allow) | 系统随后认了: `Allowed notification listeners` 里有它, 我们的 `running/granted` 都变 true |
+| 系统那页走一遍 (打开 Luwi → 开关 → 确认框 Allow) | 系统随后认了: `Allowed notification listeners` 里有它, 我们的 `running/granted` 都变 true |
 | `cmd notification disallow_listener` / `allow_listener` | 双向都对: disallow 后 `running: false` (服务真解绑), allow 后 `running: true` |
 | 设置页那个开关 (双向) | 关: 名单里少一个 + 日志 `disconnected` + probe `running: false` + 开关变灰; 开: 名单里回来 + `connected` + 开关点亮。**别人的两条监听一直在** |
 | `op=list` 的格式 | 一行一条, 开头就是 key, 带应用 / 重要度与渠道 / 能不能清 / 标题正文 / 多久之前 |
@@ -290,7 +290,7 @@ $ node tools/check-host-plugin.mjs
 
 | 来源 | 是什么 |
 | :-- | :-- |
-| GitHub 草稿 | repo `yuloong07-star/DSH-LW` 的 draft release (id `402942831`, 标题 `DSH-LW 1.1.0 (开发中)`, 未打 tag)。内容 = 真机上用下来踩的 17 条坎 + 8 条建议 + 已经写好的补丁 + 还没验的 |
+| GitHub 草稿 | repo `yuloong07-star/Luwi` 的 draft release (id `402942831`, 标题 `Luwi 1.1.0 (开发中)`, 未打 tag)。内容 = 真机上用下来踩的 17 条坎 + 8 条建议 + 已经写好的补丁 + 还没验的 |
 | 1.0.2 的承诺 | `D:\apk\DSH-LW-1.0.2-版本目标.txt` 第四节「不做的事 (1.0.3)」, 这是上一版对着用户写的欠条 |
 | 代码现状 | 本仓库实测 (见第 1 节), 用来判断哪些要新写、哪些已经有补丁可以落地 |
 
@@ -302,12 +302,12 @@ $ node tools/check-host-plugin.mjs
 
 | # | 事实 | 证据 |
 | :-- | :-- | :-- |
-| 1 | 本地 `main` 停在 1.0.2 发布点, 远端已经往前走了一个提交 | 本地 `git log --oneline -1` = `a431c77`; `dshlw/main` = `e81cfde`; `app/build.gradle.kts:88-89` = `versionCode 2` / `versionName "1.0.2"` |
-| 2 | 草稿里的补丁**现在都在远端**, 但混在同一条分支上: `e81cfde` (通知) 已在 `main`, `patch/scroll-and-shell` 里 `a3c3072` / `c2907c0` / `4673c1b` 是滚动, `a3f52e0` / `1ac2f3b` / `cf5db19` 是 shell | `git ls-remote --heads dshlw` + `git log --oneline e81cfde..dshlw/patch/scroll-and-shell`; 整支 diff = 5 文件 / +232 行 |
+| 1 | 本地 `main` 停在 1.0.2 发布点, 远端已经往前走了一个提交 | 本地 `git log --oneline -1` = `a431c77`; `luwi/main` = `e81cfde`; `app/build.gradle.kts:88-89` = `versionCode 2` / `versionName "1.0.2"` |
+| 2 | 草稿里的补丁**现在都在远端**, 但混在同一条分支上: `e81cfde` (通知) 已在 `main`, `patch/scroll-and-shell` 里 `a3c3072` / `c2907c0` / `4673c1b` 是滚动, `a3f52e0` / `1ac2f3b` / `cf5db19` 是 shell | `git ls-remote --heads luwi` + `git log --oneline e81cfde..luwi/patch/scroll-and-shell`; 整支 diff = 5 文件 / +232 行 |
 | 3 | 插件里 `additionalProperties` 出现 **0 次** | `Select-String host-plugin\index.mjs` 计数 = 0 (草稿说这是让整包 `UNSUPPORTED_SCHEMA`、一个 `lw_*` 都没有的那条) |
 | 4 | 无障碍服务**没有**滚动动作, 也没有 `dispatchGesture` | `channel/LwAccessibility.kt` 里只有 `ACTION_CLICK` (:210) / `ACTION_LONG_CLICK` (:208) / `ACTION_SET_TEXT` (:270) / `ACTION_SET_SELECTION` (:309) |
 | 5 | APK 里**没有** OCR 模型 | `app/src/main/assets` 目录不存在 (草稿第 5 条: `files/ocr` 空、`det.onnx` 不在 assets) |
-| 6 | `sharp` 还是 PNG-only 替身 | `image-backend/sharp/package.json` = `0.0.0-littlewhale`, 描述里自己写着 "enough of its API ... to verify a PNG" |
+| 6 | `sharp` 还是 PNG-only 替身 | `image-backend/sharp/package.json` = `0.0.0-luwi`, 描述里自己写着 "enough of its API ... to verify a PNG" |
 | 7 | 通知走 `IMPORTANCE_DEFAULT`, 点通知没带 `NEW_TASK` | `tool/LwNotify.kt:94-98` (`NotificationChannel`), `:64-68` (`PendingIntent`, 只有 `FLAG_IMMUTABLE`) |
 | 8 | 清单已经替 1.0.3 预埋了两条 | `AndroidManifest.xml` 里 `FOREGROUND_SERVICE_MEDIA_PROJECTION` 注释明写 "(1.0.3)", `REQUEST_INSTALL_PACKAGES` / `DELETE_PACKAGES` 同理 |
 | 9 | `lw_app_control` 只到"列"和"起" | `channel/LwApps.kt` 只有 `launchable()` / `resolve()` |
@@ -362,9 +362,9 @@ $ node tools/check-host-plugin.mjs
 
 | 项 | 动作 | 落点 |
 | :-- | :-- | :-- |
-| 0.1 | 本地 `main` 对齐到 `e81cfde` (快进一个提交, 就是那条通知修复), 从它开 1.0.3 | `dshlw/main` |
+| 0.1 | 本地 `main` 对齐到 `e81cfde` (快进一个提交, 就是那条通知修复), 从它开 1.0.3 | `luwi/main` |
 | 0.2 | `versionCode 2 → 3`, `versionName "1.0.2" → "1.0.3"` | `app/build.gradle.kts:88-89` |
-| 0.3 | 只挑滚动那三个提交落地: `git cherry-pick a3c3072 c2907c0 4673c1b` (改的是 `LwAccessibility.kt` / `PrivilegedBridge.kt` / `host-plugin/index.mjs`)。**不整支 merge** —— 同支上还有 shell 那三个, 而 D2 已否决 | `dshlw/patch/scroll-and-shell` |
+| 0.3 | 只挑滚动那三个提交落地: `git cherry-pick a3c3072 c2907c0 4673c1b` (改的是 `LwAccessibility.kt` / `PrivilegedBridge.kt` / `host-plugin/index.mjs`)。**不整支 merge** —— 同支上还有 shell 那三个, 而 D2 已否决 | `luwi/patch/scroll-and-shell` |
 | 0.4 | AAPM 排查: `lw_accessibility.xml` 当前没有 `android:isAccessibilityTool`, targetSdk 是 37 —— 查 Android 17 对未声明者的收紧是否真的存在 | `res/xml/lw_accessibility.xml` |
 
 验收: `.\gradlew.bat :app:compileDebugKotlin` 过 (草稿自己写明: **那六个提交的 Kotlin 编译从来没验过**, 只在手机上做过括号平衡与插入点核对); 插件能被 dsh 加载 (工具数 = 40 + 新增)
@@ -484,7 +484,7 @@ $ node tools/check-host-plugin.mjs
 | :-- | :-- |
 | 9.1 | `README.md` 的能力与已知问题按实际改了什么改; `AGENTS.md` 的工具清单同步 |
 | 9.2 | 这一版的目标文档收一份进 `docs/` 当执行记录 (含实测数字) |
-| 9.3 | Release notes (开头句沿用定稿: 「本应用围绕 DSHLW 应用基于 LittleWhale 开发, 部分功能与特点取自 DSHA。」) |
+| 9.3 | Release notes (开头句沿用定稿: 「本应用围绕 Luwi 应用基于 LittleWhale 开发, 部分功能与特点取自 DSHA。」) |
 | 9.4 | `:app:assembleDebug` → 哈希 → tag → Release (草稿的"1.1.0"名号按 D1) |
 | 9.5 | 装机: `tools/lw-install.ps1` **紧接着装完就跑** (重装会踢掉无障碍, 写入只在那段短窗口里被接受) |
 
@@ -498,7 +498,7 @@ $ node tools/check-host-plugin.mjs
 | :-- | :-- | :-- |
 | D1 | 版本号: 草稿标题是 1.1.0, 用户要 1.0.3 | **已定: 1.0.3 / versionCode 3**。草稿那篇正文改个标题就可以留给 1.1.0 |
 | D2 | `lw_shell` 开不开 | **已定: 1.0.3 不开**, 批次 8 整批不做; 补丁留在分支上, 以后一条 cherry-pick 就够 |
-| D5 | 草稿补丁从哪来 | **已定: 用户已经让他推上去了**。`dshlw/main` = `e81cfde`, `patch/scroll-and-shell` = `cf5db194`; 落地方式是挑提交 (见批次 0.3), 不是重写 |
+| D5 | 草稿补丁从哪来 | **已定: 用户已经让他推上去了**。`luwi/main` = `e81cfde`, `patch/scroll-and-shell` = `cf5db194`; 落地方式是挑提交 (见批次 0.3), 不是重写 |
 
 已定的 (2026-10-04, 批次 5 开工时):
 
@@ -549,7 +549,7 @@ $ node tools/check-host-plugin.mjs
 
 - 每批: 改代码 → `.\gradlew.bat :app:compileDebugKotlin` 自检 → 动了依赖/manifest 再加 `:app:assembleDebug` → 装到 **emulator-5554** 给用户过目 → **真机由用户自己装、自己点**
 - 触摸/命中测试这一类**截图看不出来**, 只有用户真机点一下才算过
-- 每批一个提交, 信息照 1.0.2 的写法: `DSH-LW 1.0.3 part N: <做了什么>`
+- 每批一个提交, 信息照 1.0.2 的写法: `Luwi 1.0.3 part N: <做了什么>`
 - 批次之间停下来等用户看, 不连着往下推
 
 

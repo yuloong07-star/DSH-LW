@@ -26,11 +26,11 @@ const read = (path) => readFile(new URL(path, root), 'utf8')
 
 const plugin = await read('host-plugin/index.mjs')
 const packer = await read('tools/pack-host.mjs')
-const overlay = await read('app/src/main/java/io/github/miuzarte/littlewhale/host/PluginOverlay.kt')
-const gallery = await read('app/src/main/java/io/github/miuzarte/littlewhale/tool/LwGallery.kt')
-const bridge = await read('app/src/main/java/io/github/miuzarte/littlewhale/channel/PrivilegedBridge.kt')
+const overlay = await read('app/src/main/java/io/github/yuloong07star/luwi/host/PluginOverlay.kt')
+const gallery = await read('app/src/main/java/io/github/yuloong07star/luwi/tool/LwGallery.kt')
+const bridge = await read('app/src/main/java/io/github/yuloong07star/luwi/channel/PrivilegedBridge.kt')
 const gradle = await read('app/build.gradle.kts')
-const seed = await read('app/src/main/java/io/github/miuzarte/littlewhale/host/LwSeed.kt')
+const seed = await read('app/src/main/java/io/github/yuloong07star/luwi/host/LwSeed.kt')
 const skill = await read('skills/photo-edit/SKILL.md')
 
 let failures = 0
@@ -121,7 +121,7 @@ const album = /private const val ALBUM = "([^"]+)"/.exec(gallery)
 check(
   '相册里那个目录名与技能正文里写的一样',
   [album?.[1], skill.includes(`Pictures/${album?.[1]}`)],
-  ['DSH-LW', true],
+  ['Luwi', true],
 )
 
 /* ── 三、随包的那两样 ──────────────────────────────────────────────────── */

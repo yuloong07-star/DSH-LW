@@ -23,7 +23,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $adb = if ($env:LW_ADB) { $env:LW_ADB } else { 'D:\apk\Sdk\platform-tools\adb.exe' }
-$package = 'io.github.miuzarte.littlewhale'
+$package = 'io.github.yuloong07star.luwi'
 $forward = if ($Serial -eq 'emulator-5554') { 29997 } else { 29998 }
 
 function Sh($command) { & $adb -s $Serial shell $command }
@@ -58,7 +58,7 @@ function WindowRect($mode) {
     $hit = ($out | Select-String 'ty=APPLICATION_OVERLAY') |
         Where-Object {
             $block = $out[($_.LineNumber - 3)..($_.LineNumber + 1)] -join ' '
-            if ($block -notmatch 'littlewhale') { return $false }
+            if ($block -notmatch 'luwi') { return $false }
             if ($mode -eq 'pulse') { return $block -match 'NOT_TOUCHABLE' }
             return $block -match 'NOT_FOCUSABLE' -and $block -notmatch 'NOT_TOUCHABLE'
         } |
