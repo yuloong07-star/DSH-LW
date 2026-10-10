@@ -255,7 +255,7 @@ Write-Host ""
 Write-Host "剩下这些只能人去系统页里点 (脚本给不了):" -ForegroundColor Cyan
 Write-Host "  - 全屏通知 (横幅): 设置 -> 应用 -> Luwi -> 特殊应用权限里那一条, lw_notify 的 banner 靠它"
 Write-Host "  - 录屏授权 (以后要用到时再说)"
-Write-Host "  - 桌面图标与通知栏图标现在是 DSH 自己的那只鲸鱼 (见 tools/make-icons.py)"
+Write-Host "  - 桌面图标与通知栏图标现在是 Luwi 自己那个标记: 一圈水花里一只鲸尾 (见 tools/make-icons.py)"
 
 # 退出码: 只看**这一次要它做的事**成没成, 免得 `-Perms` 因为无障碍那一条而报失败
 #

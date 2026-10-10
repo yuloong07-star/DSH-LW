@@ -282,7 +282,7 @@ internal object BallSpot {
  *    点不动的图
  * 3. **它不获焦** (窗口那一侧给的 `FLAG_NOT_FOCUSABLE`), 所以手指落在球外面照旧给底下的应用 ——
  *    球只吃掉自己那 48 dp
- * 4. 空闲时画一个字 ([IDLE_LABEL]), 有状态时画三个字 (正在听 / 正在想 / 正在念), 换词是淡入淡出 ——
+ * 4. 空闲时画 Luwi 那个标记, 有状态时画三个字 (正在听 / 正在想 / 正在念), 换词是淡入淡出 ——
  *    状态变化是这颗球唯一"说话"的机会, 直接跳字会让人以为是闪了一下
  * 5. **侧边半藏由窗口那一侧做** (见 OverlayService 的 `peek` / `unpeek`): 球自己的位置不是一个
  *    view 属性, 挪窗只能改窗口坐标, 所以这里只把"按下了"这件事告诉它
@@ -318,14 +318,17 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
         setShadowLayer(3f, 0f, 1f, Color.argb(170, 0, 0, 0))
     }
 
-    /** 空闲时球上画的是 dsh 那只鲸鱼 (自适应图标的前景, **无背景**的那一份), 不写任何名字 */
+    /**
+     * 空闲时球上画的是 Luwi 自己那个标记 (自适应图标的前景, **无背景**的那一份), 不写任何名字
+     *
+     * 它那块 view 比球体本身还大 (见 [GLYPH_DP]): 那份矢量里标记只占画布 0.46, 照抄进这颗球
+     * 只剩一小圈
+     */
     private val glyph = ImageView(context).apply {
         setImageResource(R.drawable.ic_launcher_foreground)
-        // 那只鲸鱼原本是深蓝的 (#1C2434), 在蓝紫球上看不清 —— 染成白的是同一份形状, 不是另一张图
+        // 那个标记原本是 #01B4FF (一圈水花里一只鲸尾), 在蓝紫球上看不清 —— 染成白的是同一份形状, 不是另一张图
         imageTintList = ColorStateList.valueOf(TEXT)
         scaleType = ImageView.ScaleType.FIT_CENTER
-        val pad = dp(GLYPH_PADDING_DP)
-        setPadding(pad, pad, pad, pad)
     }
 
     /**
@@ -348,7 +351,10 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
     private val core = FrameLayout(context).apply {
         background = circle
         clipToOutline = true
-        addView(glyph, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        // 标记那一层居中、比球还大一圈, 多出来的透明边由上面那句圆裁剪吃掉 —— 只有中间那块墨迹
+        // 落进球里, 于是"标记占球多大"就是 [GLYPH_INK_RATIO] 这个数
+        val side = dp(GLYPH_DP)
+        addView(glyph, LayoutParams(side, side, Gravity.CENTER))
         addView(label, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
     }
 
@@ -630,7 +636,28 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
         private const val WORD_SP = 12f
 
         private const val STROKE_DP = 2
-        private const val GLYPH_PADDING_DP = 4
+
+        /**
+         * 球上那个标记的墨迹宽度占球体直径多少
+         *
+         * 启动器图标那份是 0.46 ([ICON_INK_RATIO]), 照抄到球上只剩小小一圈 —— 主人 2026-10-10
+         * 换了标记之后点名"ball 的图案占比小, 放大一点", 两轮下来定的是 0.65 (先给 0.55, 主人
+         * 看过实机截图之后要 0.65)。**只有球这一处动**, 桌面与通知栏那份还是 0.46 (主人换标记时的
+         * 原话是"图案占比要和现在的一样")
+         */
+        private const val GLYPH_INK_RATIO = 0.65f
+
+        /**
+         * 那份矢量里标记自己占画布多少 (与 `tools/vector-ink.py` 那面 `ink-width` 旗标同一个数)
+         *
+         * 它不是外观参数而是**分母**: 标记只占画布 0.46, 想让它占球体 0.65, 承载它的那块 view
+         * 就得比球还大 —— 多出来的透明边由 [BallView.core] 那圈圆裁掉
+         */
+        private const val ICON_INK_RATIO = 0.46f
+
+        /** 承载标记那块 view 的边长 (dp): 见上面两个比例 */
+        private val GLYPH_DP = (BALL_DRAW_DP * GLYPH_INK_RATIO / ICON_INK_RATIO).toInt()
+
         private const val PRESS_SCALE = 0.94f
         private const val DRAG_SCALE = 1.06f
         private const val SCALE_MS = 120L
