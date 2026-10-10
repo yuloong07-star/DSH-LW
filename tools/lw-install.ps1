@@ -72,7 +72,7 @@ if (-not $SkipInstall) {
 pm install -r -i com.android.packageinstaller -t $remote 2>&1 | tail -3
 cur=`$(settings get secure enabled_accessibility_services)
 case "`$cur" in
-  *LwAccessibility*) echo "ACCESSIBILITY_ALREADY_LISTED" ;;
+  *"$component"*) echo "ACCESSIBILITY_ALREADY_LISTED" ;;
   *) if [ -z "`$cur" ] || [ "`$cur" = "null" ]; then next="$component"; else next="`$cur:$component"; fi
      settings put secure accessibility_enabled 1
      settings put secure enabled_accessibility_services "`$next"
@@ -80,9 +80,9 @@ case "`$cur" in
 esac
 ncur=`$(settings get secure enabled_notification_listeners)
 case "`$ncur" in
-  *LwNotificationListener*) echo "LISTENER_ALREADY_LISTED" ;;
+  *"$listener"*) echo "LISTENER_ALREADY_LISTED" ;;
   *) cmd notification allow_listener $listener >/dev/null 2>&1
-     if settings get secure enabled_notification_listeners | grep -q LwNotificationListener; then
+     if settings get secure enabled_notification_listeners | grep -qF "$listener"; then
        echo "LISTENER_ALLOWED"
      else
        if [ -z "`$ncur" ] || [ "`$ncur" = "null" ]; then nnext="$listener"; else nnext="`$ncur:$listener"; fi
