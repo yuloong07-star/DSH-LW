@@ -349,6 +349,55 @@ class BallTest {
     /* ── 点击序列: 第一次只召出, 第二次才说话 (批次 5 那三段) ─────────────── */
 
     /**
+     * **视频模式那一档顶格**: 常驻语音开着 (且不在省电模式) 时球上永远写「正在听」,
+     * 压过正在想与失败, **只让「正在说」盖一下** (主人 2026-10-10: "把视频状态下正在听这三个字在 ball
+     * 上优先及最高, 不能被其它状态打断")
+     *
+     * 它跟的是那个记号, **不是 `listening`**: 说的时候麦克风是真关掉的 (`WakeWordService` 那条观察
+     * 线程), 跟着 `capturing` 走的话那几百毫秒字就会掉 —— 这一条钉的就是这件事: 麦克风关着 (listening
+     * = false) 而记号和"想"都在时, 球上仍然是「正在听」
+     */
+    @Test
+    fun `视频模式里正在听顶格`() {
+        // 想 + 记号 → 正在听 (不能再让"想"顶掉它)
+        assertEquals(
+            BallWord.LISTENING,
+            BallStatus.wordFor(
+                speaking = false, thinking = true, listening = true, failed = false, resident = true,
+            ),
+        )
+        // 麦克风关着那一下 (说的时候 / 刚放开) 也照样是正在听
+        assertEquals(
+            BallWord.LISTENING,
+            BallStatus.wordFor(
+                speaking = false, thinking = true, listening = false, failed = false, resident = true,
+            ),
+        )
+        // 失败也不许盖它
+        assertEquals(
+            BallWord.LISTENING,
+            BallStatus.wordFor(
+                speaking = false, thinking = false, listening = false, failed = true, resident = true,
+            ),
+        )
+        // **只有"正在说"能盖一下**: 那三个字亮着时点球是"别念了" (主人 2026-10-10 选的那一档)
+        assertEquals(
+            BallWord.SPEAKING,
+            BallStatus.wordFor(
+                speaking = true, thinking = true, listening = true, failed = false, resident = true,
+            ),
+        )
+        // 记号不在时那张表一个字不改
+        assertEquals(
+            BallWord.THINKING,
+            BallStatus.wordFor(
+                speaking = false, thinking = true, listening = true, failed = false,
+                thinkingAt = 9L, listeningAt = 1L,
+            ),
+        )
+    }
+
+    /**
      * 需求原话的三段: "第一次点击只召出浮标, 第二次点击才打开语音输入, 召出后再次点击不弹提示、
      * 直接进入语音输入"
      *
@@ -371,6 +420,60 @@ class BallTest {
         assertEquals(
             BallAct.HUSH,
             BallTouch.act(BallPhase.VOICE, speaking = false, channelOpen = false, listening = true),
+        )
+    }
+
+    /**
+     * **常驻语音那一档 (视频模式): 显示上就是「正在听」, 而点一下连视频模式一起收掉**
+     * (主人 2026-10-10: "在 ball 新增一个常驻语音状态 … 单击关闭后也关闭视频模式" + "那三个字也是正在听")
+     *
+     * 两条一起钉住: 记号在**且麦克风真的开着**时才走 `LEAVE_VIDEO` (只有记号而麦没开时那一下仍是
+     * "开语音"), 以及"正在说"那一下仍然是"别念了" —— 显示上只让正在说盖一下, 动作上也一样
+     */
+    @Test
+    fun `常驻语音里点一下连视频模式一起收掉`() {
+        assertEquals(
+            BallAct.LEAVE_VIDEO,
+            BallTouch.act(
+                BallPhase.VOICE,
+                speaking = false,
+                channelOpen = false,
+                listening = true,
+                resident = true,
+            ),
+        )
+        // 说过的那一条不抢: 喇叭在念时那一下还是"别念了" (念完再点才是退出视频模式)
+        assertEquals(
+            BallAct.STOP,
+            BallTouch.act(
+                BallPhase.VOICE,
+                speaking = true,
+                channelOpen = false,
+                listening = true,
+                resident = true,
+            ),
+        )
+        // 只有记号而麦克风没开 (收起来 / 省电模式): 那一下不该顺手把视频模式拆掉
+        assertEquals(
+            BallAct.LISTEN,
+            BallTouch.act(
+                BallPhase.VOICE,
+                speaking = false,
+                channelOpen = false,
+                listening = false,
+                resident = true,
+            ),
+        )
+        // 半隐的那一下永远只是"召出来", 常驻也照旧
+        assertEquals(
+            BallAct.SUMMON,
+            BallTouch.act(
+                BallPhase.RESTED,
+                speaking = false,
+                channelOpen = false,
+                listening = true,
+                resident = true,
+            ),
         )
     }
 
@@ -725,48 +828,54 @@ class BallTest {
     }
 
     /**
-     * **三击要看整串的总时长** (2026-10-08 防误触): 头一下之后 450 ms 内数到第三下才算
+     * **三击只看相邻两下** (2026-10-10 删掉那条整串总时长的闸)
      *
-     * 只看相邻两下的话, "一下一下慢慢戳三下"也算三击 —— 而三击要开的是一块盖住半屏的输入框, 那是这
-     * 套手势里最值得防的一处误触。超时的那一串**落回双击**: 它在多数状态里没有动作, 也就是什么都不做
+     * 2026-10-08 到 10-10 之间这里还有一条"整串 450 ms 之内走完"的判据, 而它是死代码: 三击的每一段
+     * 间隔都必须 ≤ 双击窗口 ([BallFeel.doubleTapMs], 防误触档 220 ms), 于是整串最多 2 × 220 = 440 ms
+     * —— 450 ms 那条线永远够不到, 标准档更是从来没开过它
+     *
+     * 留在测试里的两条是"那条闸删掉之后行为其实没变"的证据: **慢慢戳三下** (每一下都在双击窗口之外、
+     * 防连击窗口之内) 照样什么都不算, 因为太近的那些**不计数**, 那条链自己就断在老地方
      */
     @Test
-    fun `三击那一串要在 450 毫秒之内走完`() {
+    fun `三击只看相邻两下`() {
         val t = 1_000_000L
-        assertEquals(450L, BallMinutes.TRIPLE_SPAN_MS)
-        // 头一下 (t) 之后 150 / 300 ms: 整串 300 ms, 算三击
-        assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 300, t + 150, 2, chainFrom = t))
-        // 贴着窗口上沿 (整串正好 450 ms) 也算
-        assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 450, t + 300, 2, chainFrom = t))
-        // 整串 451 ms: 停在双击那一档, 不打开输入框
-        assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 451, t + 300, 2, chainFrom = t))
-        // 三下慢慢戳 (每一下都在双击窗口之外、防连击窗口之内: 320 ms 一戳): **太近的那些不计数**,
+        // 三下慢慢戳 (320 ms 一戳, 都在双击窗口之外、防连击窗口之内): **太近的那些不计数**,
         // 于是最后一戳只是普通一击 —— 既不打开输入框, 也不落到双击 (那条链早断了)
-        assertEquals(BallTap.TOO_SOON, BallTaps.kind(null, t + 320, t, 1, chainFrom = t))
-        assertEquals(BallTap.TOO_SOON, BallTaps.kind(null, t + 640, t + 320, 2, chainFrom = t))
-        // 每一下都贴着上一记 (150 / 150), 一整串 300 ms —— 这是正常速度的三击
-        assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 150, t, 1, chainFrom = t))
-        assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 300, t + 150, 2, chainFrom = t))
-        // 每一下贴着上一记 (150 / 150), 但整串 450 ms **正好压在上沿**: 摸到窗口边也算
-        assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 300, t + 150, 1, chainFrom = t))
-        assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 450, t + 300, 2, chainFrom = t))
-        // 不知道头一下什么时候 (chainFrom = 0): 按老口径放行 (只看相邻两下)
-        assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 300, t + 150, 2, chainFrom = 0L))
+        assertEquals(BallTap.TOO_SOON, BallTaps.kind(null, t + 320, t, 1))
+        assertEquals(BallTap.TOO_SOON, BallTaps.kind(null, t + 640, t + 320, 2))
+        // 每一下都贴着上一记 (150 / 150, 一整串 300 ms) —— 这是正常速度的三击, 两档都算
+        for (feel in BallFeel.entries) {
+            assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 150, t, 1, feel = feel))
+            assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 300, t + 150, 2, feel = feel))
+            // 四连击也算三击 (主人多戳了一下)
+            assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 450, t + 300, 3, feel = feel))
+        }
     }
 
     /* ── 防误触: 长按门槛、拖动门槛、刚拖完那一下 (2026-10-08 主人: "增加 ball 各操作的防误触") ── */
 
     /**
-     * 长按出菜单要按住 650 ms, **不是**平台那个 400~500 ms
+     * 长按门槛从平台那个数派生: 防误触档是 `max(平台值, 500) + 150`, 标准档就是平台值
      *
-     * 球一直在屏上, 慢一点的单击 (按下、觉得不对、松开) 会被平台的判据吃掉并弹出菜单 —— 而
-     * `BallView` 就是照这个常量去 `postDelayed` 的 (见 Ball.kt 的 ACTION_DOWN 那一支)
+     * 球一直在屏上, 慢一点的单击 (按下、觉得不对、松开) 会被平台的判据吃掉并弹出菜单 —— 所以防误触
+     * 档要垫一档; 而 `BallView` 就是照这一档的数去 `postDelayed` 的 (见 Ball.kt 的 ACTION_DOWN 那一支)
+     *
+     * **典型设备 (平台 400~500 ms) 上仍是 650 ms** —— 那是主人 2026-10-08 点名的数, 这次只是把它从
+     * "写死的 650" 换成"从平台值派生出来的 650", 于是两档之间的长按手感不再是差一倍多
      */
     @Test
-    fun `长按门槛比平台默认长一档`() {
-        assertEquals(650L, BallMinutes.BALL_PRESS_MS)
-        assertTrue("要比平台那 400~500 ms 长", BallMinutes.BALL_PRESS_MS > 500L)
-        assertTrue("又不能让球像卡住", BallMinutes.BALL_PRESS_MS <= 800L)
+    fun `长按门槛从平台值派生`() {
+        assertEquals(500L, BallMinutes.BALL_PRESS_BASE_MS)
+        assertEquals(150L, BallMinutes.BALL_PRESS_MARGIN_MS)
+        assertEquals(650L, BallFeel.GUARD.pressMs(400L))
+        assertEquals(650L, BallFeel.GUARD.pressMs(500L))
+        assertEquals(400L, BallFeel.STANDARD.pressMs(400L))
+        assertEquals(500L, BallFeel.STANDARD.pressMs(500L))
+        assertTrue("要比平台那 400~500 ms 长", BallFeel.GUARD.pressMs(500L) > 500L)
+        assertTrue("又不能让球像卡住", BallFeel.GUARD.pressMs(500L) <= 800L)
+        // 平台值本身就偏长的那种设备: 防误触档跟着它一起长, 而不是硬压回 650
+        assertEquals(750L, BallFeel.GUARD.pressMs(600L))
     }
 
     /** 拖动门槛至少 12 dp: 平台那个 8 dp 上下太灵敏, 手一抖就把单击吃掉 */
@@ -856,7 +965,71 @@ class BallTest {
         assertEquals(BallTap.TOO_SOON, BallTaps.kind(null, t + 400, t, feel = BallFeel.GUARD))
 
         // 三击那条正常速度仍要认得出来 (防误触只收宽"太近不算", 不该把手快的正常操作吃掉)
-        assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 300, t + 150, 2, chainFrom = t, feel = BallFeel.GUARD))
+        assertEquals(BallTap.TRIPLE, BallTaps.kind(null, t + 300, t + 150, 2, feel = BallFeel.GUARD))
+    }
+
+    /* ── 确认窗: 哪些单击排队、哪些当场做 (2026-10-10 主人: "三击 ball 会打开语音输入, 并且会卡一下") ── */
+
+    /**
+     * **只有"真的要开麦"那一支排队**, 其余动作一律当场做
+     *
+     * 这是那一批修改的核心判据, 而它逐条对应一个真实的手感要求: 半隐球滑回来 (SUMMON) 要跟手,
+     * 正在听时收麦 (HUSH) 与正在念时掐播报 (STOP) 都是"别说了"那一个意思 —— 晚 220 ms 就变成说了
+     * 半句才停, 比多开一次麦糟得多
+     */
+    @Test
+    fun `只有开麦那一支等确认窗`() {
+        val feel = BallFeel.GUARD
+        // 要开麦的四种: 正在想 (等它自己那个更晚的数) / 失败 / 有回复框 / 刚召出
+        assertEquals(
+            feel.thinkingTapMs(),
+            BallCommit.deferMs(BallAct.LISTEN, BallWord.THINKING, summonFresh = false, replyBox = false, feel = feel),
+        )
+        assertEquals(
+            feel.commitWindowMs,
+            BallCommit.deferMs(BallAct.LISTEN, BallWord.FAILED, summonFresh = false, replyBox = false, feel = feel),
+        )
+        assertEquals(
+            feel.commitWindowMs,
+            BallCommit.deferMs(BallAct.LISTEN, null, summonFresh = false, replyBox = true, feel = feel),
+        )
+        assertEquals(
+            feel.commitWindowMs,
+            BallCommit.deferMs(BallAct.LISTEN, null, summonFresh = true, replyBox = false, feel = feel),
+        )
+        // 只记一个时间戳的那一支 (全露着、召出很久了、也没有回复框): 不开麦, 于是不必等
+        assertEquals(
+            0L,
+            BallCommit.deferMs(BallAct.LISTEN, null, summonFresh = false, replyBox = false, feel = feel),
+        )
+        // 其余三个动作一个都不排队
+        for (act in listOf(BallAct.SUMMON, BallAct.HUSH, BallAct.STOP, BallAct.NOTHING)) {
+            assertEquals(
+                "$act 不该排队",
+                0L,
+                BallCommit.deferMs(act, BallWord.THINKING, summonFresh = true, replyBox = true, feel = feel),
+            )
+        }
+    }
+
+    /**
+     * 两个等待长度各自跟对那条线: 「正在想」用 [BallFeel.thinkingTapMs] (要晚过双击与防连击), 其余
+     * 开麦只用确认窗 —— 两个数在防误触档差得最开 (530 对 220)
+     */
+    @Test
+    fun `确认窗的两个数各跟自己的线`() {
+        for (feel in BallFeel.entries) {
+            val thinking = BallCommit.deferMs(
+                BallAct.LISTEN, BallWord.THINKING, summonFresh = false, replyBox = false, feel = feel,
+            )
+            assertTrue("$feel: 在想那一档要晚过双击窗口", thinking > feel.doubleTapMs)
+            assertTrue("$feel: 也要晚过防连击窗口", thinking > feel.tapGuardMs)
+            val plain = BallCommit.deferMs(
+                BallAct.LISTEN, null, summonFresh = true, replyBox = false, feel = feel,
+            )
+            assertEquals(feel.commitWindowMs, plain)
+            assertTrue("$feel: 两个数不是同一个 (在想那一档更晚)", thinking > plain)
+        }
     }
 
     /* ── 空闲那一笔账: 状态结束只重置一次 (2026-10-06 那条病根) ───────────── */
@@ -1188,33 +1361,29 @@ class BallTest {
      */
     @Test
     fun `灵敏度两档各自是哪些数`() {
-        assertEquals(650L, BallFeel.GUARD.pressMs)
+        assertEquals(650L, BallFeel.GUARD.pressMs(500L))
         assertEquals(12, BallFeel.GUARD.slopDp)
-        assertEquals(450L, BallFeel.GUARD.tripleSpanMs)
         assertEquals(250L, BallFeel.GUARD.dropGuardMs)
+        assertEquals(220L, BallFeel.GUARD.commitWindowMs)
 
-        assertEquals(0L, BallFeel.STANDARD.pressMs)
+        assertEquals(500L, BallFeel.STANDARD.pressMs(500L))
         assertEquals(0, BallFeel.STANDARD.slopDp)
-        assertEquals(0L, BallFeel.STANDARD.tripleSpanMs)
         assertEquals(0L, BallFeel.STANDARD.dropGuardMs)
+        assertEquals(300L, BallFeel.STANDARD.commitWindowMs)
     }
 
     /**
-     * 三击在标准档里**不看整串的总时长**: 一下一下慢慢戳三下也算
+     * **确认窗就是双击窗口** (2026-10-10): 两档各自等于自己那一档的 `doubleTapMs`
      *
-     * 防误触那一档里同一串是"停在双击" (那条判据自己有一份测试), 这里量的是"档位真的换掉了判据"
+     * 取值不是随手挑的: 过了这个窗口就不会再有双击 (两下都 ≤ 它) 也不会再三击 (每一下都 ≤ 它),
+     * 所以"这一下是单击"到那一刻就是终局 —— 动作层等它, 等的是一个真的会改变结论的窗口
      */
     @Test
-    fun `标准档的三击不看总时长`() {
-        val t = 1_000_000L
-        // 三下贴着上一记 (150 / 150), 但整串 450 ms 之后那一戳落在**总时长闸之外**: 缺省 (防误触档)
-        // 停在双击, 不打开输入框
-        assertEquals(BallTap.DOUBLE, BallTaps.kind(null, t + 600, t + 450, 2, chainFrom = t))
-        // 标准档**不看整串的总时长**, 同一串 (那一隔 150 ms 仍贴着) 算三击 —— 两档的差别就是这一条
-        assertEquals(
-            BallTap.TRIPLE,
-            BallTaps.kind(null, t + 600, t + 450, 2, chainFrom = t, feel = BallFeel.STANDARD),
-        )
+    fun `确认窗就是双击窗口`() {
+        for (feel in BallFeel.entries) {
+            assertEquals(feel.doubleTapMs, feel.commitWindowMs)
+        }
+        assertTrue("确认窗一定要比防连击窗口窄", BallFeel.GUARD.commitWindowMs < BallFeel.GUARD.tapGuardMs)
     }
 
     /** 刚拖完那一下在标准档里不挡 (防误触那一档挡 250 ms) */

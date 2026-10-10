@@ -207,6 +207,15 @@ internal object LwModes {
     }
 
     /**
+     * 切模式的一条 Kotlin 入口 (通道那条 [dispatch] 是给桥、脚本与插件用的)
+     *
+     * 球上"这一点点的是「正在听」, 而常驻语音开着时顺手把视频模式也收掉"走这一条 —— 与 `lw_mode`、
+     * 设备上那几个脚本**同一个 [set]**, 不是第二套做法 (2026-10-10 主人: "在 ball 新增一个常驻语音
+     * 状态 … 单击关闭后也关闭视频模式")
+     */
+    internal fun switchTo(context: Context, mode: String): JsonObject = set(context, mode)
+
+    /**
      * 切模式: **一次调用做完这一个模式要的全部事**
      *
      * 三笔账都在这里, 顺序是刻意的:

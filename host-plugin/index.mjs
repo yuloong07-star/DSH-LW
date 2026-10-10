@@ -1224,9 +1224,13 @@ const TOOLS = [
       // 这一笔的返回值**不报**: 走到这里帧已经抓完了, 而"这一瞬被别人抢了"那条路要两场同时取景才撞得
       // 上 —— 表上留谁由最后一次写入决定, 而 20 分钟那条超时兜底
       if (session !== null) await claimCamera(session, normalizeLens(shot?.lens) || normalizeLens(args?.lens))
-      const paths = Array.isArray(shot?.paths)
-        ? shot.paths.filter((path) => typeof path === 'string' && path)
-        : []
+      // **应用那一侧回的 `paths` 是一条逗号连成的字符串, 不是数组** (2026-10-10 主人查出来的那条:
+      // 同一秒磁盘上落了四张 cam-*.jpg, 而回执写着 "0 frame(s)")。两种形状都认 —— 少了这一条,
+      // 图拍到了、落了盘, 也会被读成"零帧"
+      const rawPaths = shot?.paths
+      const paths = (Array.isArray(rawPaths) ? rawPaths : String(rawPaths ?? '').split(','))
+        .map((path) => String(path).trim())
+        .filter((path) => path)
       // **间隔要报量到的那个数**: 一次抓帧本身两三百毫秒, 所以"要了 200ms 而实际每拍 420ms"是常态。
       // 报"要的那个数"就是一句假话, 而模型接下来会拿它当时间轴用
       const gaps = gapText(shot?.offsets, shot?.elapsedMs, paths.length)
@@ -6181,8 +6185,21 @@ function registerVoiceInput(ctx) {
     },
     preparation: {
       snapshot: () => ({ ...speechState }),
-      prepare: async () => {
-        await speechPrepare(SPEECH_ENGINE_SHERPA)
+      /**
+       * 起一次准备
+       *
+       * **这一条一个异常都不许往外冒**: dsh 那一头 (`SpeechToText.prepare` 与 `SpeechController.prepare`)
+       * 是 `registration.provider.preparation?.prepare(options)` —— 返回值直接丢掉, 而 app-boot 把
+       * 未处理的 rejection 当致命错误 (`fatal load failure` 之后 `proc.exit(1)`)。2026-10-10 真机上
+       * 就是这么断的: 模型没下成 (`could not download model.int8.onnx: fetch failed`), 整个 host 跟着
+       * 退出, 界面只剩 ERR_CONNECTION_REFUSED。上游那套 sensevoice provider 正是照这个形状写的:
+       * 同步签名 + 异步那半条链自己 catch, 失败只写进状态。所以这里也照办 —— 失败的原因与下载诊断
+       * 早就由 `speechDownload` 写进 `speechState` (界面那张卡读的就是它), 这里只补一行日志
+       */
+      prepare: () => {
+        void speechPrepare(SPEECH_ENGINE_SHERPA).catch((error) => {
+          warn(ctx, `preparing the speech model failed: ${error?.message ?? error}`)
+        })
       },
       cancel: async () => {
         speechAnnounce('cancelled')

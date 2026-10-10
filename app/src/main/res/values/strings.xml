@@ -444,10 +444,16 @@
     <string name="settings_skills_have">already installed - matched %1$s</string>
     <string name="settings_skills_missing">not installed yet - matched %1$s</string>
     <string name="settings_skills_install">Add the skills for the apps that are here</string>
+    <string name="settings_skills_refresh">Refresh the skill catalog</string>
+    <string name="settings_skills_refresh_summary">Fetches index.json from %1$s and caches it here; if that fails it keeps the local copy</string>
     <string name="settings_skills_busy">Adding…</string>
     <string name="settings_skills_install_summary">One pass over the bundled app-to-skill catalog; anything already there is left untouched</string>
     <string name="settings_skills_done">Added %1$d skill(s); all %2$d matches are in place now. dsh sees them from the next turn on</string>
-    <string name="settings_skills_note">Skills are plain prompt material: they land in the dsh home as SKILL.md files and change nothing about permissions. Editing one is expected - this button never overwrites an existing one</string>
+    <string name="settings_skills_delete">Delete this skill</string>
+    <string name="settings_skills_delete_summary">Removes the %1$s folder under the dsh home (there is no trash: anything you edited by hand is gone for good; "add" can only copy the bundled copy back)</string>
+    <string name="settings_skills_deleted">Deleted %1$d skill(s)</string>
+    <string name="settings_skills_delete_failed">%1$d skill(s) could not be deleted</string>
+    <string name="settings_skills_note">Skills are plain prompt material: they land in the dsh home as SKILL.md files and change nothing about permissions. Editing one is expected - this button never overwrites an existing one. Tap a skill that is already installed to delete that folder (it asks once first)</string>
 
     <string name="settings_section_plugin">Plugins</string>
     <string name="settings_section_plugin_summary">Packages other people wrote, adding abilities to this phone</string>

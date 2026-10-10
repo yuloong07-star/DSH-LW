@@ -48,9 +48,9 @@ $component = "$Package/$Package.channel.LwAccessibility"
 $listener = "$Package/$Package.channel.LwNotificationListener"
 $wrote = $false
 if (-not $SkipInstall) {
-    # **先 push 再本地装**: 351 MB 的流式安装把重装打开的那段写入窗口整个吃掉了 (实测: 装完探针就报
-    # "不接受写入"), 而 `pm install` 在设备上就地装只要几秒。所以 APK 先送到 /data/local/tmp, 之后
-    # "装 + 写回"在同一次 adb shell 里连着一口气做完, 中间不插任何往返
+    # **先 push 再本地装**: 351 MB 的流式安装要几十秒, 而 `pm install` 在设备上就地装只要几秒。
+    # 所以 APK 先送到 /data/local/tmp, 之后"装 + 写回"在同一次 adb shell 里连着一口气做完,
+    # 中间不插任何往返
     $remote = '/data/local/tmp/lw-install.apk'
     # 路径要先解析出来再 push: 上一轮改这段时把这一句弄丢了, 于是 push 收到空路径、装了个寂寞
     $full = (Resolve-Path $Apk).Path
@@ -64,10 +64,10 @@ if (-not $SkipInstall) {
     # `pm install` 失败时会把异常栈打到 stderr, 只匹配 "Failure" 会漏掉 (实测真机上一次就是漏了,
     # 脚本还报了成功)
     $before = (& $adb -s $Serial shell "dumpsys package $pkg | grep lastUpdateTime" 2>&1 | Out-String).Trim()
-    $stamp = [int][double]::Parse((Get-Date -UFormat %s))
 
-    # 两条授权都在这一个 shell 里写完: 无障碍与通知使用权都是 `Settings.Secure` 里的一条名单, 都
-    # **读出来改** (设备上还有别人的服务/监听), 而且都只在重装之后那段窗口里写得动
+    # 两条授权都在这一个 shell 里写完: 无障碍与通知使用权都是 `Settings.Secure` 里的一条名单,
+    # 都**读出来改** (设备上还有别人的服务/监听)。无障碍那一条写进去还可能被当场摘掉, 见下面
+    # 「验收」那一段 —— 所以"写完"与"留在名单里"是两件事
     $script = @"
 pm install -r -i com.android.packageinstaller -t $remote 2>&1 | tail -3
 cur=`$(settings get secure enabled_accessibility_services)
@@ -90,9 +90,6 @@ case "`$ncur" in
        echo "LISTENER_WRITTEN"
      fi ;;
 esac
-settings put secure lw_write_probe install-$stamp
-echo "PROBE=`$(settings get secure lw_write_probe)"
-settings delete secure lw_write_probe >/dev/null 2>&1
 settings get secure enabled_accessibility_services
 settings get secure enabled_notification_listeners
 rm -f $remote
@@ -108,43 +105,28 @@ rm -f $remote
     }
     Write-Host "installed: $after" -ForegroundColor Green
 
-    # 判据二: 刚才写的那一条有没有被留下 (探针与无障碍写在同一次 shell 里, 所以窗口还是同一个)
-    $writesAccepted = $installed -match "PROBE=install-$stamp"
-    if ($installed -match 'ACCESSIBILITY_WRITTEN|ACCESSIBILITY_ALREADY_LISTED') {
-        $listed = $installed -match 'LwAccessibility'
-        if ($listed) {
-            Write-Host "accessibility written back" -ForegroundColor Green
-            $wrote = $true
-        }
-    }
-    if (-not $wrote -and -not $writesAccepted) {
+    # 判据二: 我们那一条有没有留在名单里。**判据是名单本身**, 不是自造 key 的探针 ——
+    # 探针在这台机器上永远是 null, 拿它当判据只会得出一个假的"没写进去" (见下面「验收」那段)
+    if ($installed -match 'LwAccessibility') {
+        Write-Host "accessibility written back" -ForegroundColor Green
+        $wrote = $true
+    } else {
         Write-Host "the device did not keep the accessibility write" -ForegroundColor Red
     }
 }
 
 # 验收 : 两条判据, 缺一条就说清缺哪一条
 #
-#   1. **写入通路通不通** —— 往一个自己的探针 key 写一次再读回。有些 ROM 上 `settings put` 对任何 key
-#      都返回 0 而值不变, 所以"退出码"永远不能当判据; 探针是唯一可信的回答, 而且它同时解释了上面
-#      那一步为什么失败
+#   1. **我们那一条到底在不在名单里** —— 判据就是 `enabled_accessibility_services` 本身。
+#      **自造一个探针 key 不能当判据**: vivo 这台上 SettingsProvider 把不认识的 key 一律拒掉
+#      (2026-10-10 实测: 无障碍那一条写得进去, 而探针 key 读回来永远是 null), 于是探针只会给出
+#      一个假的"不接受写入", 再拿它解释失败就把人引到"再装一次"那条死路上
 #   2. **系统有没有真的绑上** —— 设置里写着不等于服务活着。`dumpsys activity services` 里那条
 #      ServiceRecord 才是证据; 它的输出格式各 ROM 略有差别, 所以找不到时只标"未确认"而不判失败
 #
-# 位置说明: 放在 `-Perms` **之后**, 因为 pm grant 与 appops 各要几次 adb 往返, 而走这些往返的时候
-# 正是重装打开的那段写入窗口 —— 权限是随时都能给的, 窗口不是
+# 位置说明: 放在 `-Perms` **之后**, 因为 pm grant 与 appops 各要几次 adb 往返
 Write-Host ""
 Write-Host "checking" -ForegroundColor Cyan
-
-$probeKey = 'lw_write_probe'
-Adb shell "settings put secure $probeKey lw-probe" | Out-Null
-$probe = Adb shell "settings get secure $probeKey"
-Adb shell "settings delete secure $probeKey" | Out-Null
-$writesAccepted = ($probe -eq 'lw-probe')
-if ($writesAccepted) {
-    Write-Host "  writes accepted: yes" -ForegroundColor Green
-} else {
-    Write-Host "  writes accepted: no (the probe reads back as '$probe')" -ForegroundColor Red
-}
 
 $listed = Adb shell "settings get secure enabled_accessibility_services"
 $isListed = ($listed -split ':' | Where-Object { $_ -eq $component }).Count -gt 0
@@ -180,13 +162,13 @@ if ($ok) {
     Write-Host "  重启手机之后再确认一次: adb -s $Serial shell dumpsys activity services $Package"
 } else {
     Write-Host "acceptance: not done yet" -ForegroundColor Red
-    if (-not $writesAccepted) {
-        Write-Host "  这台设备现在不接受写入 (探针没留住), 也就是重装打开的那段窗口已经关了。" -ForegroundColor Red
-        Write-Host "  再跑一次脚本 (不要带 -SkipInstall):" -ForegroundColor Red
-        Write-Host "    pwsh -File $PSCommandPath -Serial $Serial"
-    } elseif (-not $isListed -or -not $listenerListed) {
-        Write-Host "  写入过了但组件不在名单里: 系统或别的应用把它摘了。看一眼那道 op:" -ForegroundColor Red
-        Write-Host "    adb -s $Serial shell appops get $Package ACCESS_RESTRICTED_SETTINGS"
+    if (-not $isListed -or -not $listenerListed) {
+        Write-Host "  名单里没有我们那一条: 写进去之后被系统当场摘了。2026-10-10 在 vivo 上实测的先后是:" -ForegroundColor Red
+        Write-Host "    装完那一刻、以及之后两分钟里单独写, 都留不住; 这道 op 读出来是 default 带一个新鲜的 rejectTime" -ForegroundColor Red
+        Write-Host "      adb -s $Serial shell appops get $Package ACCESS_RESTRICTED_SETTINGS"
+        Write-Host "    给它 allow、再把组件接回名单尾巴, 那一条才留住 (现象可复现, 机制没往下追)" -ForegroundColor Red
+        Write-Host "      adb -s $Serial shell appops set $Package ACCESS_RESTRICTED_SETTINGS allow"
+        Write-Host "      adb -s $Serial shell settings put secure enabled_accessibility_services '<现有名单>:$component'"
     } else {
         Write-Host "  组件在名单里但系统没绑上: 用应用内那个开关 (它会先摘掉、等一下、再放回," -ForegroundColor Red
         Write-Host "  那一下是让系统重新评估), 或者重启手机。" -ForegroundColor Red

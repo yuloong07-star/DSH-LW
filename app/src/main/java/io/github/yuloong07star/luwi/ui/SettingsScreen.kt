@@ -1145,10 +1145,13 @@ private fun SkillItems() {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
+    var revision by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    // 点哪一条要问"删不删" (null = 没在问): 与「快捷指令」那一段同一个做法 —— 那个对话框就是确认
+    var asking by remember { mutableStateOf<AppSkills.Match?>(null) }
     // 扫一次就够: 这一页开着的时候"装了哪些应用"不会变 (点完按钮再扫一次, 那是另一回事)
-    val scanned = remember { AppSkills.scan(context) }
+    val scanned = remember(revision) { AppSkills.scan(context) }
 
     if (scanned.matches.isEmpty()) {
         PlaceholderItems(stringResource(R.string.settings_skills_empty))
@@ -1160,10 +1163,33 @@ private fun SkillItems() {
                     if (match.present) R.string.settings_skills_have else R.string.settings_skills_missing,
                     match.hits.joinToString(", "),
                 ),
-                onClick = {},
+                // **已经在的那一条点一下就是"删"这一扇门** (主人 2026-10-10: "设置里的 skill 板块加上
+                // 删除 skill 按钮"): 缺着的那一条点它什么都不做 —— 没有东西可删, 而"装"是下面那一颗
+                onClick = {
+                    if (!match.present) return@ArrowPreference
+                    haptic.contextClick()
+                    asking = match
+                },
             )
         }
     }
+    // **目录的来源是 app-skills 那个仓库** (主人 2026-10-10): 这一颗按钮去把它取回来缓存到本机,
+    // 而平时那一遍扫描只读本机 (不联网, 也就不会把这一段卡住)
+    ArrowPreference(
+        title = stringResource(if (busy) R.string.settings_skills_busy else R.string.settings_skills_refresh),
+        summary = stringResource(R.string.settings_skills_refresh_summary, AppSkills.REPO),
+        onClick = {
+            if (busy) return@ArrowPreference
+            haptic.contextClick()
+            busy = true
+            scope.launch {
+                val (_, said) = withContext(Dispatchers.IO) { AppSkills.refresh(context) }
+                message = said
+                revision += 1
+                busy = false
+            }
+        },
+    )
     ArrowPreference(
         title = stringResource(if (busy) R.string.settings_skills_busy else R.string.settings_skills_install),
         summary = stringResource(R.string.settings_skills_install_summary),
@@ -1185,6 +1211,68 @@ private fun SkillItems() {
         },
     )
     PlaceholderItems(message ?: stringResource(R.string.settings_skills_note))
+
+    asking?.let { match ->
+        SkillDeleteDialog(
+            title = match.title,
+            name = match.skill,
+            onDismiss = { asking = null },
+            onDelete = {
+                asking = null
+                busy = true
+                scope.launch {
+                    val report = withContext(Dispatchers.IO) { AppSkills.remove(context, listOf(match.skill)) }
+                    message = if (report.failed.isEmpty()) {
+                        context.getString(R.string.settings_skills_deleted, report.wrote.size)
+                    } else {
+                        context.getString(R.string.settings_skills_delete_failed, report.failed.size)
+                    }
+                    revision += 1
+                    busy = false
+                }
+            },
+        )
+    }
+}
+
+/**
+ * 删一个技能前那一问
+ *
+ * 它是**这条链上唯一不可逆的动作**的确认: 删的是 `$DSH_HOME/skills/<名字>/`, 没有回收站, 而
+ * "一键装入"能把目录里那份再抄回来 (主人自己改过的那一份抄不回来 —— 那正是要问这一句的理由)
+ */
+@Composable
+private fun SkillDeleteDialog(
+    title: String,
+    name: String,
+    onDismiss: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    OverlayDialog(
+        show = true,
+        title = title,
+        summary = stringResource(R.string.settings_skills_delete_summary, name),
+        defaultWindowInsetsPadding = false,
+        onDismissRequest = onDismiss,
+    ) {
+        TextButton(
+            text = stringResource(R.string.settings_skills_delete),
+            onClick = {
+                haptic.confirm()
+                onDelete()
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        TextButton(
+            text = stringResource(R.string.button_cancel),
+            onClick = {
+                haptic.contextClick()
+                onDismiss()
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
 }
 
 @Composable

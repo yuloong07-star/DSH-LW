@@ -20,7 +20,13 @@ internal object AboutSettings {
     private const val STORE = "luwi"
     private const val KEY_SOURCE = "update-source"
 
-    /** 缺省更新源: Luwi 自己那个仓库的"最新一条 Release" */
+    /**
+     * 缺省更新源: Luwi 自己那个仓库的"最新一条 Release"
+     *
+     * **2026-10-10 那天一度改成过 `luwi-plugins`**, 那是我读错了主人那一句 (他说的"检测来源"指的是
+     * **技能**从哪儿检测, 不是应用更新) —— 而且那个仓库没有 Release 也没有 Tag
+     * (`releases/latest` 直接 404), 改过去只会查到"查不到发布"。已撤回: 应用自己的更新仍然认这一条
+     */
     const val DEFAULT_SOURCE = "https://api.github.com/repos/yuloong07-star/Luwi/releases/latest"
 
     /** 缺省那一条的镜像前缀: 拿不到直连时按同一个路径再试一次 */

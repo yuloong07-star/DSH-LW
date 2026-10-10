@@ -78,6 +78,11 @@ private val RING_FAILED = 0xFFFF5252.toInt()
  * **动作那一边仍然是"念 > 想 > 听"** ([BallTouch.act] 里 `speaking` 排第一): 显示上写着「正在想」
  * 而喇叭同时也在念时, 单点那一下仍然是"别念了" —— 那两件事各说各的, 见 [BallTouch.act]
  *
+ * **视频模式那一档顶格** (主人 2026-10-10: "把视频状态下正在听这三个字在 ball 上优先及最高, 不能被
+ * 其它状态打断"): `resident` 为真时那一格永远写「正在听」, 压过正在想与失败 —— 只有 [BallWord.SPEAKING]
+ * 能盖它一下 (那三个字亮着时点球是"别念了")。**它跟的是常驻那个记号, 不是 `listening`**:
+ * "说"的时候麦克风是真关掉的 (见 `WakeWordService`), 跟着 `capturing` 走的话那几百毫秒字就会掉
+ *
  * 纯函数, 没有设备也能量 (见 BallTest)
  */
 internal object BallStatus {
@@ -88,10 +93,13 @@ internal object BallStatus {
         failed: Boolean,
         thinkingAt: Long = 0L,
         listeningAt: Long = 0L,
+        resident: Boolean = false,
     ): BallWord? = when {
         // 念回答最上 (2026-10-09 主人: "正在想状态的显示不能遮挡正在说"): 喇叭在出声的时候那件事
         // 最要紧, 而"别念了"那一下就是点球 ([BallTouch.act] 里 `speaking` 也排第一)
         speaking -> BallWord.SPEAKING
+        // 视频模式 (常驻语音那个记号开着, 且不在省电模式): 那一格顶格, 只让"正在说"盖一下
+        resident -> BallWord.LISTENING
         // 想与听之间看谁最近变成真的 (见上面那张表): 同一拍一起变时给想
         thinking && listening ->
             if (listeningAt > thinkingAt) BallWord.LISTENING else BallWord.THINKING
@@ -375,6 +383,13 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
     private val platformSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     /**
+     * 平台那个长按门槛 (400~500 ms 那一档): 两档灵敏度都从它派生 (见 [BallFeel.pressMs])
+     *
+     * 取的是那个静态方法而不是 `ViewConfiguration.longPressTimeout` —— 后者在当前 SDK 里是隐藏成员
+     */
+    private val platformPress = ViewConfiguration.getLongPressTimeout().toLong()
+
+    /**
      * "这一下算拖动"的门槛: **手指按下那一刻按当前灵敏度算一次** (见 [slopFor])
      *
      * 平台自己的 `scaledTouchSlop` 只有 8 dp 上下, 而球是常驻的 —— 手按上去抖两下就过线, 于是本该是
@@ -389,9 +404,13 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
     private fun slopFor(feel: BallFeel): Float =
         if (feel.slopDp <= 0) platformSlop.toFloat() else maxOf(platformSlop, dp(feel.slopDp)).toFloat()
 
-    /** 这一档的长按门槛: 0 = 用平台那个数 */
-    private fun pressFor(feel: BallFeel): Long =
-        if (feel.pressMs > 0L) feel.pressMs else ViewConfiguration.getLongPressTimeout().toLong()
+    /**
+     * 这一档的长按门槛
+     *
+     * **2026-10-10 起两档是同一个式子** (见 [BallFeel.pressMs]): 标准档就是平台那个数, 防误触档在
+     * `max(平台值, 500)` 上加 150 ms —— 典型设备上仍是原来那个 650 ms, 而两档之间的差不再是写死的
+     */
+    private fun pressFor(feel: BallFeel): Long = feel.pressMs(platformPress)
 
     private var downX = 0f
     private var downY = 0f
@@ -567,8 +586,13 @@ internal class BallView(context: Context, private val listener: Listener) : Fram
                 slop = slopFor(feel)
                 listener.onPressStart()
                 scaleTo(PRESS_SCALE)
-                // 长按门槛用我们自己的数 (650 ms), 不用平台的 400~500 ms: 那颗球一直在屏上, 慢一点的
-                // 单击会被平台的判据吃掉并弹出菜单 (2026-10-08 防误触)
+                // **按下这一瞬间就回一记轻触觉** (2026-10-10): 开麦那一下现在要等一个确认窗
+                // (见 [BallCommit]), 而人对手感延迟的容忍度主要靠"按下去有没有立刻回应"决定 ——
+                // 缩放动画之外再补这一记, 那 220 ms 的等待基本不会被察觉。它跟长按那一记用的是同一个
+                // API, 跟着系统的"触摸反馈"开关走, 不需要权限
+                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                // 长按门槛从平台那个数派生 (见 [pressFor]): 那颗球一直在屏上, 慢一点的单击会被平台的
+                // 判据吃掉并弹出菜单 (2026-10-08 防误触)
                 postDelayed(press, pressFor(feel))
                 return true
             }

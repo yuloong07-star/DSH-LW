@@ -11,7 +11,9 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -127,6 +129,25 @@ internal object WakeWordState {
     var voiceActive: Boolean = false
 
     /**
+     * **"开了又关"那两笔账** (2026-10-10, 主人报的"三击 ball 会打开语音输入, 并且会卡一下")
+     *
+     * 三击的头一下原来会先把这一句话的窗口开起来 ([WakeWordService.openVoice], 那一步在主线程上建
+     * 切段会话), 第三下再收掉 —— 一次来回就是一次整屏卡顿。[VoiceRollback] 那条快径把"开了又关"
+     * 降级成一次静默回退, 而这两个数就是它的读数:
+     *
+     * - [fastRollbacks]: 走了快径几次 (窗口内、还没听到人声就收了 —— 通知一个字都不说, 模型也不读)
+     * - [shortLivedOpens]: 开门之后 [WakeWordService.VOICE_SHORT_LIVED_MS] 之内就被收掉几次 (不论走
+     *   没走快径)。**确认窗落地之后它应该趋近于 0**: 三击这一条路压根不该再把门打开
+     *
+     * 两个数都在 `lw_wakeword op=status` 里报出来
+     */
+    @Volatile
+    var fastRollbacks: Int = 0
+
+    @Volatile
+    var shortLivedOpens: Int = 0
+
+    /**
      * **省电模式此刻生不生效** (主人 2026-10-07): 手动那个开关, 或者设置页定的那一段定时
      *
      * 它说的是"麦克风关着, 喊不醒"这一件事 —— 而服务本身、通知、浮标与 host 都还在, 点球也能临时
@@ -167,6 +188,37 @@ internal object HalfDuplex {
     const val ACCEPT = "accept"
 
     fun forward(speaking: Boolean): String = if (speaking) ABANDON else ACCEPT
+}
+
+/**
+ * "这一句话的窗口"是不是**开了又关** —— 如果是, 关的那一下走快径
+ *
+ * **为什么要有这一条** (2026-10-10 主人: "三击 ball 会打开语音输入, 并且会卡一下"): 三击的头一下
+ * 原来会先把窗口开起来, 第三下再收掉。开门那一步除了建切段会话, 还会把识别模型**预热到内存里**并
+ * 把通知栏改成"听着你说这一句" —— 第二次还没读完就收, 这几笔全是白花的
+ *
+ * 快径的判据是**"还没有任何人声进来"**: 窗口开了 [WakeWordService.VOICE_ROLLBACK_MS] 之内收掉,
+ * 而且这一段里一次都没听到人声 (VAD 说这一窗有人声才会记一笔, 32 ms 一窗)、也没有出过字。几条都
+ * 成立才是"主人根本没说话", 那时预热与通知那两句可以整个跳过; 只要有一条不成立 (哪怕只听见一窗),
+ * 说明这一次开门真的听进去了东西, 那就照常收尾 —— 那一笔闲置账也跟着走
+ *
+ * 快径**不跳**收尾本身: 切段器照常 flush / close, 转写线程照常收, 识别器照常 reap —— 少一样就是
+ * 一次泄漏。它省的只有"还没开始的东西" (预热与通知那两句)
+ *
+ * 纯函数, 没有设备也能量 (见 VoiceRollbackTest)
+ */
+internal object VoiceRollback {
+
+    /**
+     * 这一次关窗能不能走快径
+     *
+     * @param openedAt 开门的时刻 (0 = 不知道, 当没开过处理)
+     * @param heardAt 这一段里最后一次"VAD 说有人声"的时刻 (0 = 一次都没有)
+     * @param delivered 这一段里出过字没有 (投出去一句之后那一笔闲置账是另一个数, 见 [VoiceIdle])
+     * @param windowMs 快径窗口 ([WakeWordService.VOICE_ROLLBACK_MS])
+     */
+    fun isFast(now: Long, openedAt: Long, heardAt: Long, delivered: Boolean, windowMs: Long): Boolean =
+        openedAt != 0L && !delivered && heardAt == 0L && now - openedAt in 0..windowMs
 }
 
 /**
@@ -342,6 +394,19 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
     private var voiceActive = false
 
     /**
+     * **说之前那句话的窗口是不是开着** (2026-10-10 主人: "我点击正在说后, 语音输入又用不了了")
+     *
+     * "说的时候关麦"那一条 (见 [VoiceState.spokeUntil] / [LwSpeak.talking]) 把窗口收掉了, 而原来
+     * 只有常驻那一档 (视频模式) 会在说完之后把它拉回来 —— **手机模式下没人拉**: 主人刚说完一句、助手
+     * 开始念、他点一下"正在说"把念掐断, 那之后麦克风就一直关着, 得重新喊唤醒词。
+     *
+     * 所以关麦那一下记一笔"这一句的窗口本来是开着的", 说完 (或掐断) 之后照这一笔把它拉回来 ——
+     * 与"说"之前的状态对齐, 而不是一律常驻
+     */
+    @Volatile
+    private var micWasUpBeforeSpeaking = false
+
+    /**
      * 这一次开门是不是"要留着"的
      *
      * 命中开的那一次是**用完就收**, 而视频模式要的那一次要一直留着 —— 两者走的都是 [openVoice],
@@ -371,6 +436,30 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
     /** 这一次开门里 VAD 最近一次说有人声的时刻, 0 = 还没听见过 (跟着 [openVoice] 归零) */
     @Volatile
     private var voiceHeardAt = 0L
+
+    /**
+     * 这一次开门是哪一刻开的 (0 = 没开过), 与 [voiceHeardAt] / [voiceDelivered] 一起喂给
+     * [VoiceRollback] —— "开了又关"那条快径就靠这三个数认
+     */
+    @Volatile
+    private var voiceOpenedAt = 0L
+
+    /** 主线程的投递队列: 现在只挂 [settle] 那一条 (服务自己的回调本来就在主线程上) */
+    private val handler = Handler(Looper.getMainLooper())
+
+    /**
+     * 开门之后 [VOICE_ROLLBACK_MS] 才做的两件事: **预热识别模型 + 把通知栏改成"听着你说这一句"**
+     *
+     * 分开成一条延迟任务是为了让它**可取消**: [closeVoice] 走快径时 ([VoiceRollback.isFast]) 把它
+     * 摘掉 —— 这是"开了又关"不再白读一次几百 MB 模型、也不再闪一下通知的全部手段 (2026-10-10)
+     */
+    private val settle = Runnable {
+        // 延后这一段时间里窗口可能已经收了, 那就一个字都不说
+        if (voiceActive) {
+            preheat()
+            announce(listeningText())
+        }
+    }
 
     /**
      * 这一次开门里**已经投出去过一句话**没有 (2026-10-09: "一次唤醒 = 一句话")
@@ -465,7 +554,17 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
             refreshVideoTarget()
             WakeWordState.voiceAllowed = wanted
             // **省电模式里不铺常驻链**: 那个记号的意图仍被记着 (出了时段照旧恢复), 只是此刻不生效
-            if (wanted && !powerSave) runCatching { openVoice() } else runCatching { closeVoice() }
+            //
+            // **链子已经开着时也要把这一档改成常驻** (2026-10-10 主人报的"她打开后听不了话了…当前语音
+            // 是开的但输入不了话"): 进视频模式那一下往往正好落在"一句话的窗口"里 (唤醒 → 说"打开视频
+            // 模式" → 切模式), 而原来的写法只写记号、不动那条已经开着的链 —— 于是它还是"只说一句"的档
+            // ([voiceSticky] 为假), 0.3 s 那句尾巴一到就自己收了, 球上却按记号写着「正在听」。所以这里
+            // 补上"已经开着就当场转常驻"这一支
+            if (wanted && !powerSave) {
+                if (voiceActive) voiceSticky = true else runCatching { openVoice() }
+            } else {
+                runCatching { closeVoice() }
+            }
             runCatching { announce(listeningText()) }
             Log.i(TAG, "video-mode residency is now $wanted")
             return START_STICKY
@@ -516,6 +615,9 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
     override fun onDestroy() {
         stopPowerWatch()
         stopListening()
+        // 开门之后那条"预热 + 通知"的待办跟服务一起走 (2026-10-10): [stopListening] 那条路上多半已经
+        // 取消了它 (走快径时), 这里挡的是"窗口早就关了、而那条待办还挂在主线程上"那一种残余
+        handler.removeCallbacks(settle)
         super.onDestroy()
     }
 
@@ -643,14 +745,18 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
         prepareRecognition()
         startTranscribing()
         voiceActive = true
-        voiceIdleSince = System.currentTimeMillis()
+        voiceOpenedAt = System.currentTimeMillis()
+        voiceIdleSince = voiceOpenedAt
         voiceHeardAt = 0L
         // 新开的一次: 还没说出任何一句, 所以闲置账是 10 s 那一档 (见 [voiceDelivered])
         voiceDelivered = false
         VoiceState.capturing = true
         WakeWordState.voiceActive = true
-        preheat()
-        announce(listeningText())
+        // **预热与通知那两句延后 [VOICE_ROLLBACK_MS] 再说** (2026-10-10): 两笔都是"这一次开门真的听成
+        // 了"才值得花的钱。一句都没听到就收回去那一条 (三击原来走的就是它) 由 [closeVoice] 把这条
+        // 待办摘掉 —— 不摘的话, 那一次来回会白读一次几百 MB 的识别模型
+        handler.removeCallbacks(settle)
+        handler.postDelayed(settle, VOICE_ROLLBACK_MS)
         Log.i(
             TAG,
             "the voice chain is up (VAD ${VoiceState.vadReady}, ASR ${VoiceState.asrReady}), sticky: $voiceSticky," +
@@ -672,6 +778,17 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
     private fun closeVoice() {
         if (!voiceActive) return
         voiceActive = false
+        // **"开了又关"那两笔账** (2026-10-10): 一次人声都没听到就收回来时, 把那条延迟待办摘掉 ——
+        // 预热与"听着你说这一句"两笔都还没发生, 于是这一次开门只留下一次状态回退
+        val closedAt = System.currentTimeMillis()
+        if (VoiceRollback.isFast(closedAt, voiceOpenedAt, voiceHeardAt, voiceDelivered, VOICE_ROLLBACK_MS)) {
+            WakeWordState.fastRollbacks += 1
+            handler.removeCallbacks(settle)
+        }
+        // 不论走没走快径都记一笔"这一声门是不是白开了": 确认窗落地之后它应该趋近于 0
+        if (voiceOpenedAt != 0L && closedAt - voiceOpenedAt in 0..VOICE_SHORT_LIVED_MS) {
+            WakeWordState.shortLivedOpens += 1
+        }
         // 这个记号跟这一次开门同生共死: 下一次开门 (命中或视频模式) 会照着记号重新定
         // (先把它抄下来: 下面"省电模式里还麦克风"那一条要判"这一次是借来的还是常驻的")
         val wasSticky = voiceSticky
@@ -760,6 +877,22 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
                 } catch (interrupted: InterruptedException) {
                     return@Thread
                 }
+                // **常驻那一档掉了就按电平拉回来** (2026-10-10 主人: "她打开后听不了话了…当前语音是开的
+                // 但输入不了话"): 视频模式要的就是"一直听着", 而那条链会被别处收掉 —— 新一轮那一下、
+                // 球上/输入框上那个"收起来"、以及"切模式那一刻链子已经开着、随后的收尾"都算。只在
+                // "说"的边沿上重开是不够的: 收了之后**没有人举手**, 于是球上写着「正在听」而麦是关的
+                //
+                // 放这里是因为这条钟本来就在跑, 而且判据全是现成的: 记号在 (videoResidency)、唤醒词还
+                // 在守 (listening)、不是省电模式、链子真的关着, 并且**这一刻没有在念** —— 念的时候不许
+                // 拉, 那正是"说的时候关麦"那一档
+                // **手机模式那条也一样兜**: 说之前开着而说完没拉回来的, 这里补上 (见 [micWasUpBeforeSpeaking])
+                if (listening && !powerSave && !voiceActive && !ttsPlaying() &&
+                    (voiceResidency || micWasUpBeforeSpeaking)
+                ) {
+                    micWasUpBeforeSpeaking = false
+                    runCatching { openVoice() }
+                    continue
+                }
                 if (!voiceActive || voiceSticky) continue
                 // **助手还在想 / 还在念的时候不收** (主人 2026-10-09: "语音输入没说完自动退出")
                 //
@@ -776,7 +909,9 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
                     val held = VoiceIdle.held(
                         thinking = OverlayState.phase == OverlayState.PHASE_THINKING &&
                             DshHost.status is HostStatus.Running,
-                        speaking = VoiceState.speaking,
+                        // 与半双工那道闸同一个判据 (见 [LwSpeak.talking]): 引擎报"说完"之后喇叭还在响的
+                        // 那一段也算"正在说", 否则这一笔闲置账会从那一段里开始走
+                        speaking = LwSpeak.talking(this),
                     )
                     if (held) {
                         voiceIdleSince = now
@@ -915,7 +1050,10 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
         // 引擎各自还在放没有 (在线那两条过去不写那个标记) 由 [LwSpeak.speakingNow] 说。只看前者时,
         // 在线引擎念回答那几秒麦克风是开着的 —— 她自己的回答被录回去、当成一句话投进会话 (真机上
         // 实测到的那条)。两个一起看, 谁在放都不吃音频
-        when (HalfDuplex.forward(VoiceState.speaking || LwSpeak.speakingNow)) {
+        // **判据是 [LwSpeak.talking]**: 引擎报"说完"之后喇叭往往还在响 (系统那条尤其如此), 那一段
+        // 也得当作"在说" —— 只认 `VoiceState.speaking` 时她自己的回答被录回去投成过一句话
+        // (2026-10-10 主人: "正在听时还是有可以录入正在说")
+        when (HalfDuplex.forward(LwSpeak.talking(this))) {
             // 在采集线程上: 这一句与 keywordSink / vad 那两个消费者是同一个线程, 所以与它们不冲突
             HalfDuplex.ABANDON -> vad?.abandon()
             HalfDuplex.ACCEPT -> {
@@ -1366,20 +1504,44 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
         if (watchingSpeech) return
         watchingSpeech = true
         speakingWatch = Thread({
-            var was = VoiceState.speaking
+            var was = ttsPlaying()
             while (watchingSpeech) {
                 try {
                     Thread.sleep(SPEAKING_POLL_MS)
                 } catch (interrupted: InterruptedException) {
                     return@Thread
                 }
-                val now = VoiceState.speaking
+                val now = ttsPlaying()
                 if (now == was) continue
                 was = now
-                runCatching { announce(listeningText()) }
+                // **"说"的时候把麦克风真关掉** (主人 2026-10-10: "在说时要关闭麦克风, 否则会录入,
+                // 这个是全部模式都生效"): 帧级那道半双工闸只丢帧、麦克风还开着, 而这里把采集也整个
+                // 收回去 —— 关麦之前那几帧由那道闸兜住 (助手自己念的声音进不了切段器)。
+                // **重开只在常驻那一档** (视频模式): 那时"说完/掐断后重新拉起听"才是主人要的; 别的
+                // 模式里一句说完就该歇着, 由点球或唤醒词再要下一句
+                //
+                // 判据用 [ttsPlaying] 而不是 `VoiceState.speaking`: 后者还包括开门那一声"嘀", 拿它
+                // 关麦会把刚张开的窗口当场掐掉
+                handler.post {
+                    runCatching {
+                        if (now) {
+                            // **关麦之前记一笔**: 说完之后照这一笔把它拉回来 (手机模式下也要 ——
+                            // 见 [micWasUpBeforeSpeaking])
+                            micWasUpBeforeSpeaking = voiceActive
+                            closeVoice()
+                        } else if (listening && !powerSave && (voiceResidency || micWasUpBeforeSpeaking)) {
+                            micWasUpBeforeSpeaking = false
+                            openVoice()
+                        }
+                    }
+                    runCatching { announce(listeningText()) }
+                }
             }
         }, "lw-voice-notify").apply { start() }
     }
+
+    /** 现在有没有在念: 三条引擎各自的播放状态 (见 `LwSpeak.speakingNow`), **不含那一声提示音** */
+    private fun ttsPlaying(): Boolean = LwSpeak.talking(this)
 
     private fun stopSpeakingWatch() {
         watchingSpeech = false
@@ -1461,7 +1623,8 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
         // 而不是装作在听; 点球那一条仍然在, 那句话也得说出来
         if (powerSave && !voiceActive) return "省电模式 · 麦克风关着 · 点球还能说一句"
         // 正在念回答: 这期间唤醒词与识别链都被那道半双工的闸关着, 叫不醒 —— 这一档不能报"正在听"
-        if (VoiceState.speaking) return "$names · 正在说话, 先不听"
+        // (判据与那道闸同一个: [LwSpeak.talking] 把"引擎说完了而喇叭还在响"那一段也算进来)
+        if (LwSpeak.talking(this)) return "$names · 正在说话, 先不听"
         // 只有唤醒词在守 (纯 KWS 态): 通知就是那一句"正在听「…」"
         if (!voiceActive) {
             return when {
@@ -1620,6 +1783,27 @@ class WakeWordService : Service() {    private var spotter: KeywordSpotter? = nu
          * 续期, 所以"还在说"不会从中间被收掉, 一停下来就收
          */
         internal const val VOICE_IDLE_MS = 10_000L
+
+        /**
+         * "开了又关"那条快径的窗口: **300 ms** (2026-10-10)
+         *
+         * [openVoice] 的那两笔"还没开始的东西" (识别模型预热、通知栏那一句) 都延迟这个数再说, 而这个
+         * 数之内收窗 (且这一段里一个人声都没听到) 就走快径 ([VoiceRollback.isFast]) —— 两笔一起取消,
+         * 于是"开了又关"只剩一次状态回退, 没有通知闪烁、也不会白读一次模型
+         *
+         * 300 ms 这个量级来自原来的症状: 主人三击的那三下就在 220~300 ms 一档里走完 (见 [BallFeel]),
+         * 而这个窗口还要盖住"确认窗没能挡住的那几条路" (唤醒词刚打开就又被新一轮收掉那一种)
+         */
+        internal const val VOICE_ROLLBACK_MS = 300L
+
+        /**
+         * 开门之后这么久之内就被收掉的算"短命的一次": **500 ms**
+         *
+         * 它只进读数 ([WakeWordState.shortLivedOpens]), 不影响任何动作 —— 快径窗口是
+         * [VOICE_ROLLBACK_MS], 比它窄。两个数分开是因为"有没有白读模型"与"这一声门是不是白开了"
+         * 本来就是两件事, 而确认窗落地之后**这一个数应该趋近于 0**
+         */
+        internal const val VOICE_SHORT_LIVED_MS = 500L
 
         /**
          * 看门狗的检查节拍

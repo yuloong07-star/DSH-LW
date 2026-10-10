@@ -290,6 +290,17 @@ internal object LwOverlay {
             put("peekBlocked", OverlayState.peekBlocked)
             // 双击打断记了几笔 (主人 2026-10-06 加的那一支): 与 peekCalls 一样, 触摸类的东西要有个数
             put("interrupts", OverlayState.interrupts)
+            // **确认窗那三笔账** (2026-10-10): `tapCommits` 是投出去几个开麦待办, `tapCommitsCancelled`
+            // 是其中被双击/三击当场取消掉几个, `lastTripleMs` 是最近一次三击"第一下到键盘"那一段
+            // 有多长。三击那一批修的就是这三个数: 前者与取消数一起涨、最后一个只剩弹框本身的开销
+            put("tapCommits", OverlayState.tapCommits)
+            put("tapCommitsCancelled", OverlayState.tapCommitsCancelled)
+            put("lastTripleMs", OverlayState.lastTripleMs)
+            // **常驻语音那一档** (2026-10-10): `residentVoice` 是那个记号在不在 —— 它也是"球上写「正在听」
+            // 顶着其余状态"与"点一下连视频模式一起收掉"唯一的判据; `residentVoiceLeaves` 是球上收了几次。
+            // 球上那三个字与「正在听」是同一份文案, 所以这两笔账就是那一档的对账处
+            put("residentVoice", OverlayState.residentVoice)
+            put("residentVoiceLeaves", OverlayState.residentVoiceLeaves)
             // 输入通道那块框闲置了多久 (0 = 框不在屏上): 到 BallMinutes.BOX_IDLE_MS 它自己收
             put("boxIdleMs", OverlayState.boxIdleMs)
             put("ballWindowX", OverlayState.ballWindowX)

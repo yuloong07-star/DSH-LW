@@ -50,6 +50,7 @@ import io.github.yuloong07star.luwi.voice.VoiceCommands
 import io.github.yuloong07star.luwi.voice.VoiceInbox
 import io.github.yuloong07star.luwi.voice.VoiceState
 import io.github.yuloong07star.luwi.wake.WakeWordService
+import io.github.yuloong07star.luwi.wake.WakeWordState
 
 /**
  * 浮标现在什么样: 通道方法 `overlay` 的 state 就读这里
@@ -390,6 +391,42 @@ internal object OverlayState {
     var interrupts: Int = 0
 
     /**
+     * 确认窗那两笔账 (2026-10-10): **投出去几个开麦待办**, 以及其中**被双击/三击当场取消掉几个**
+     *
+     * 主人报的"三击 ball 会打开语音输入, 并且会卡一下"那一批就是靠这一对数收口的 (见 [BallCommit]):
+     * `tapCommitsCancelled` 应该随着三击次数一起涨, 而 [WakeWordState.shortLivedOpens] 应该趋近于 0
+     * —— 前者涨、后者不涨才是"确认窗真的挡在开麦前面"
+     */
+    @Volatile
+    var tapCommits: Int = 0
+
+    @Volatile
+    var tapCommitsCancelled: Int = 0
+
+    /**
+     * 最近一次三击: 从那一串的**第一下**到"键盘要来了"过了多少毫秒 (0 = 还没发生过)
+     *
+     * 它是主人报的那一声"卡一下"在应用这一侧的读数 (主人 2026-10-10): 三击的净效果里没有开麦之后,
+     * 这一段就只应该剩下弹框本身的开销
+     */
+    @Volatile
+    var lastTripleMs: Long = 0
+
+    /**
+     * **常驻语音开着没有** (2026-10-10): 读的是切模式那一步写下的那个记号 (`modes/voice-resident.on`,
+     * 见 `LwWakeWord.residentWanted`) —— 也就是"原本的常驻语音调用"那一份事实本身
+     *
+     * 球上这一档显示上与「正在听」一模一样 (主人: "那三个字也是正在听"), 只有点那一下不同: 记号开着
+     * 时单击不只是收麦, 还把视频模式一起退出 ([BallAct.LEAVE_VIDEO])。它就是那一下的判据, 也是读数
+     */
+    @Volatile
+    var residentVoice: Boolean = false
+
+    /** 球上那一下收掉常驻语音 (顺带退出视频模式) 记了几笔 —— 触摸类的东西要有个数 */
+    @Volatile
+    var residentVoiceLeaves: Int = 0
+
+    /**
      * 输入通道那块框闲置了多久 (毫秒, 0 = 框不在屏上)
      *
      * 到 [BallMinutes.BOX_IDLE_MS] 框就自己收掉 (主人 2026-10-06 选的处置), 收掉之后球那一笔空闲账
@@ -481,11 +518,12 @@ class OverlayService : Service() {
     /**
      * 这一串连击**头一下**的时刻 (0 = 还没开始)
      *
-     * 与 [tapChain] 一起喂给 [BallTaps.kind]: 三击看的是**整串的总时长** ([BallMinutes.TRIPLE_SPAN_MS]),
-     * 只看相邻两下的话"一下一下慢慢戳三下"也算三击 —— 而三击要开的是一块盖住半屏的输入框, 那是这套
-     * 手势里最值得防的一处误触 (2026-10-08)
+     * **它已经不参与判定** (2026-10-10): 原来那句"三击要在整串 450 ms 之内走完"的闸删掉了 ——
+     * 每一段间隔都必须 ≤ 双击窗口, 于是整串最多 2 × 220 = 440 ms, 那条闸在防误触档永远触不到
+     * (见 [BallTaps.kind])。现在它只当一个读数用: 三击落地时量"从第一下到键盘"那一段有多长
+     * ([OverlayState.lastTripleMs]), 主人报的那一声"卡一下"看的就是这一个数
      */
-    private var chainFrom = 0L
+    private var chainStartedAt = 0L
 
     /**
      * 上一次拖动**松手**是什么时候 (0 = 还没有过)
@@ -634,12 +672,60 @@ class OverlayService : Service() {
     private var lastSpeaking = false
 
     /**
-     * 这一次点击要跑的那个动作 (只有"正在想"的单点会被推迟 [BallMinutes.DOUBLE_TAP_MS])
+     * 这一下单击里那个**还没到点的开麦待办** (2026-10-10 起是它唯一一份待办)
      *
-     * 留着它是为了**双击到了就取消它**: 不取消的话双击的第一下会先把"正在想"那一档的单点动作做掉
-     * (那一档是收/开语音窗口), 于是"双击打断"会顺带把麦克风打开
+     * 它现在管的是"确认窗" (见 [BallCommit]): 会开麦的那一下不立刻开, 而是把开麦这件事挂在这上面
+     * 等 [BallFeel.commitWindowMs] —— 窗里来了双击或三击就把它取消, 于是一次三击从头到尾不碰麦克风
+     *
+     * **双击/三击到了就取消它** 是这套的全部要点, 理由有两条: 一是三击的净效果不该包含"先开麦";
+     * 二是"正在想"那一档的双击是打断 —— 不取消的话第一下会先把麦克风打开, 于是"想打断"变成了
+     * "开了语音"(2026-10-08 主人报的那一条)
+     *
+     * 生命周期由 [onDestroy] 的 `handler.removeCallbacksAndMessages(null)` 兜住 (那一条在这套之前
+     * 就有了), 所以服务走的时候不会有待办对着已销毁的视图抢焦点
      */
     private var pendingTap: Runnable? = null
+
+    /**
+     * 这一下按那四段算出来要做什么
+     *
+     * [tapAction] 与 [onTap] 的确认窗判定 ([BallCommit.deferMs]) 共用同一份入参 —— 分成两处写的话,
+     * "要不要等"与"等到了做什么"迟早会对不上
+     */
+    private fun currentAct(): BallAct = BallTouch.act(
+        phase = phase,
+        speaking = LwSpeak.speakingNow || VoiceState.speaking,
+        channelOpen = boxView != null,
+        listening = VoiceState.capturing,
+        // 常驻语音那一档: 显示上与「正在听」一模一样, 只有那一下多做一件事 (见 [BallAct.LEAVE_VIDEO])
+        resident = residentVoiceOn(),
+    )
+
+    /**
+     * 常驻语音此刻开着没有
+     *
+     * 读的是切模式那一步写下的**那个记号** ([LwWakeWord.residentWanted]) —— 与 `lw_wakeword op=status`
+     * 报的 `allowVoice`、与 `LwModes` 切模式用的是同一份事实, 所以"球上那一下"不会与"原本的常驻语音
+     * 调用"漂开 (主人 2026-10-10: "和原本的常驻语音调用一致")
+     *
+     * **不读 `WakeWordState.voiceAllowed`**: 那个字段只在唤醒词服务收到 `ACTION_REFRESH` 时才更新,
+     * 而服务没在听 (省电模式 / 还没起) 时它有可能是旧的 —— 记号文件才是那份事实本身
+     */
+    private fun residentVoiceOn(): Boolean = runCatching { LwWakeWord.residentWanted(this) }.getOrDefault(false)
+
+    /**
+     * 取消那个还没到点的开麦待办, 回"真的取消掉了一个没有"
+     *
+     * 真的取消掉才记一笔 [OverlayState.tapCommitsCancelled]: 它就是"确认窗挡住过几次开麦"那个读数,
+     * 与 [OverlayState.tapCommits] 并排看才知道待办有没有把主人想要的开口也吃掉
+     */
+    private fun dropPendingCommit(): Boolean {
+        val run = pendingTap ?: return false
+        handler.removeCallbacks(run)
+        pendingTap = null
+        OverlayState.tapCommitsCancelled += 1
+        return true
+    }
 
     private var lastNotice: String? = null
 
@@ -991,7 +1077,7 @@ class OverlayService : Service() {
                 note("a tap ${now - lastDropAt}ms after a drop: not counting it as a click")
                 return
             }
-            val gesture = BallTaps.kind(lastWord, now, lastTapAt, tapChain, chainFrom, feel)
+            val gesture = BallTaps.kind(lastWord, now, lastTapAt, tapChain, feel)
             // **"点一下球"就是认过那一轮失败** (2026-10-08 主人定的口径): 球上正亮着那两个字时,
             // 被认成手势的那一下 (单击 / 双击 / 三击) 把水位线推到**文件里那个 `at`**。三个限制
             // 都是刻意的:
@@ -1016,18 +1102,29 @@ class OverlayService : Service() {
                     return
                 }
 
-                // **双击** (300 ms 之内两下): 只有"正在想"那一档有动作 —— 打断正在跑的那一轮 (主人
+                // **双击** (双击窗口之内两下): 只有"正在想"那一档有动作 —— 打断正在跑的那一轮 (主人
                 // 2026-10-06), 而第一下那个延迟动作当场取消 (见 [pendingTap])。别的档里第二下**什么
                 // 都不做**: 那正是防连击要的净效果 ("两下贴着"还是原来那一次单击)
                 BallTap.DOUBLE -> {
                     lastTapAt = now
                     tapChain = 2
-                    if (lastWord == BallWord.THINKING) {
-                        pendingTap?.let { handler.removeCallbacks(it) }
-                        pendingTap = null
+                    // **第一下那个开麦待办在这里取消** (2026-10-10, 见 [BallCommit]): 这一下既然是
+                    // 双击, 就不可能再凑出三击, 于是"点两下"这一档不该留下一声开麦
+                    val dropped = dropPendingCommit()
+                    // **视频模式里双击不打断** (主人 2026-10-10 选的那一档): 那一档球上永远写「正在听」
+                    // (见 [BallStatus.wordFor]), 而"正在想"只会在麦克风意外掉下去的那几百毫秒里露个头
+                    // —— 不显式挡一下, 那几百毫秒里点两下就会把一场真的停掉
+                    if (lastWord == BallWord.THINKING && !residentVoiceOn()) {
                         interruptBall()
                     } else {
-                        note("a second tap within ${BallMinutes.DOUBLE_TAP_MS}ms: it does nothing here")
+                        note(
+                            "a second tap within ${feel.doubleTapMs}ms: " +
+                                (if (dropped) {
+                                    "the pending voice open was cancelled"
+                                } else {
+                                    "it does nothing here"
+                                }),
+                        )
                     }
                     return
                 }
@@ -1037,43 +1134,51 @@ class OverlayService : Service() {
                 BallTap.TRIPLE -> {
                     lastTapAt = now
                     tapChain = 3
-                    pendingTap?.let { handler.removeCallbacks(it) }
-                    pendingTap = null
-                    tripleTap()
+                    // **确认窗就靠这一行** (2026-10-10): 头一下要是已经投出一个开麦待办, 这一下当场
+                    // 把它取消掉 —— 于是三击从头到尾不碰麦克风, 也就没有那一声"开了又关"的卡顿
+                    dropPendingCommit()
+                    tripleTap(now)
                     return
                 }
 
                 BallTap.SINGLE -> {
                     lastTapAt = now
                     tapChain = 1
-                    // 新的一串从这里开始: 三击那一段的总时长以这一刻起算
-                    chainFrom = now
+                    // 新的一串从这里开始: 它只当读数用 (三击落地时量"第一下到键盘"那一段)
+                    chainStartedAt = now
                     // 那本"框外双击"的账在 onPressStart 已经清过了 (按下必到那一条), 这里不必再清
-                    if (lastWord == BallWord.THINKING) {
-                        // "正在想"里的**单点要等过双击窗口**再开语音 (2026-10-08 主人: "进入语音输入
-                        // 要比第二次点击慢一点"): 不等的话双击的第一下会先把这个动作做掉, 于是"想打断"
-                        // 变成了"开了麦克风"。见 [BallMinutes.THINKING_TAP_MS] 与 [pendingTap]
-                        //
-                        // **先把上一次那个待办取消掉**: 上一拍可以也是"在想"下的一下单点 (隔得没过那个
-                        // 等待窗口的那种), 两个待办都在的话, 先开的那个会被后一个当场关掉 —— 看着像闪了一下
-                        //
-                        // **等的那个数由这一档算出来** ([BallFeel.thinkingTapMs]): 防误触档把防连击窗口
-                        // 放宽到 450 ms 之后 (标准档是 350 ms), 原来那个常量 450 ms 恰好排到它前面, 于是
-                        // 双击的第二下被当成了单点 (开着语音而没打断)。见 [BallMinutes.BALL_TAP_GUARD_MS]
-                        val wait = feel.thinkingTapMs()
+                    // **这一下要不要等确认窗** (2026-10-10): 判据在纯函数 [BallCommit.deferMs] 里 ——
+                    // 只有"真的要开麦"那几支排队, 其余 (召出 / 收麦 / 掐播报 / 只记召出) 当场做掉。
+                    // "正在想"那一档原来就在等 [BallFeel.thinkingTapMs] (要晚过双击与防连击两条线),
+                    // 现在与其余几支走同一个待办, 只是那个数由 [BallCommit] 按状态词挑
+                    val wait = BallCommit.deferMs(
+                        act = currentAct(),
+                        word = lastWord,
+                        summonFresh = BallMinutes.summonIsFresh(now, summonedAt),
+                        replyBox = OverlayState.replyTarget() != null,
+                        feel = feel,
+                    )
+                    if (wait <= 0L) {
+                        tapAction(now)
+                    } else {
+                        // **先把上一次那个待办取消掉**: 上一拍可以也是同一档里的一下单点 (隔得没过确认窗
+                        // 的那种), 两个待办都在的话, 先开的那个会被后一个当场关掉 —— 看着像闪了一下
                         pendingTap?.let { handler.removeCallbacks(it) }
-                        note(
-                            "a tap while thinking: holding it for ${wait}ms" +
-                                " in case a second one comes",
-                        )
+                        note("a tap that would open the voice chain: holding it for ${wait}ms")
                         val run = Runnable {
                             pendingTap = null
-                            tapAction(System.currentTimeMillis())
+                            // **到点了再算一次**: 窗里状态可能已经变了 (比如宿主翻成在念, 或者别人
+                            // 把麦克风打开了), 那一刻该做的也许已经不是开麦 —— 那就作废, 而不是替
+                            // 别人把麦克风关掉 ([tapAction] 的 HUSH 那一支)
+                            if (currentAct() == BallAct.LISTEN) {
+                                tapAction(System.currentTimeMillis())
+                            } else {
+                                note("the commit window closed on a different state: dropping the open")
+                            }
                         }
                         pendingTap = run
+                        OverlayState.tapCommits += 1
                         handler.postDelayed(run, wait)
-                    } else {
-                        tapAction(now)
                     }
                 }
             }
@@ -1124,14 +1229,7 @@ class OverlayService : Service() {
      */
     private fun tapAction(now: Long) {
         // 按住球的那一下只算"召出它": 先把读数清掉, 再按那几段走
-        when (
-            BallTouch.act(
-                phase = phase,
-                speaking = LwSpeak.speakingNow || VoiceState.speaking,
-                channelOpen = boxView != null,
-                listening = VoiceState.capturing,
-            )
-        ) {
+        when (currentAct()) {
             BallAct.NOTHING -> Unit
 
             // 收着的时候点一下: 滑回来, 并且把"这一次召出"记下来 —— **那一下绝对不碰语音链**
@@ -1175,9 +1273,33 @@ class OverlayService : Service() {
             // 正听着的时候再点一下: 收回来。这一下是"切开关", 而"开没开"由状态词自己说
             BallAct.HUSH -> listenNow()
 
+            // 常驻语音那一档 (显示上就是「正在听」): 收掉它的同时把视频模式也退出 (主人 2026-10-10)
+            BallAct.LEAVE_VIDEO -> leaveVideoMode()
+
             // 正在念回答: 掐断它 (主人 2026-10-05 追加的一条)
             BallAct.STOP -> stopSpeaking()
         }
+    }
+
+    /**
+     * 球上那一下「正在听」把常驻语音收掉, 并把视频模式一并退出 (2026-10-10 主人: "单击关闭后也关闭
+     * 视频模式")
+     *
+     * 走的是**切模式那同一次调用** ([LwModes.switchTo], 与 `lw_mode`、设备上那几个脚本同一个入口):
+     * 常驻语音那个记号、相机、`.active` 与提示词四件事一起收口。球这边不拼第二套 —— 少一处就会漂:
+     * 记号清了而相机还开着, 或者反过来
+     *
+     * 那次调用回一份 JSON, 里面 `voice` 那一句是人话 —— 记进现场表, 出问题时有话可说
+     */
+    private fun leaveVideoMode() {
+        noteActivity()
+        val said = runCatching {
+            LwModes.switchTo(this, LwModes.PHONE).toString()
+        }.getOrElse { error -> "failed: ${error.message ?: error}" }
+        OverlayState.residentVoiceLeaves += 1
+        note("the ball closed the resident voice and left video mode: $said")
+        // 记号与 `.active` 都在这一次调用里改完了, 所以立刻重算一遍字 (不等 400 ms 那一拍)
+        refresh(force = true)
     }
 
     /**
@@ -1193,9 +1315,14 @@ class OverlayService : Service() {
      * `VoiceState.capturing` 那个判据是必须的: 窗口没开着时**不许**调 [LwWakeWord.hushWindow] —— 那
      * 一条是 `startForegroundService`, 在一个不该跑的服务上发它等于把服务与通知重新拉起来
      */
-    private fun tripleTap() {
+    private fun tripleTap(now: Long) {
         if (VoiceState.capturing) runCatching { LwWakeWord.hushWindow(this) }
         noteActivity()
+        // 从这一串的**第一下**到"键盘要来了"那一段 (主人 2026-10-10 报的那一声"卡一下"就量这一个数):
+        // 三击的净效果里没有开麦之后, 这一段只剩弹框本身的开销
+        val span = if (chainStartedAt != 0L) now - chainStartedAt else 0L
+        OverlayState.lastTripleMs = span
+        note("triple: keyboard asked for ${span}ms after the chain's first tap")
         openChannel(focus = true)
     }
 
@@ -2259,13 +2386,20 @@ class OverlayService : Service() {
         // `VoiceState.speaking` 是半双工那道闸的标记, 而三条引擎各自的 `speaking` 是
         // [LwSpeak.speakingNow] —— 只看前者时, 在线那两条 (Edge / API) 念的那几秒球会说成
         // "正在听"。点球那一下 ([tapAction]) 早就是两个一起看的, 这里对齐它
-        val speaking = VoiceState.speaking || LwSpeak.speakingNow
+        // **"正在说"也认那条尾巴** (2026-10-10): 引擎报"说完"之后喇叭往往还在响, 那一段球上仍该写
+        // 「正在说」(那一下点球是"别念了"), 也要挡住"她自己的回答被录回去" (见 [LwSpeak.talking])
+        val speaking = LwSpeak.talking(this)
         // 「正在想」: 宿主说有一轮在跑 (那份文件是真相, 见 [BallPhaseFile]); 宿主没在跑时一律不采纳,
         // 否则宿主崩了球会永远停在"正在想"
         val thinking = OverlayState.phase == OverlayState.PHASE_THINKING && DshHost.status is HostStatus.Running
         // "正在听"说的就是这一句话的窗口开着 ([VoiceState.capturing]): 唤醒词一直守着, 而守着这件事
         // 不该在球上写成"正在听" —— 那是常态, 一直挂着只会让人以为麦克风在被吃
         val listening = VoiceState.capturing
+        // 常驻语音那一档的读数 (2026-10-10): 记号开着而麦克风也开着时, 球上那一下「正在听」不只是收麦,
+        // 还把视频模式一起退出 (见 [BallAct.LEAVE_VIDEO]) —— 它显示上与「正在听」一模一样, 所以这个
+        // 读数就是"那一档到底在不在"唯一的对账处
+        val residentVoice = residentVoiceOn()
+        OverlayState.residentVoice = residentVoice
         // 三笔边沿账 (想/听各自"什么时候变成真的"、念的开始与结束、"起了一轮新的") 都在这一处算,
         // 而它们同时是那两笔自动收口的触发点 (见 [noteEdges])
         noteEdges(System.currentTimeMillis(), speaking, thinking, listening)
@@ -2279,6 +2413,11 @@ class OverlayService : Service() {
             // 想与听同时成立时谁上就看这两个数 (见 [BallStatus.wordFor]): 晚的那个是"刚发生的事"
             thinkingAt = thinkingAt,
             listeningAt = listeningAt,
+            // 视频模式那一档顶格 (主人 2026-10-10): 记号在就一直写「正在听」, 只让正在说盖一下。
+            // **收紧过两次**(同一天主人那句"宁可不写, 也不骗人"): ① 省电模式里不算 (那时麦克风整个
+            // 关着); ② **服务真的在听才算** —— 唤醒词服务被杀掉之后记号还在, 那时球上不该写着
+            // 「正在听」而麦克风一动不动 (2026-10-10 当场量到的那一次)
+            resident = residentVoice && WakeWordState.listening && !WakeWordState.powerSave,
         )
         val changed = word != lastWord
         // **环色也得算进"变了没有"**: 两个会话轮流在想时那个字一直是「正在想」, 而颜色要跟着换
@@ -2430,7 +2569,11 @@ class OverlayService : Service() {
             stopSpeaking()
             OverlayState.speechCuts += 1
         }
-        if (VoiceState.capturing) {
+        // **视频模式里不收这一下** (2026-10-10 主人: "把视频状态下正在听这三个字…不能被其它状态打断" +
+        // "在说时要关闭麦克风…说完后/打断后重新拉起听"): 常驻那一档要的就是"接着说话不用再喊唤醒词",
+        // 而这一收会让"正在想"那几秒的麦也关掉。收麦这件事从此只由"说"的边沿决定
+        // (见 `WakeWordService` 那条观察线程): 念的时候关, 念完/掐断之后拉回来
+        if (VoiceState.capturing && !residentVoiceOn()) {
             note("a new turn started: taking the voice window back")
             runCatching { LwWakeWord.hushWindow(this) }
         }

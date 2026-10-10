@@ -444,10 +444,16 @@
     <string name="settings_skills_have">已经装了 —— 命中 %1$s</string>
     <string name="settings_skills_missing">还没装 —— 命中 %1$s</string>
     <string name="settings_skills_install">把装了那些应用的技能一次装上</string>
+    <string name="settings_skills_refresh">刷新技能目录</string>
+    <string name="settings_skills_refresh_summary">从 %1$s 取回那份 index.json 并缓存在本机; 取不到就还用本机这一份</string>
     <string name="settings_skills_busy">正在装…</string>
     <string name="settings_skills_install_summary">照随包那份「应用 → 技能」目录扫一遍; 已经在的那几份一个字节都不动</string>
     <string name="settings_skills_done">装了 %1$d 条; 命中的 %2$d 条现在都在了。dsh 下一轮就看得见</string>
-    <string name="settings_skills_note">技能只是提示词材料: 它落在 dsh 家里那份 SKILL.md, 不动任何权限。改它是正常的 —— 这个按钮从不覆盖已经在的那一份</string>
+    <string name="settings_skills_delete">删掉这个技能</string>
+    <string name="settings_skills_delete_summary">删的是 dsh 家里 %1$s 那一份 —— 没有回收站: 你手改过的内容回不来, 「一键装入」只能把随包那份抄回去</string>
+    <string name="settings_skills_deleted">删了 %1$d 条技能</string>
+    <string name="settings_skills_delete_failed">有 %1$d 条没删掉</string>
+    <string name="settings_skills_note">技能只是提示词材料: 它落在 dsh 家里那份 SKILL.md, 不动任何权限。改它是正常的 —— 这个按钮从不覆盖已经在的那一份。点一条**已经在**的技能可以删掉那一份目录 (先问一句)</string>
 
     <string name="settings_section_plugin">插件</string>
     <string name="settings_section_plugin_summary">装上别人写的包, 给这台手机加能力</string>

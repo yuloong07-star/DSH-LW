@@ -1,6 +1,7 @@
 package io.github.yuloong07star.luwi.tool
 
 import android.content.Context
+import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
@@ -185,6 +186,8 @@ internal object LwSpeak {
         //
         // 包住的是**整段**: 下面的 `unavailable` 会抛, 那时标记也必须放回去, 不然麦克风一直关着
         VoiceState.speaking = true
+        // 新的一句开始: 上一句那份"可能还在响"的预算作废 (这一句结束时会重新写, 见 [talking])
+        VoiceState.spokeUntil = 0L
         try {
             return speakWith(context, request, text)
         } finally {
@@ -215,6 +218,8 @@ internal object LwSpeak {
             val volume = wantedVolume.coerceIn(SpeakSettings.volumeRange.start, SpeakSettings.volumeRange.endInclusive)
             val answer = LwTts.speak(context, voice, text, speed, volume / SpeakSettings.VOLUME_UNITY)
             val failed = !answer.startsWith("said ")
+            // 自带那条念完也留一份预算: 它的"放完"是准的, 但音轨排空那一下仍在出声 (见 [talking])
+            if (!failed) VoiceState.spokeUntil = System.currentTimeMillis() + tailBudgetMs(text)
             return buildJsonObject {
                 put("spoken", !failed)
                 put("readingWith", "on-device")
@@ -239,6 +244,8 @@ internal object LwSpeak {
                 LwApiTts.speak(context, text, speed)
             }
             val failed = !answer.startsWith("said ")
+            // 在线那两条也留一份"可能还在响"的预算 (它们的播放器在服务那一侧, 报"说完"同样可能早)
+            if (!failed) VoiceState.spokeUntil = System.currentTimeMillis() + tailBudgetMs(text)
             return buildJsonObject {
                 put("spoken", !failed)
                 put("readingWith", if (edge) "edge" else "api")
@@ -309,6 +316,9 @@ internal object LwSpeak {
         }
         val reported = failure
         current = null
+        // **"说完了"之后那一段** (见 [talking]): 引擎报的结束常常早于喇叭真的不响, 按这一句的长度留一份
+        // 预算, 那一段里由媒体流说了算
+        VoiceState.spokeUntil = System.currentTimeMillis() + tailBudgetMs(text)
         return buildJsonObject {
             put("spoken", finished && reported == null)
             put("text", text)
@@ -342,6 +352,8 @@ internal object LwSpeak {
         current = null
         // 掐断了就不能让那道半双工的闸一直关着
         VoiceState.speaking = false
+        // 手动掐断是"现在就停": 那份尾巴预算也一起作废, 否则麦克风会白关一会儿 (见 [talking])
+        VoiceState.spokeUntil = 0L
         val stopped = onDevice != null || online != null || result == TextToSpeech.SUCCESS
         return buildJsonObject {
             put("stopped", stopped)
@@ -363,6 +375,37 @@ internal object LwSpeak {
     /** 现在有没有在念: ⋮ 菜单那条「停止朗读」据此决定要不要说自己没东西可停 */
     internal val speakingNow: Boolean
         get() = current != null || LwTts.speaking || LwEdgeTts.speaking || LwApiTts.speaking
+
+    /**
+     * **她此刻还在出声吗** —— 半双工那道闸与"说的时候关麦"都认这一条, 不认 [speakingNow]
+     *
+     * 差别只在**尾巴**: 系统那条引擎的 `onDone` 常常在"合成完了"就报, 而喇叭里还在放 (2026-10-10
+     * 主人: "视频模式下正在听时还是有可以录入正在说" —— 日志里她整句回答被录回去当成了主人那一句)。
+     * 所以引擎说完了之后还有一段 [VoiceState.spokeUntil] 的预算, 那一段里只要**媒体流还在放**就继续
+     * 当"在说"。预算按这一句的字数估 (见 [tailBudgetMs]) 封顶, 别的应用放音乐/视频不会把麦克风一直
+     * 摁住 —— 到点就放行
+     */
+    internal fun talking(context: Context): Boolean {
+        if (speakingNow) return true
+        if (VoiceState.spokeUntil <= System.currentTimeMillis()) return false
+        // 播放状态问的是**媒体流有没有在放**: 系统那条引擎放音走的就是它, 而"放完了"这件事引擎自己
+        // 报不准 (上面那条); 拿不到 AudioManager 时按"没在放"处理 —— 宁可早一点放开麦
+        val audio = context.getSystemService(AudioManager::class.java) ?: return false
+        return audio.isMusicActive
+    }
+
+    /**
+     * 这一句念完之后留多长的"可能还在响"预算
+     *
+     * 一个汉字在正常语速下两百多毫秒, 语速设到 2.0 时还要减半 —— 这里按 350 ms 一个字符再加 4 s
+     * 的余量, 上限 25 s: **它只是上限**, 真正的放完由媒体流那一条判 ([talking])
+     */
+    private fun tailBudgetMs(text: String): Long =
+        (text.length * TAIL_MS_PER_CHAR + TAIL_MARGIN_MS).coerceAtMost(TAIL_MAX_MS)
+
+    private const val TAIL_MS_PER_CHAR = 350L
+    private const val TAIL_MARGIN_MS = 4_000L
+    private const val TAIL_MAX_MS = 25_000L
 
     /** 把引擎放掉: 下一次 status/speak 会重新初始化 */
     private fun release(): JsonObject {

@@ -464,6 +464,11 @@ internal object LwWakeWord {
             put("hits", WakeWordState.hits)
             // 被去抖吃掉几次 (2026-10-09 调参那一批): 与 hits 并排看才知道阈值放到了什么程度
             put("suppressed", WakeWordState.suppressed)
+            // **"开了又关"那两笔账** (2026-10-10): `fastRollbacks` 是走了静默快径几次, 而
+            // `shortLivedOpens` 是"开麦之后 500 ms 内就被收掉"几次 —— 确认窗落地之后后者应该趋近于 0
+            // (三击那一条路压根不该再把窗口打开, 见 BallCommit)
+            put("fastRollbacks", WakeWordState.fastRollbacks)
+            put("shortLivedOpens", WakeWordState.shortLivedOpens)
             // **正在跑的**那四个 KWS 参数 (不是缺省表里的那一份): 真机回调时看它才对得上
             put("threshold", WakeWordState.threshold)
             put("score", WakeWordState.score)

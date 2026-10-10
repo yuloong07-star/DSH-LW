@@ -25,6 +25,7 @@ import android.util.Size
 import android.view.Display
 import android.view.Surface
 import io.github.yuloong07star.luwi.channel.CameraWindow
+import io.github.yuloong07star.luwi.channel.PreviewTurn
 import io.github.yuloong07star.luwi.util.Capability
 import io.github.yuloong07star.luwi.util.PermissionGate
 import io.github.yuloong07star.luwi.workspace.Workspace
@@ -336,6 +337,9 @@ internal object LwCamera {
             put("window", CameraWindow.isOpen())
             put("shot", if (shot.width > 0) "${shot.width}x${shot.height}" else "")
             put("preview", if (preview.width > 0) "${preview.width}x${preview.height}" else "")
+            // **这台设备的预览面发布哪些尺寸 + 该转多少度** (2026-10-10 加): 只读静态特征, 不用开相机
+            // —— "预览比例不对"那一类问题全靠这两行读数定位 (横的还是竖的, 与传感器方向对不对得上)
+            lensFacts(context)?.forEach { (key, value) -> put(key, value) }
             put("frames", produced.size)
             // 丢帧是"取景比读帧快"的证据: 报一个数字, 而不是让人以为每一张都到手了
             put("lost", dropped)
@@ -363,6 +367,11 @@ internal object LwCamera {
                         "preview window" to CameraWindow.isOpen().toString(),
                         "snapshot size" to (if (shot.width > 0) "${shot.width}x${shot.height}" else "not chosen yet"),
                         "preview buffer" to (if (preview.width > 0) "${preview.width}x${preview.height}" else "not chosen yet"),
+                        // **小窗那一块按哪一档摆** (2026-10-10): 这一路的帧是相机自己转好交过来的 (静态图
+                        // 按 1280x720 要、真机上拿回来的是 720x1280), 所以小窗只换高宽、不再转一次 ——
+                        // "预览比例不对"那一类问题先看这一行与上面那个 `previewDegrees`
+                        "preview layout" to "the window follows the display direction (swapped sides when" +
+                            " the frame is 90/270 off); the frames are not turned again",
                         "frames kept" to produced.size.toString(),
                         "frames dropped" to dropped.toString(),
                         "frames per look" to VideoLooks.count.toString(),
@@ -434,32 +443,56 @@ internal object LwCamera {
             synchronized(lock) {
                 capturing = true
                 runCatching { session?.stopRepeating() }
+                /** 这一次请求的那一帧 (超时回 null, 由调用方决定重试还是报错) */
+                fun awaitFrame() = try {
+                    frames.poll(FRAME_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    null
+                }
+                // **自愈只做一次**: 重开相机之后还是不给帧, 那就照实报错, 不无限重试
+                var reopened = false
                 repeat(count) { index ->
                     if (index > 0) sleepUntil(started, offsets.last(), intervalMs)
                     // 要的是**这一次**请求的那一帧: 上一趟留在队列里的 (比如超时之后才到的那张) 先丢掉,
                     // 不然交出去的会是上一张 —— 那是"拍到了"的假话
                     drainFrames()
                     captureStill(onCamera, index)
-                    val image = try {
-                        frames.poll(FRAME_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-                    } catch (interrupted: InterruptedException) {
-                        Thread.currentThread().interrupt()
-                        null
-                    } ?: unavailable(
+                    var image = awaitFrame()
+                    if (image == null && !reopened) {
+                        // **一帧都没到手: 把相机整个重开一遍再试这一帧** (2026-10-10 主人: "让它自愈") ——
+                        // 也就是手动"退出视频模式再进一次"那一下的程序版。这台设备上偶发过"会话 up、
+                        // 预览也在动, 而 still capture 一帧不落"的卡死, 重开就好; 现场那六项留在日志里
+                        reopened = true
+                        Log.w(
+                            TAG,
+                            "frame ${index + 1} of $count did not arrive within ${FRAME_TIMEOUT_MS}ms;" +
+                                " reopening the camera once and retrying:" +
+                                " session=${session != null} hasPreview=$sessionHasPreview" +
+                                " lens=${lensName(facing)} reader=${reader != null}" +
+                                " previewError=${previewError ?: "none"} lastError=${lastError ?: "none"}",
+                        )
+                        runCatching { close(context, buildJsonObject { put("clean", true) }) }
+                        runCatching { ensure(context, facing, required = false) }
+                        drainFrames()
+                        captureStill(onCamera, index)
+                        image = awaitFrame()
+                    }
+                    val frame = image ?: unavailable(
                         "taking frame ${index + 1} of $count",
-                        "the camera handed over nothing within ${FRAME_TIMEOUT_MS}ms"
-                            + (lastError?.let { " ($it)" } ?: ""),
+                        "the camera handed over nothing within ${FRAME_TIMEOUT_MS}ms" +
+                            (lastError?.let { " ($it)" } ?: ""),
                     )
                     offsets += System.currentTimeMillis() - started
                     try {
-                        val buffer = image.planes[0].buffer
+                        val buffer = frame.planes[0].buffer
                         val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
                         val file = File(directory, "cam-$stamp-$index.jpg")
                         file.writeBytes(bytes)
                         files += file
                         produced += file
                     } finally {
-                        image.close()
+                        frame.close()
                     }
                 }
             }
@@ -695,6 +728,10 @@ internal object LwCamera {
             context = context,
             widthPx = preview.width,
             heightPx = preview.height,
+            // 帧是传感器那一套坐标, 转多少度由这一对算 (见 CameraWindow.previewDegrees):
+            // 少了这两个数, 竖着拿手机时那一帧就是横的, 而窗口按横比例开出来 —— 画面被压扁
+            sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90,
+            mirror = facing == CameraCharacteristics.LENS_FACING_FRONT,
             onSurface = { rebuildSession() },
             // 那个叉子是主线程上的点击, 而 close 里边要等主线程把窗口摘掉 —— 所以另起一条线程做
             onClose = {
@@ -1045,6 +1082,54 @@ internal object LwCamera {
         .minByOrNull { abs(it.width * it.height - target) }
 
     /**
+     * 这台设备的镜头静态事实: **预览面发布哪些尺寸 / 传感器装的方向 / 屏幕转了多少** (2026-10-10)
+     *
+     * 只读 `CameraCharacteristics`, **一个相机都不用开** —— 所以"主人报的预览比例不对"可以先在不打扰
+     * 任何人的前提下量出来: 帧的宽高与"该转多少度"是两件事, 而它们对不上时画出来的东西就是被压扁的
+     *
+     * @return 读不到 (没权限 / 没有摄像头) 时回 null, 调用方就当它没报
+     */
+    private fun lensFacts(context: Context): JsonObject? = runCatching {
+        val window = context.getSystemService(CameraManager::class.java)
+        val id = cameraId ?: window?.cameraIdList?.firstOrNull()
+        if (window == null || id == null) null
+        else {
+            val characteristics = window.getCameraCharacteristics(id)
+            val choices = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
+                ?.sortedBy { it.width * it.height }
+                ?.joinToString(",") { "${it.width}x${it.height}" }
+                .orEmpty()
+            buildJsonObject {
+                val sensor = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+                val front = characteristics.get(CameraCharacteristics.LENS_FACING) ==
+                    CameraCharacteristics.LENS_FACING_FRONT
+                val degrees = displayDegrees(context)
+                put("lensId", id)
+                put("sensorOrientation", sensor)
+                put("displayDegrees", degrees)
+                // 预览要转多少度才正 —— **报的就是画的那一个数** (见 PreviewTurn, 两边同一个函数)
+                put("previewDegrees", PreviewTurn.degrees(sensor, degrees, mirror = front))
+                put("previewChoices", choices)
+            }
+        }
+    }.getOrNull()
+
+    /** 屏幕现在转了多少度 (0 / 90 / 180 / 270) —— JPEG 的 EXIF 用 [jpegRotation], 读数用它 */
+    private fun displayDegrees(context: Context): Int {
+        // 不能问 context.display: 应用上下文不是"显示上下文", 那条路在有的版本上直接抛。默认屏就够,
+        // 这台设备的主屏也是它
+        val display = context.getSystemService(DisplayManager::class.java)
+            ?.getDisplay(Display.DEFAULT_DISPLAY)
+        return when (display?.rotation) {
+            Surface.ROTATION_90 -> 90
+            Surface.ROTATION_180 -> 180
+            Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+    }
+
+    /**
      * JPEG 该转多少度
      *
      * 传感器是横着装的, 竖着拿手机要转 90 度, 不然抓下来的图躺着 —— 这条路与相机应用不一样, 没人替我们
@@ -1053,16 +1138,7 @@ internal object LwCamera {
     private fun jpegRotation(characteristics: CameraCharacteristics, context: Context): Int {
         val sensor = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
         val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
-        // 不能问 context.display: 应用上下文不是"显示上下文", 那条路在有的版本上直接抛。默认屏就够,
-        // 这台设备的主屏也是它
-        val display = context.getSystemService(DisplayManager::class.java)
-            ?.getDisplay(Display.DEFAULT_DISPLAY)
-        val degrees = when (display?.rotation) {
-            Surface.ROTATION_90 -> 90
-            Surface.ROTATION_180 -> 180
-            Surface.ROTATION_270 -> 270
-            else -> 0
-        }
+        val degrees = displayDegrees(context)
         return if (facing == CameraCharacteristics.LENS_FACING_FRONT) {
             (sensor + degrees) % 360
         } else {

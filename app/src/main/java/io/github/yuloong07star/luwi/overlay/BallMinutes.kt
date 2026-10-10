@@ -98,7 +98,8 @@ internal object BallMinutes {
      * - 双击窗口收窄: 打断那一支是唯一"点错就真的停了一场"的动作
      * - 两个"太近不算"的窗口放宽: 手抖出来的第二下被算成同一击, 于是不会进语音输入
      *
-     * 三击那一串的总时长已经在 [TRIPLE_SPAN_MS] 里管着了, 这里不重复收
+     * **2026-10-10 起这一档还多一个 [BallFeel.commitWindowMs]** (开麦那一下的确认窗, 取值就是双击
+     * 窗口): 单击里只有"真要开麦"那一支排队, 其余动作照旧当场做掉
      */
 
     /** 防误触档的双击窗口: **220 ms** (标准档是 300 ms) */
@@ -175,13 +176,21 @@ internal object BallMinutes {
      */
 
     /**
-     * 长按出菜单要按住多久: **650 ms**
+     * 长按门槛的基准: **500 ms**
      *
      * 平台自己的 `ViewConfiguration.getLongPressTimeout()` 是 400~500 ms 那一档, 而那对一颗随时都
-     * 在屏上的球来说太短了 —— 慢一点的单击 (按下、觉得不对、松开) 会被判成长按并弹出菜单。取 650 ms
-     * 是"比平台的默认长一档, 又还没有长到让人以为球卡住"
+     * 在屏上的球来说太短了 —— 慢一点的单击 (按下、觉得不对、松开) 会被判成长按并弹出菜单。
+     * 防误触档在这个基准上再加 [BALL_PRESS_MARGIN_MS] 那么一段 (见 [BallFeel.pressMs])
+     *
+     * **2026-10-10 之前防误触档写死 650 ms** (主人 2026-10-08 点名), 而那与"标准档直接用平台的
+     * 400~500 ms"差了一倍多 —— 同一颗球两档之间的长按手感于是对不上。现在两档都是一个式子: 基准是
+     * `max(平台值, 这个数)`, 防误触档只多一段余量。典型设备 (平台值 400~500 ms) 上量出来仍是
+     * 650 ms, 与原值一个字不差
      */
-    const val BALL_PRESS_MS = 650L
+    const val BALL_PRESS_BASE_MS = 500L
+
+    /** 防误触档在长按基准上留的那一段余量: **150 ms** (与基准合起来就是原来那个 650 ms) */
+    const val BALL_PRESS_MARGIN_MS = 150L
 
     /**
      * 判定"这一下是拖动"的门槛: **至少 12 dp**
@@ -190,15 +199,6 @@ internal object BallMinutes {
      * 那一下变成"拖了一下没动地方", 而拖动是不出单击动作的 (见 [BALL_DROP_GUARD_MS] 与 BallView)
      */
     const val BALL_SLOP_DP = 12
-
-    /**
-     * 三击那一串必须在多久之内走完: **450 ms**
-     *
-     * 三击是"打开键盘输入"(2026-10-07 主人点名的那一个手势), 而它是这套手势里最容易被误触的: 空闲时
-     * 随手戳三下就是一块盖住半个屏幕的框。收紧的办法是给**整串**一个总时长 (不是只看相邻两下):
-     * 第一下之后 450 ms 内数到第三下才算三击, 超过就停在双击那一档 (而双击在多数档里没有动作)
-     */
-    const val TRIPLE_SPAN_MS = 450L
 
     /**
      * 刚拖完的那一下不算单击: **250 ms**
@@ -233,31 +233,43 @@ internal object BallMinutes {
  *
  * **取值的方向是 0 = 这一档不启用这条闸**, 于是"关掉"与"用平台的"不需要第二份判断:
  *
- * | 档 | 长按 | 拖动门槛 | 三击总时长 | 刚拖完那一下 | 双击窗口 | 点球防连击 | 正在听防连击 |
+ * | 档 | 长按 | 拖动门槛 | 刚拖完那一下 | 双击窗口 | 点球防连击 | 正在听防连击 | 确认窗 |
  * | :-- | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
- * | [STANDARD] 标准 | 平台的 `longPressTimeout` (400~500 ms) | 平台的 `scaledTouchSlop` (8 dp 上下) | 不看总时长 | 不挡 | 300 ms | 350 ms | 1 s |
- * | [GUARD] 防误触 (缺省) | 650 ms | 12 dp | 450 ms | 250 ms | 220 ms | 450 ms | 1.5 s |
+ * | [STANDARD] 标准 | 平台的 `longPressTimeout` (400~500 ms) | 平台的 `scaledTouchSlop` (8 dp 上下) | 不挡 | 300 ms | 350 ms | 1 s | 300 ms |
+ * | [GUARD] 防误触 (缺省) | `max(平台值, 500) + 150` = 650 ms | 12 dp | 250 ms | 220 ms | 450 ms | 1.5 s | 220 ms |
  *
  * **后三列 2026-10-09 加的** (主人: "ball 的键盘输入和语音输入经常会误触" + "只收紧防误触档"):
  * 双击窗口、以及那两档"太近不算"的防连击窗口原来两档共用, 现在也各归各的档 —— 标准档那三个数
  * (300 / 350 / 1000) 一个字没改, 收的只有防误触档。收紧的方向两边都指向"更难误开语音与键盘":
  * 双击窗口收窄 (打断那一下最不该被手抖凑出来), 两个防连击窗口放宽 (抖出来的第二下算同一击)
+ *
+ * **2026-10-10 的两处**: 加了最后一列 `commitWindowMs` (开麦那一下的确认窗, 取值就是双击窗口),
+ * 而长按那一列不再写死 650 ms —— 它改成从平台的 `longPressTimeout` 派生 (见 [pressMs]), 典型设备
+ * 上仍是 650 ms。原来那条"三击总时长 450 ms"的闸删掉了: 2 × 220 = 440 < 450, 它在防误触档永远
+ * 触不到, 留着只会让这张表与逻辑脱节
  */
 internal enum class BallFeel {
-    /** 标准: 手感优先, 三个门槛都交给平台那一档 */
+    /** 标准: 手感优先, 长按与拖动两个门槛都交给平台那一档 (另外两条防连击也回到上面那两个数) */
     STANDARD,
 
     /** 防误触: 缺省, 上面那张表里右侧那七个门槛都往"更难误触发"那一头 */
     GUARD;
 
-    /** 长按门槛, 0 = 用平台的 `ViewConfiguration.getLongPressTimeout()` */
-    val pressMs: Long get() = if (this == GUARD) BallMinutes.BALL_PRESS_MS else 0L
+    /**
+     * 长按门槛: 标准档就是平台那个 `ViewConfiguration.getLongPressTimeout()` (400~500 ms 那一档),
+     * 防误触档在 `max(平台值, [BallMinutes.BALL_PRESS_BASE_MS])` 上再加
+     * [BallMinutes.BALL_PRESS_MARGIN_MS] 那么一段
+     *
+     * 平台值当入参而不是在这里读 `ViewConfiguration`, 是为了让这个式子**没有设备也能量** (见 BallTest)
+     * —— 上一版防误触档写死 650 ms, 两档之间的长按手感差了一倍多, 现在两档是同一个式子
+     */
+    fun pressMs(platformMs: Long): Long = when (this) {
+        GUARD -> maxOf(platformMs, BallMinutes.BALL_PRESS_BASE_MS) + BallMinutes.BALL_PRESS_MARGIN_MS
+        STANDARD -> platformMs
+    }
 
     /** 判定"这一下是拖动"的门槛, 0 = 用平台的 `scaledTouchSlop` */
     val slopDp: Int get() = if (this == GUARD) BallMinutes.BALL_SLOP_DP else 0
-
-    /** 三击那一串的总时长, 0 = 不看总时长 (只看相邻两下) */
-    val tripleSpanMs: Long get() = if (this == GUARD) BallMinutes.TRIPLE_SPAN_MS else 0L
 
     /** 刚拖完那一下的挡窗, 0 = 不挡 */
     val dropGuardMs: Long get() = if (this == GUARD) BallMinutes.BALL_DROP_GUARD_MS else 0L
@@ -276,6 +288,18 @@ internal enum class BallFeel {
     /** "正在听"那一档的防连击窗口 (那一档的点击是"把语音收回来", 手一抖就是刚开就关) */
     val listenGuardMs: Long get() =
         if (this == GUARD) BallMinutes.BALL_LISTEN_GUARD_MS else BallMinutes.LISTEN_GUARD_MS
+
+    /**
+     * **动作的确认窗** (2026-10-10): 单击里那个"贵重动作" (开麦) 要等这么久才真的提交
+     *
+     * 取值就是 [doubleTapMs], 不是另一个数 —— 理由在时间轴上: 过了这一个窗口还没有第二下, 双击
+     * (两下都 ≤ [doubleTapMs]) 与三击 (每一下都 ≤ [doubleTapMs]) 就都**不可能**再成立了, 所以
+     * "这一下是单击"到那一刻就是终局, 再等只是白等
+     *
+     * 动作层只读这一个名字 ([OverlayService.onTap] 与 [BallCommit]), 不再直接引用 `BALL_DOUBLE_TAP_MS`
+     * 那一族常量 —— 于是以后加第三档灵敏度也不用到处改
+     */
+    val commitWindowMs: Long get() = doubleTapMs
 
     /**
      * 「正在想」里那一次单点该等多久才开语音
@@ -347,6 +371,17 @@ internal enum class BallAct {
     /** 把语音输入收回来 */
     HUSH,
 
+    /**
+     * **收掉常驻语音那一档, 并把视频模式一并退出** (2026-10-10 主人: "在 ball 新增一个常驻语音状态
+     * …单击关闭后也关闭视频模式")
+     *
+     * 它挂在**常驻语音开着时那一下"正在听"**上 (主人: "显示状态与正在听一致" + "那三个字也是正在听"):
+     * 显示上一模一样, 只有这一下多做一件事 —— 常驻语音本来就是视频模式要的东西 (见 [LwModes]), 于是
+     * "把这一路收掉"与"退出视频模式"在同一处收口, 走的是切模式那**同一次调用**, 不是第二套做法。
+     * 收掉之后相机、常驻链与 `.active` 一起回到手机模式
+     */
+    LEAVE_VIDEO,
+
     /** 掐断正在念的回答 (播报) */
     STOP,
 
@@ -364,17 +399,23 @@ internal object BallTouch {
      *
      * @param listening 那一条语音链此刻是不是开着 ([VoiceState.capturing]) —— 判它而不是判 [phase]:
      *   `phase` 现在同时被"正在听"与"正在想"占用 (两者都不收边), 靠它分不出该"收回"还是该"开"
+     * @param resident 常驻语音此刻开着没有 (视频模式那个记号, 见 `LwWakeWord.resident` / `LwModes`):
+     *   它与"麦克风开着"同时成立时, 那一下不只是"收一句", 而是"把常驻语音与视频模式一起收掉"
+     *   (主人 2026-10-10)。**显示上两档是同一档** (都是「正在听」), 差别只在动作这一边
      */
     fun act(
         phase: BallPhase,
         speaking: Boolean,
         channelOpen: Boolean,
         listening: Boolean = false,
+        resident: Boolean = false,
     ): BallAct = when {
         // 念回答的时候那一下是"别念了" (主人 2026-10-05 追加的一条)
         speaking -> BallAct.STOP
         // 半隐收着的球: 那一下永远只是"召出来"
         phase == BallPhase.RESTED -> BallAct.SUMMON
+        // 常驻语音那一档 (显示上就是「正在听」): 点一下把它收掉, 并把视频模式一并退出 (主人 2026-10-10)
+        resident && listening -> BallAct.LEAVE_VIDEO
         // 麦克风开着: 点一下收回来 (原来判的是 `phase == VOICE`, 而那个档位现在也会因为"正在想"而成立)
         listening -> BallAct.HUSH
         // 剩下两档都是"点一下开语音": 空闲时那是"点两次才说话"的第一下 (见 [opensVoiceNow]),
@@ -390,6 +431,54 @@ internal object BallTouch {
      * 点击小球进行语音输入")。判据是纯函数 (见 BallTest), 调用方只按它的答案走
      */
     fun opensVoiceNow(summonFresh: Boolean, replyBox: Boolean): Boolean = replyBox || summonFresh
+}
+
+/**
+ * 这一下单击该"马上做"还是"等一个确认窗再做"
+ *
+ * **为什么要有这一层** (2026-10-10 主人: "三击 ball 会打开语音输入, 并且会卡一下"): 单击的动作是
+ * 在 UP 那一刻当场做掉的 (见 [BallTaps] 的文件头), 而三击的头一下就可能已经把那句"开语音"做掉了
+ * —— 第三下再来把它收掉、改弹键盘, 于是主人看到的是"先开麦、卡一下、再弹键盘"。开麦那一步会起
+ * 前台服务并在主线程上建切段会话, 一次来回就是一次整屏卡顿
+ *
+ * 处置是**只给开麦加一个确认窗** ([BallFeel.commitWindowMs]): 窗里来了第二下 (双击) 或第三下
+ * (三击) 就把待办取消, 于是一次三击从头到尾不碰麦克风。其余动作**一律立即**:
+ *
+ * - [BallAct.SUMMON] (半隐球滑回来) 是"手指落下去就要跟手"的那一条, 晚一档就成了按了没反应
+ * - [BallAct.HUSH] (正在听时收麦) 与 [BallAct.STOP] (正在念时掐播报) 都是"别说了"那一个意思,
+ *   晚 220 ms 就变成说了半句才停 —— 那比多开一次麦糟得多
+ * - [BallAct.LISTEN] 里那支"只记召出、不开麦"的分支只写一个时间戳, 当场做掉没有任何代价
+ *
+ * 判据是纯函数 (见 BallTest), 调用方只按它给的那个数决定等不等、等多久
+ */
+internal object BallCommit {
+
+    /**
+     * 这一下要等多久才提交; **0 = 当场做掉**
+     *
+     * 三个入参与 [BallTouch.act] 和 [BallTouch.opensVoiceNow] 共用, 只是提前问一次"这一下会是开麦
+     * 吗" —— 答案在窗里不会变 (那一支只看状态词与两笔框账), 所以可以提前取
+     *
+     * 两个等待长度不是随便挑的:
+     *
+     * - 「正在想」那一档本来就在等 [BallFeel.thinkingTapMs] (要晚过双击与防连击两条线), 那个数
+     *   原封不动地留用 —— 它比确认窗还晚, 于是"想打断"永远先被认出来
+     * - 其余开麦只等 [BallFeel.commitWindowMs]: 过了这一个窗口就不会再有双击/三击了, 再多等只是
+     *   白让主人等 (那个数的理由写在 [BallFeel.commitWindowMs] 上)
+     */
+    fun deferMs(
+        act: BallAct,
+        word: BallWord?,
+        summonFresh: Boolean,
+        replyBox: Boolean,
+        feel: BallFeel = BallFeel.GUARD,
+    ): Long = when {
+        act != BallAct.LISTEN -> 0L
+        word == BallWord.THINKING -> feel.thinkingTapMs()
+        word == BallWord.FAILED -> feel.commitWindowMs
+        BallTouch.opensVoiceNow(summonFresh, replyBox) -> feel.commitWindowMs
+        else -> 0L
+    }
 }
 
 /**
@@ -451,9 +540,9 @@ internal enum class BallTap {
  *   那行「键盘输入」的替身 (那行删掉了)
  * - 离上一记超过连击窗口但**还在防连击窗口里**的那一下 = [BallTap.TOO_SOON]: 什么都不做, 只记一行
  *
- * **净效果那一层要想清楚**: 单击那一下是**当场**做掉的 (只有"正在想"那一档押后 300 ms 等双击),
- * 所以连击计数只是"把手势认出来", 不取消第一下已经做的事 —— 三击因此是"召出/开语音那一下 + 关掉语音
- * 窗口 + 打开键盘输入" ([OverlayService.onTap] 里那一支), 而不是"从头到尾什么都没发生"
+ * **净效果那一层要想清楚**: 单击那一下是**当场**做掉的 (只有开麦那一支会等一个确认窗, 见
+ * [BallCommit]), 所以连击计数只是"把手势认出来", 不取消第一下已经做的事 —— 三击里那两下轻动作
+ * (召出球、记一笔) 因此照样发生, 而"打开键盘输入"是三击自己的动作 ([OverlayService.onTap] 那一支)
  */
 internal object BallTaps {
 
@@ -471,44 +560,33 @@ internal object BallTaps {
      *
      * @param lastTapAt 上一次**算数的**点击时刻 (0 = 还没有过)
      * @param chain 这一下之前那串连击已经数到几次 (0 = 上一记之后已经隔开了)
-     * @param chainFrom 这一串连击**头一下**的时刻 (0 = 不知道): 三击看的是整串的总时长, 见下
      *
      * 判据的先后就是它的意思: **先看"是不是接着上一记"** (300 ms 之内), 是就往下数 (第 2 下是双击,
      * 第 3 下起是三击 —— 四连击也算三击, 那只是主人多戳了一下); 不是再看"是不是离得太近" (防连击那
      * 个窗口), 太近的**既不计数也不动作**; 都不是才是新的一次单击
      *
-     * **2026-10-08 给三击加了一条总时长** ([TRIPLE_SPAN_MS]): 只看相邻两下的话, "一下一下慢慢戳三下"
-     * 也算三击, 而三击要开的是一块盖住半屏的输入框 —— 那是最值得防的一处误触。所以第三下要落在
-     * "头一下之后 450 ms 之内", 超了就**停在双击**那一档 (它在多数状态里没有动作, 于是什么都不做)。
-     * [chainFrom] 缺省等于 [lastTapAt], 于是"只看相邻两下"那种老调用仍然自洽 (总时长就等于这一隔)
+     * **2026-10-08 到 2026-10-10 之间这里还有一条"整串总时长 450 ms"的闸**, 现在删掉了: 三击的
+     * 每一段间隔都必须 ≤ [BallFeel.doubleTapMs] (防误触档 220 ms), 于是整串最多 2 × 220 = 440 ms,
+     * 那条 450 ms 的闸在防误触档永远触不到; 标准档根本没开它。留着只是一行永远为真的判断
      *
-     * [feel] 是设置页那一档灵敏度: 标准档把总时长这条闸整个关掉 ([BallFeel.tripleSpanMs] 为 0),
-     * 那时三击就是"三下连着且每一下都贴着上一记" —— 与收紧之前那一版相同
+     * [feel] 是设置页那一档灵敏度: 双击窗口与两档防连击窗口都跟着它走
      */
     fun kind(
         word: BallWord?,
         now: Long,
         lastTapAt: Long,
         chain: Int = 0,
-        chainFrom: Long = lastTapAt,
         feel: BallFeel = BallFeel.GUARD,
     ): BallTap {
         if (lastTapAt == 0L) return BallTap.SINGLE
         val gap = now - lastTapAt
         return when {
-            gap <= feel.doubleTapMs -> {
-                if (chain + 1 < 3) BallTap.DOUBLE
-                else if (inTripleSpan(now, chainFrom, feel.tripleSpanMs)) BallTap.TRIPLE
-                else BallTap.DOUBLE
-            }
+            gap <= feel.doubleTapMs ->
+                if (chain + 1 < 3) BallTap.DOUBLE else BallTap.TRIPLE
             gap < guard(word, feel) -> BallTap.TOO_SOON
             else -> BallTap.SINGLE
         }
     }
-
-    /** 三击那一串的总时长够不够: 这一档没开那条闸 (窗口为 0) 时一律算够 */
-    private fun inTripleSpan(now: Long, chainFrom: Long, span: Long): Boolean =
-        span <= 0L || chainFrom == 0L || now - chainFrom <= span
 
     /**
      * 框外那两下算不算一次双击: 真 = 这一下就是窗口内的第二下 (**关掉那块框**)

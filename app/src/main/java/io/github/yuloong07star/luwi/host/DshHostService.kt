@@ -20,6 +20,7 @@ import io.github.yuloong07star.luwi.channel.PrivilegedBridge
 import io.github.yuloong07star.luwi.channel.PrivilegedChannel
 import io.github.yuloong07star.luwi.channel.VirtualScreen
 import io.github.yuloong07star.luwi.plugin.PluginManager
+import io.github.yuloong07star.luwi.tool.LwWakeWord
 
 /**
  * Keeps the host process alive while the app is not in front
@@ -49,6 +50,15 @@ class DshHostService : Service() {
         LwModes.ensureDefault(this)
         // 随包那六项 (四份技能 + 两条样例快捷指令): 技能缺什么补什么, 样例只发一次
         LwSeed.ensure(this)
+        // **唤醒词自愈** (2026-10-10 主人: "让它自愈"): 那个开关开着、又不在省电模式, 就把监听拉起来
+        //
+        // 原来只有设置页那几处会 `LwWakeWord.listen` —— 于是**重装 APK / 进程被杀之后没人再拉它**,
+        // 而视频模式那个记号还在, 球上就写着「正在听」而麦克风一动不动 (2026-10-10 当场量到的那次:
+        // `listening: false` / `hits: 0` / `segments: 0`)。宿主起来这一下是"应用又活了"最早的钩子
+        if (runCatching { LwWakeWord.allow(this) && !LwWakeWord.powerSave(this) }.getOrDefault(false)) {
+            runCatching { LwWakeWord.listen(this) }
+                .onFailure { Log.w(TAG, "the wake word listener did not come back: ${it.message}") }
+        }
         // 内置的 dsh-custom-mode 与它那个助手的五个文件: 新机开箱就有那个 `custom` 预设, 语音才能
         // 开新会话 (主人 2026-10-09); profile 那一半在 host spawn 之前做 (见 CustomPresets)
         CustomPresets.ensure(this)
