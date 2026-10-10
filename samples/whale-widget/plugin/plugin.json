@@ -2,7 +2,7 @@
   "protocol": "lw-plugin/1",
   "id": "io.github.yuloong07star.luwi.sample.whalewidget",
   "name": "鲸鱼娘桌面小组件",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "minLw": "2.6.0",
   "api": "1",
   "kind": "companion",

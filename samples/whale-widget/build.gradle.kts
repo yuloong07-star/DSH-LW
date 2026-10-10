@@ -32,8 +32,8 @@ android {
         applicationId = "io.github.yuloong07star.luwi.sample.whalewidget"
         minSdk = 33
         targetSdk = 37
-        versionCode = 3
-        versionName = "1.1.1"
+        versionCode = 4
+        versionName = "1.1.2"
     }
 
     compileOptions {

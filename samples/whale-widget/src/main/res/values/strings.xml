@@ -11,7 +11,7 @@
     <string name="current_mark">%1$s (current)</string>
     <string name="refresh_widget">Refresh the home screen widget</string>
     <string name="import_gif">Bring in a GIF</string>
-    <string name="import_note">The three built-in dances live in this app; anything you bring in is a copy kept in %1$s. Deleting a copy never touches the file you picked</string>
+    <string name="import_note">The built-in dance lives in this app; anything you bring in is a copy kept in %1$s. Deleting a copy never touches the file you picked</string>
     <string name="import_done">Brought in "%1$s" (%2$d frames) - she is on the home screen now</string>
     <string name="import_failed">That one did not come in: %1$s</string>
     <string name="forget">Delete</string>

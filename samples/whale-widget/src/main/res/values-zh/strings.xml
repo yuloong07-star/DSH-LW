@@ -11,7 +11,7 @@
     <string name="current_mark">%1$s (正在用)</string>
     <string name="refresh_widget">刷新桌面上的小组件</string>
     <string name="import_gif">导入一份 GIF</string>
-    <string name="import_note">随包那三套住在这个应用里; 你导进来的每一份都是一份副本, 放在 %1$s。删掉副本不会碰你选的那个原文件</string>
+    <string name="import_note">随包那一套住在这个应用里; 你导进来的每一份都是一份副本, 放在 %1$s。删掉副本不会碰你选的那个原文件</string>
     <string name="import_done">导入了「%1$s」, 一共 %2$d 帧 —— 桌面上已经是她了</string>
     <string name="import_failed">这一份没导进来: %1$s</string>
     <string name="forget">删掉</string>

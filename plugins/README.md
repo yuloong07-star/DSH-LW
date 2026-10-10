@@ -10,7 +10,7 @@ Luwi → 设置 → 插件 → **从链接装入**, 把下面那一条粘进去�
 
 | 包 | 它是什么 | 链接 |
 | :-- | :-- | :-- |
-| `whale-widget-1.1.1.lwp` | 鲸鱼娘桌面小组件 (需要先装伴侣 APK) | `https://cdn.jsdelivr.net/gh/yuloong07-star/Luwi@main/plugins/whale-widget-1.1.1.lwp` |
+| `whale-widget-1.1.2.lwp` | 鲸鱼娘桌面小组件 (需要先装伴侣 APK) | `https://cdn.jsdelivr.net/gh/yuloong07-star/Luwi@main/plugins/whale-widget-1.1.2.lwp` |
 
 **这一层只留最新那一份**: 旧的版本在 Releases 里 (每一份插件包都跟一版 Release 走)。链接也可以直接用
 仓库原地址 (`https://raw.githubusercontent.com/yuloong07-star/Luwi/main/plugins/…`), 只不过在国内
